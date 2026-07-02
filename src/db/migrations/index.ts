@@ -1,5 +1,6 @@
 import type { Migration } from 'kysely/migration'
 import * as m0001 from './0001_initial_schema.js'
+import * as m0002 from './0002_toll_vehicle_profile.js'
 
 /**
  * In-code migration registry (instead of FileMigrationProvider) so migrations
@@ -8,4 +9,5 @@ import * as m0001 from './0001_initial_schema.js'
  */
 export const migrations: Record<string, Migration> = {
   '0001_initial_schema': m0001,
+  '0002_toll_vehicle_profile': m0002,
 }

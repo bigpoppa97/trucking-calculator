@@ -1,6 +1,7 @@
 import type { Kysely } from 'kysely'
 import type { DB } from '../db/schema.js'
 import type { CalculatorConfig } from '../domain/types.js'
+import type { TollVehicleProfile } from '../here/hereRoutingClient.js'
 
 /** Config keys per PRD §5.2. The config table is the source of truth. */
 export const CONFIG_KEYS = {
@@ -9,6 +10,8 @@ export const CONFIG_KEYS = {
   driverDayRate: 'driver_day_rate',
   monthlyOverhead: 'monthly_overhead',
   monthDays: 'month_days',
+  /** Single global toll vehicle profile (PRD §4.3) — JSON value. */
+  tollVehicleProfile: 'toll_vehicle_profile',
 } as const
 
 export type ConfigKey = (typeof CONFIG_KEYS)[keyof typeof CONFIG_KEYS]
@@ -54,5 +57,33 @@ export class ConfigRepository {
       monthlyOverheadEur: num(CONFIG_KEYS.monthlyOverhead),
       monthDays: num(CONFIG_KEYS.monthDays),
     }
+  }
+
+  /**
+   * The single global toll vehicle profile (PRD §4.3). Seeded by migration
+   * 0002; missing or malformed JSON is a hard error, not a silent default.
+   */
+  async getTollVehicleProfile(): Promise<TollVehicleProfile> {
+    const row = await this.db
+      .selectFrom('config')
+      .select('value')
+      .where('key', '=', CONFIG_KEYS.tollVehicleProfile)
+      .executeTakeFirst()
+    if (!row) throw new Error(`Configuration incomplete: missing '${CONFIG_KEYS.tollVehicleProfile}'.`)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(row.value)
+    } catch {
+      throw new Error(`Configuration invalid: '${CONFIG_KEYS.tollVehicleProfile}' is not valid JSON.`)
+    }
+    const profile = parsed as Partial<TollVehicleProfile>
+    if (
+      typeof profile.axleCount !== 'number' ||
+      typeof profile.grossWeightKg !== 'number' ||
+      typeof profile.emissionType !== 'string'
+    ) {
+      throw new Error(`Configuration invalid: '${CONFIG_KEYS.tollVehicleProfile}' is missing required fields.`)
+    }
+    return { axleCount: profile.axleCount, grossWeightKg: profile.grossWeightKg, emissionType: profile.emissionType }
   }
 }
