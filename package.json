@@ -1,0 +1,16 @@
+{
+  "name": "trucking-cost-calculator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Break-even cost and P&L calculator for airport-to-airport trucking routes (PRD v2.0)",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}
