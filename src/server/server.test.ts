@@ -56,6 +56,13 @@ describe('API endpoints', () => {
       { iata: 'WAW', name: 'Warsaw Chopin', city: 'Warsaw', country: 'PL', lat: 52.1657, lon: 20.9671 },
       { iata: 'PRG', name: 'Václav Havel Prague', city: 'Prague', country: 'CZ', lat: 50.1008, lon: 14.26 },
     ])
+    await new ConfigRepository(db).setMany({
+      fuel_price: '1.4',
+      consumption: '28',
+      driver_day_rate: '160',
+      monthly_overhead: '3012',
+      month_days: '30',
+    })
     hereCalls = 0
     hereFails = false
     const fetchService = new RouteFetchService({
@@ -72,6 +79,32 @@ describe('API endpoints', () => {
       now: () => '2026-07-02T12:00:00.000Z',
     })
     app = buildApp({ db, fetchService })
+  })
+
+  it('GET /api/config returns the calculator config', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/config' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { config: { monthDays: number } }
+    expect(body.config.monthDays).toBe(30)
+  })
+
+  it('GET /api/fleet-variants returns active variants only', async () => {
+    const { FleetVariantRepository } = await import('../repositories/fleetVariantRepository.js')
+    const repo = new FleetVariantRepository(db)
+    await repo.upsertByName('standard cooler', 2750)
+    await repo.upsertByName('old variant', 9999, false)
+
+    const res = await app.inject({ method: 'GET', url: '/api/fleet-variants' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { variants: Array<{ name: string }> }
+    expect(body.variants.map(v => v.name)).toEqual(['standard cooler'])
+  })
+
+  it('GET /api/airports returns the airport list for autocomplete', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/airports' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { airports: Array<{ iata: string }> }
+    expect(body.airports.map(a => a.iata)).toEqual(['PRG', 'WAW'])
   })
 
   it('GET /api/routes/:code returns the stored route with source=database (table-first)', async () => {

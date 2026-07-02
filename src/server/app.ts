@@ -1,6 +1,9 @@
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify'
 import type { Kysely } from 'kysely'
 import type { DB } from '../db/schema.js'
+import { AirportRepository } from '../repositories/airportRepository.js'
+import { ConfigRepository } from '../repositories/configRepository.js'
+import { FleetVariantRepository } from '../repositories/fleetVariantRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
 import { RouteFetchError, type FetchedRoute, type RouteFetchService } from '../here/routeFetchService.js'
 
@@ -60,6 +63,9 @@ const SAVE_BODY_SCHEMA = {
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: false })
   const routeRepo = new RouteRepository(deps.db)
+  const configRepo = new ConfigRepository(deps.db)
+  const variantRepo = new FleetVariantRepository(deps.db)
+  const airportRepo = new AirportRepository(deps.db)
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     // Validation errors carry safe, schema-derived messages.
@@ -69,6 +75,22 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     request.log?.error?.(error)
     // Static generic message only — never raw exception text (kickoff rule).
     return reply.status(500).send({ error: { code: 'INTERNAL', message: 'Unexpected error. Please try again.' } })
+  })
+
+  // Read endpoints for the calculator screen (PRD §5.3).
+  app.get('/api/config', async (_request, reply) => {
+    const config = await configRepo.getCalculatorConfig()
+    return reply.send({ config })
+  })
+
+  app.get('/api/fleet-variants', async (_request, reply) => {
+    const variants = await variantRepo.listActive()
+    return reply.send({ variants })
+  })
+
+  app.get('/api/airports', async (_request, reply) => {
+    const airports = await airportRepo.listAll()
+    return reply.send({ airports })
   })
 
   app.get<{ Params: { routeCode: string } }>(
