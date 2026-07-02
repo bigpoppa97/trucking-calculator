@@ -1,0 +1,10 @@
+Parametr,Wartość,Opis
+Cena paliwa (EUR/L),1.4,Aktualizuj co miesiąc
+Zużycie paliwa (L/100 km),28,"Flat rate, wszystkie trasy"
+Koszt taboru Standard/mies. (EUR),3500,"Ciągnik + naczepa, łącznie (legacy — zastąpione wariantami)"
+Stawka kierowcy (EUR/dzień),160,Pełny koszt: brutto + ZUS
+Inne koszty miesięczne (EUR),3012,Stałe koszty wg arkusza
+Dni w miesiącu (denominatora),30,Przyjęta stała wartość
+Wariant taboru: standard cooler,2750,Standardowa naczepa chłodnicza
+Wariant taboru: mega COOL,4500,Mega naczepa chłodnicza
+Wariant taboru: mega curtain,3200,Mega naczepa plandeka

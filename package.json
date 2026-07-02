@@ -7,10 +7,21 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "migrate": "tsx scripts/migrate.ts",
+    "import:v1": "tsx scripts/import-v1.ts",
+    "import:airports": "tsx scripts/import-airports.ts"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.1.0",
+    "csv-parse": "^7.0.1",
+    "tsx": "^4.22.5",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "kysely": "^0.29.2"
   }
 }

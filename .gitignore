@@ -1,4 +1,6 @@
 node_modules/
+data/*.sqlite
+data/*.sqlite-*
 dist/
 coverage/
 .env
