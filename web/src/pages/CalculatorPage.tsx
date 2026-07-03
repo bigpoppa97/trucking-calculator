@@ -50,6 +50,9 @@ export function CalculatorPage() {
   const [staticData, setStaticData] = useState<StaticData>({ kind: 'loading' })
   const [routeState, setRouteState] = useState<RouteState>({ kind: 'idle' })
   const [form, setForm] = useState<OrderFormState>(INITIAL_FORM)
+  const [saveState, setSaveState] = useState<{ kind: 'idle' } | { kind: 'saving' } | { kind: 'saved' } | { kind: 'error'; message: string }>(
+    { kind: 'idle' },
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -70,10 +73,16 @@ export function CalculatorPage() {
     }
   }, [])
 
+  // Changing any input invalidates a previous "saved" confirmation.
+  useEffect(() => {
+    setSaveState(s => (s.kind === 'saved' || s.kind === 'error' ? { kind: 'idle' } : s))
+  }, [form])
+
   const lookup = async (rawCode: string) => {
     const routeCode = rawCode.trim().toUpperCase()
     // Atomic reset BEFORE repopulating — nothing derived survives a lookup.
     setRouteState({ kind: 'loading', routeCode })
+    setSaveState({ kind: 'idle' })
     try {
       const route = await api.getRoute(routeCode)
       setRouteState(route === null ? { kind: 'notFound', routeCode } : { kind: 'found', route })
@@ -142,8 +151,12 @@ export function CalculatorPage() {
     return null
   }, [routeState])
 
-  const calc = useMemo((): { breakdown: CostBreakdown | null; errors: Record<string, string> } => {
-    if (staticData.kind !== 'ready' || routeData === null) return { breakdown: null, errors: {} }
+  const calc = useMemo((): {
+    breakdown: CostBreakdown | null
+    errors: Record<string, string>
+    parsed: { days: number; ferries: number; tunnels: number; revenue?: number } | null
+  } => {
+    if (staticData.kind !== 'ready' || routeData === null) return { breakdown: null, errors: {}, parsed: null }
 
     const errors: Record<string, string> = {}
     const days = parseDecimalInput(form.days)
@@ -166,7 +179,7 @@ export function CalculatorPage() {
       revenue === null ||
       !variant
     ) {
-      return { breakdown: null, errors }
+      return { breakdown: null, errors, parsed: null }
     }
 
     const result = calculateOrderCost(
@@ -189,10 +202,45 @@ export function CalculatorPage() {
         else if (issue.field === 'revenueEur') errors['revenue'] = 'Kwota nie może być ujemna.'
         else errors[issue.field] = issue.message
       }
-      return { breakdown: null, errors }
+      return { breakdown: null, errors, parsed: null }
     }
-    return { breakdown: result.breakdown, errors: {} }
+    return {
+      breakdown: result.breakdown,
+      errors: {},
+      parsed: { days, ferries, tunnels, ...(revenue !== undefined ? { revenue } : {}) },
+    }
   }, [staticData, routeData, form])
+
+  // A calculation can be saved once the route itself is in the database
+  // (history rows reference route_id) and the breakdown is valid.
+  const savableRouteCode =
+    routeState.kind === 'found'
+      ? routeState.route.routeCode
+      : routeState.kind === 'fetched' && routeState.saved
+        ? routeState.fetched.routeCode
+        : null
+
+  const saveCalculation = async () => {
+    if (savableRouteCode === null || calc.parsed === null || form.fleetVariantId === null) return
+    setSaveState({ kind: 'saving' })
+    try {
+      await api.saveCalculation({
+        routeCode: savableRouteCode,
+        days: calc.parsed.days,
+        drivers: form.drivers,
+        fleetVariantId: form.fleetVariantId,
+        ferriesEur: calc.parsed.ferries,
+        tunnelsEur: calc.parsed.tunnels,
+        ...(calc.parsed.revenue !== undefined ? { revenueEur: calc.parsed.revenue } : {}),
+      })
+      setSaveState({ kind: 'saved' })
+    } catch (error) {
+      setSaveState({
+        kind: 'error',
+        message: error instanceof ApiError ? error.message : 'Nie udało się zapisać kalkulacji.',
+      })
+    }
+  }
 
   if (staticData.kind === 'loading') {
     return <p className="p-6 text-sm text-slate-500">Wczytywanie konfiguracji…</p>
@@ -290,9 +338,29 @@ export function CalculatorPage() {
         </section>
       </div>
 
-      <div>
+      <div className="space-y-3">
         {calc.breakdown !== null ? (
-          <CostBreakdownPanel breakdown={calc.breakdown} />
+          <>
+            <CostBreakdownPanel breakdown={calc.breakdown} />
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                disabled={savableRouteCode === null || saveState.kind === 'saving' || saveState.kind === 'saved'}
+                onClick={() => void saveCalculation()}
+                className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+              >
+                {saveState.kind === 'saving' ? 'Zapisuję…' : saveState.kind === 'saved' ? 'Zapisano ✓' : 'Zapisz kalkulację'}
+              </button>
+              {savableRouteCode === null && (
+                <p className="text-xs text-slate-500">Najpierw zapisz trasę do bazy, aby zapisać kalkulację.</p>
+              )}
+              {saveState.kind === 'error' && (
+                <p role="alert" className="text-xs text-red-600">
+                  {saveState.message}
+                </p>
+              )}
+            </div>
+          </>
         ) : (
           <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
             {routeData === null

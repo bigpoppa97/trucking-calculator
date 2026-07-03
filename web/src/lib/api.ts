@@ -1,4 +1,13 @@
-import type { AirportDto, CalculatorConfig, FetchedRouteDto, FleetVariantDto, RouteDetailsDto } from './types.js'
+import type {
+  AirportDto,
+  CalculationDto,
+  CalculatorConfig,
+  FetchedRouteDto,
+  FleetVariantDto,
+  RouteDetailsDto,
+  RouteSummaryDto,
+  SaveCalculationInput,
+} from './types.js'
 
 /**
  * All backend calls go through this module. Every failure becomes an
@@ -16,7 +25,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: 'GET' | 'POST', url: string, body?: unknown): Promise<T> {
+async function request<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH', url: string, body?: unknown): Promise<T> {
   const init: RequestInit =
     body === undefined
       ? { method }
@@ -75,6 +84,73 @@ export const api = {
   /** "Save to route database" (PRD §3.2 step 3). */
   async saveFetchedRoute(fetched: FetchedRouteDto): Promise<RouteDetailsDto> {
     return (await request<{ route: RouteDetailsDto }>('POST', '/api/routes', fetched)).route
+  },
+
+  // --- Route DB screen (PRD §5.3) ---
+
+  async listRoutes(): Promise<RouteSummaryDto[]> {
+    return (await request<{ routes: RouteSummaryDto[] }>('GET', '/api/routes')).routes
+  },
+
+  async overrideKm(
+    routeCode: string,
+    body: { totalKm: number; countryKm: Record<string, number>; note?: string },
+  ): Promise<RouteDetailsDto> {
+    return (await request<{ route: RouteDetailsDto }>('PUT', `/api/routes/${encodeURIComponent(routeCode)}/km`, body))
+      .route
+  },
+
+  /** Fill in a pending toll — stored as verified (manual entry). */
+  async setToll(routeCode: string, country: string, tollEur: number): Promise<RouteDetailsDto> {
+    return (
+      await request<{ route: RouteDetailsDto }>(
+        'PUT',
+        `/api/routes/${encodeURIComponent(routeCode)}/tolls/${encodeURIComponent(country)}`,
+        { tollEur },
+      )
+    ).route
+  },
+
+  /** Promote an estimate to verified, optionally correcting the value. */
+  async verifyToll(routeCode: string, country: string, correctedTollEur?: number): Promise<RouteDetailsDto> {
+    return (
+      await request<{ route: RouteDetailsDto }>(
+        'POST',
+        `/api/routes/${encodeURIComponent(routeCode)}/tolls/${encodeURIComponent(country)}/verify`,
+        correctedTollEur === undefined ? {} : { correctedTollEur },
+      )
+    ).route
+  },
+
+  // --- Config screen (PRD §5.3) ---
+
+  async updateConfig(config: {
+    fuelPriceEurPerLitre: number
+    fuelConsumptionLPer100Km: number
+    driverDayRateEur: number
+    monthlyOverheadEur: number
+  }): Promise<CalculatorConfig> {
+    return (await request<{ config: CalculatorConfig }>('PUT', '/api/config', config)).config
+  },
+
+  async createVariant(name: string, monthlyCostEur: number): Promise<FleetVariantDto[]> {
+    return (await request<{ variants: FleetVariantDto[] }>('POST', '/api/fleet-variants', { name, monthlyCostEur }))
+      .variants
+  },
+
+  async patchVariant(id: number, patch: { monthlyCostEur?: number; active?: boolean }): Promise<FleetVariantDto[]> {
+    return (await request<{ variants: FleetVariantDto[] }>('PATCH', `/api/fleet-variants/${id}`, patch)).variants
+  },
+
+  // --- History screen (PRD §5.3) ---
+
+  async saveCalculation(input: SaveCalculationInput): Promise<CalculationDto> {
+    return (await request<{ calculation: CalculationDto }>('POST', '/api/calculations', input)).calculation
+  },
+
+  async listCalculations(routeCode?: string): Promise<CalculationDto[]> {
+    const query = routeCode === undefined || routeCode === '' ? '' : `?route=${encodeURIComponent(routeCode)}`
+    return (await request<{ calculations: CalculationDto[] }>('GET', `/api/calculations${query}`)).calculations
   },
 }
 

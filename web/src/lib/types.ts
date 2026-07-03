@@ -33,9 +33,22 @@ export interface RouteDetailsDto {
   stops: string[]
   totalKm: number
   kmSource: 'here' | 'manual'
+  kmNote: string | null
+  kmUpdatedBy: string | null
+  kmUpdatedAt: string | null
   countryKm: Record<string, number>
   tolls: RouteTollDto[]
   tollsPendingCountries: string[]
+}
+
+export interface RouteSummaryDto {
+  id: number
+  routeCode: string
+  totalKm: number
+  kmSource: 'here' | 'manual'
+  createdAt: string
+  tollsPending: boolean
+  hasEstimates: boolean
 }
 
 export interface VehicleProfileDto {
@@ -53,6 +66,48 @@ export interface FetchedRouteDto {
   vehicleProfile: VehicleProfileDto
   fetchedAt: string
   warnings: string[]
+}
+
+import type { CostBreakdown, DriverCount } from '@domain'
+
+export interface CalculationSnapshotDto {
+  input: {
+    routeCode: string
+    totalKm: number
+    orderDays: number
+    driverCount: DriverCount
+    fleetVariantName: string
+    fleetMonthlyCostEur: number
+    ferriesEur: number
+    tunnelsEur: number
+    revenueEur?: number
+  }
+  config: CalculatorConfig
+  breakdown: CostBreakdown
+}
+
+export interface CalculationDto {
+  id: number
+  routeCode: string
+  days: number
+  drivers: number
+  fleetVariantId: number
+  ferriesEur: number
+  tunnelsEur: number
+  revenueEur: number | null
+  snapshot: CalculationSnapshotDto
+  createdBy: string
+  createdAt: string
+}
+
+export interface SaveCalculationInput {
+  routeCode: string
+  days: number
+  drivers: DriverCount
+  fleetVariantId: number
+  ferriesEur: number
+  tunnelsEur: number
+  revenueEur?: number
 }
 
 export type { CalculatorConfig }

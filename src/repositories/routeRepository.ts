@@ -22,6 +22,10 @@ export interface RouteDetails {
   kmSource: KmSource
   createdBy: string
   createdAt: string
+  /** Manual km override audit (PRD §5.3). Null until the first override. */
+  kmNote: string | null
+  kmUpdatedBy: string | null
+  kmUpdatedAt: string | null
   /** Per-country km, only countries actually driven (km > 0). */
   countryKm: Record<string, number>
   tolls: RouteToll[]
@@ -136,9 +140,14 @@ export class RouteRepository {
 
   /**
    * Manual km override (PRD §3.3): dispatcher-entered values are
-   * authoritative — km_source flips to 'manual'.
+   * authoritative — km_source flips to 'manual'. Audited with who/when/why.
    */
-  async overrideKm(routeCode: string, totalKm: number, countryKm: Record<string, number>): Promise<void> {
+  async overrideKm(
+    routeCode: string,
+    totalKm: number,
+    countryKm: Record<string, number>,
+    audit?: { note?: string; updatedBy: string },
+  ): Promise<void> {
     await this.db.transaction().execute(async trx => {
       const route = await trx
         .selectFrom('routes')
@@ -149,7 +158,13 @@ export class RouteRepository {
 
       await trx
         .updateTable('routes')
-        .set({ total_km: totalKm, km_source: 'manual' })
+        .set({
+          total_km: totalKm,
+          km_source: 'manual',
+          km_note: audit?.note ?? null,
+          km_updated_by: audit?.updatedBy ?? null,
+          km_updated_at: audit === undefined ? null : new Date().toISOString(),
+        })
         .where('id', '=', route.id)
         .execute()
       await trx.deleteFrom('route_country_km').where('route_id', '=', route.id).execute()
@@ -157,6 +172,20 @@ export class RouteRepository {
         if (km <= 0) continue
         await trx.insertInto('route_country_km').values({ route_id: route.id, country, km }).execute()
       }
+    })
+  }
+
+  /**
+   * Manual toll entry (PRD §3.2 "tolls pending" → filled in): a human-typed
+   * value is authoritative, stored as verified with audit fields.
+   */
+  async setManualToll(routeId: number, country: string, tollEur: number, enteredBy: string): Promise<void> {
+    await this.upsertToll(routeId, {
+      country,
+      tollEur,
+      status: 'verified',
+      verifiedBy: enteredBy,
+      verifiedAt: new Date().toISOString(),
     })
   }
 
@@ -232,6 +261,9 @@ export class RouteRepository {
       kmSource: row.km_source,
       createdBy: row.created_by,
       createdAt: row.created_at,
+      kmNote: row.km_note,
+      kmUpdatedBy: row.km_updated_by,
+      kmUpdatedAt: row.km_updated_at,
       countryKm,
       tolls,
       tollsPendingCountries,

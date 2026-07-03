@@ -44,6 +44,19 @@ export class FleetVariantRepository {
     return row ? toVariant(row) : null
   }
 
+  async updateById(id: number, patch: { monthlyCostEur?: number; active?: boolean }): Promise<boolean> {
+    if (patch.monthlyCostEur === undefined && patch.active === undefined) return false
+    const result = await this.db
+      .updateTable('fleet_variants')
+      .set({
+        ...(patch.monthlyCostEur !== undefined ? { monthly_cost_eur: patch.monthlyCostEur } : {}),
+        ...(patch.active !== undefined ? { active: patch.active ? 1 : 0 } : {}),
+      })
+      .where('id', '=', id)
+      .executeTakeFirst()
+    return result.numUpdatedRows > 0n
+  }
+
   async upsertByName(name: string, monthlyCostEur: number, active = true): Promise<void> {
     await this.db
       .insertInto('fleet_variants')

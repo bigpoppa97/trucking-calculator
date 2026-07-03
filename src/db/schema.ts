@@ -30,6 +30,10 @@ export interface RoutesTable {
   km_source: KmSource
   created_by: string
   created_at: ColumnType<string, string | undefined, never>
+  // Manual km override audit (PRD §5.3)
+  km_note: ColumnType<string | null, string | null | undefined, string | null>
+  km_updated_by: ColumnType<string | null, string | null | undefined, string | null>
+  km_updated_at: ColumnType<string | null, string | null | undefined, string | null>
 }
 
 export interface RouteCountryKmTable {

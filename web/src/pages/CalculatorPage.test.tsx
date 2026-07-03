@@ -16,6 +16,7 @@ vi.mock('../lib/api.js', async importOriginal => {
       getRoute: vi.fn(),
       fetchRouteFromHere: vi.fn(),
       saveFetchedRoute: vi.fn(),
+      saveCalculation: vi.fn(),
     },
   }
 })
@@ -42,6 +43,9 @@ const WAW_PRG: RouteDetailsDto = {
   stops: ['WAW', 'PRG'],
   totalKm: 680,
   kmSource: 'manual',
+  kmNote: null,
+  kmUpdatedBy: null,
+  kmUpdatedAt: null,
   countryKm: { PL: 420, CZ: 260 },
   tolls: [
     { country: 'PL', tollEur: 102, status: 'verified', fetchedAt: null, verifiedBy: 'v1-import', verifiedAt: '2026-01-01' },
@@ -214,6 +218,47 @@ describe('live calculation (validated reference case)', () => {
     await screen.findByTestId('total-cost')
     expect(screen.getByText(/szacunki z HERE/)).toBeInTheDocument()
     expect(screen.getByText(/Brak opłat drogowych dla: DK, SE, NO/)).toBeInTheDocument()
+  })
+})
+
+describe('saving calculations (history, PRD §5.3)', () => {
+  it('saves a calculation for a database route with the parsed inputs', async () => {
+    mocked.getRoute.mockResolvedValue(WAW_PRG)
+    mocked.saveCalculation.mockResolvedValue({} as never)
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-PRG')
+    await screen.findByTestId('total-cost')
+
+    const days = screen.getByLabelText('Dni (min 0,5)')
+    await user.clear(days)
+    await user.type(days, '1,5')
+    await user.type(screen.getByLabelText(/Przychód/), '900')
+
+    await user.click(screen.getByRole('button', { name: 'Zapisz kalkulację' }))
+    await waitFor(() =>
+      expect(mocked.saveCalculation).toHaveBeenCalledWith({
+        routeCode: 'WAW-PRG',
+        days: 1.5,
+        drivers: 1,
+        fleetVariantId: 1,
+        ferriesEur: 0,
+        tunnelsEur: 0,
+        revenueEur: 900,
+      }),
+    )
+    expect(await screen.findByRole('button', { name: 'Zapisano ✓' })).toBeDisabled()
+  })
+
+  it('blocks saving until a fetched route is saved to the database', async () => {
+    mocked.getRoute.mockResolvedValue(null)
+    mocked.fetchRouteFromHere.mockResolvedValue(FETCHED_WAW_OSL)
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-OSL')
+    await user.click(await screen.findByRole('button', { name: 'Zapytaj HERE API' }))
+    await screen.findByTestId('total-cost')
+
+    expect(screen.getByRole('button', { name: 'Zapisz kalkulację' })).toBeDisabled()
+    expect(screen.getByText(/Najpierw zapisz trasę do bazy/)).toBeInTheDocument()
   })
 })
 

@@ -4,8 +4,11 @@ import type { DB } from '../db/schema.js'
 import { AirportRepository } from '../repositories/airportRepository.js'
 import { ConfigRepository } from '../repositories/configRepository.js'
 import { FleetVariantRepository } from '../repositories/fleetVariantRepository.js'
+import { CalculationRepository } from '../repositories/calculationRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
 import { RouteFetchError, type FetchedRoute, type RouteFetchService } from '../here/routeFetchService.js'
+import { CalculationSaveError, CalculationService } from './calculationService.js'
+import type { DriverCount } from '../domain/index.js'
 
 /**
  * HTTP layer for the route lookup / HERE proxy flow (PRD §3.2, §4):
@@ -27,6 +30,15 @@ const ROUTE_CODE_PARAM_SCHEMA = {
   type: 'object',
   properties: { routeCode: { type: 'string', minLength: 7, maxLength: 64 } },
   required: ['routeCode'],
+} as const
+
+const TOLL_PARAMS_SCHEMA = {
+  type: 'object',
+  properties: {
+    routeCode: { type: 'string', minLength: 7, maxLength: 64 },
+    country: { type: 'string', minLength: 2, maxLength: 2 },
+  },
+  required: ['routeCode', 'country'],
 } as const
 
 const FETCH_BODY_SCHEMA = {
@@ -66,6 +78,16 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const configRepo = new ConfigRepository(deps.db)
   const variantRepo = new FleetVariantRepository(deps.db)
   const airportRepo = new AirportRepository(deps.db)
+  const calculationRepo = new CalculationRepository(deps.db)
+  const calculationService = new CalculationService({
+    routes: routeRepo,
+    variants: variantRepo,
+    config: configRepo,
+    calculations: calculationRepo,
+  })
+  // Placeholder identity until auth lands (kickoff stack mentions roles, but
+  // no phase covers auth yet) — recorded in every audit field.
+  const ACTOR = 'portal-user'
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     // Validation errors carry safe, schema-derived messages.
@@ -92,6 +114,251 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const airports = await airportRepo.listAll()
     return reply.send({ airports })
   })
+
+  // Route DB screen (PRD §5.3): list with pending/estimate flags.
+  app.get('/api/routes', async (_request, reply) => {
+    return reply.send({ routes: await routeRepo.listAll() })
+  })
+
+  // Manual km override with audit note (PRD §3.3, §5.3).
+  app.put<{ Params: { routeCode: string }; Body: { totalKm: number; countryKm: Record<string, number>; note?: string } }>(
+    '/api/routes/:routeCode/km',
+    {
+      schema: {
+        params: ROUTE_CODE_PARAM_SCHEMA,
+        body: {
+          type: 'object',
+          properties: {
+            totalKm: { type: 'number', exclusiveMinimum: 0 },
+            countryKm: { type: 'object', additionalProperties: { type: 'number', minimum: 0 } },
+            note: { type: 'string', maxLength: 500 },
+          },
+          required: ['totalKm', 'countryKm'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const code = request.params.routeCode.trim().toUpperCase()
+      if (!(await routeRepo.existsByCode(code))) {
+        return reply.status(404).send({ error: { code: 'ROUTE_NOT_FOUND', message: 'Route not in database.' } })
+      }
+      await routeRepo.overrideKm(code, request.body.totalKm, request.body.countryKm, {
+        ...(request.body.note !== undefined ? { note: request.body.note } : {}),
+        updatedBy: ACTOR,
+      })
+      return reply.send({ route: await routeRepo.findByCode(code) })
+    },
+  )
+
+  // Fill in a pending toll manually — human value, stored as verified.
+  app.put<{ Params: { routeCode: string; country: string }; Body: { tollEur: number } }>(
+    '/api/routes/:routeCode/tolls/:country',
+    {
+      schema: {
+        params: TOLL_PARAMS_SCHEMA,
+        body: {
+          type: 'object',
+          properties: { tollEur: { type: 'number', minimum: 0 } },
+          required: ['tollEur'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const code = request.params.routeCode.trim().toUpperCase()
+      const route = await routeRepo.findByCode(code)
+      if (!route) {
+        return reply.status(404).send({ error: { code: 'ROUTE_NOT_FOUND', message: 'Route not in database.' } })
+      }
+      await routeRepo.setManualToll(route.id, request.params.country.toUpperCase(), request.body.tollEur, ACTOR)
+      return reply.send({ route: await routeRepo.findByCode(code) })
+    },
+  )
+
+  // Estimate → verified promotion with audit (PRD §4.3 verification workflow).
+  app.post<{ Params: { routeCode: string; country: string }; Body: { correctedTollEur?: number } }>(
+    '/api/routes/:routeCode/tolls/:country/verify',
+    {
+      schema: {
+        params: TOLL_PARAMS_SCHEMA,
+        body: {
+          type: 'object',
+          properties: { correctedTollEur: { type: 'number', minimum: 0 } },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const code = request.params.routeCode.trim().toUpperCase()
+      const route = await routeRepo.findByCode(code)
+      if (!route) {
+        return reply.status(404).send({ error: { code: 'ROUTE_NOT_FOUND', message: 'Route not in database.' } })
+      }
+      try {
+        await routeRepo.verifyToll(route.id, request.params.country.toUpperCase(), ACTOR, request.body.correctedTollEur)
+      } catch {
+        return reply
+          .status(404)
+          .send({ error: { code: 'TOLL_NOT_FOUND', message: 'No toll value to verify for this country.' } })
+      }
+      return reply.send({ route: await routeRepo.findByCode(code) })
+    },
+  )
+
+  // Finance-editable config (PRD §5.3). month_days is fixed at 30 — not editable.
+  app.put<{
+    Body: {
+      fuelPriceEurPerLitre: number
+      fuelConsumptionLPer100Km: number
+      driverDayRateEur: number
+      monthlyOverheadEur: number
+    }
+  }>(
+    '/api/config',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            fuelPriceEurPerLitre: { type: 'number', exclusiveMinimum: 0 },
+            fuelConsumptionLPer100Km: { type: 'number', exclusiveMinimum: 0 },
+            driverDayRateEur: { type: 'number', minimum: 0 },
+            monthlyOverheadEur: { type: 'number', minimum: 0 },
+          },
+          required: ['fuelPriceEurPerLitre', 'fuelConsumptionLPer100Km', 'driverDayRateEur', 'monthlyOverheadEur'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      await configRepo.setMany({
+        fuel_price: String(request.body.fuelPriceEurPerLitre),
+        consumption: String(request.body.fuelConsumptionLPer100Km),
+        driver_day_rate: String(request.body.driverDayRateEur),
+        monthly_overhead: String(request.body.monthlyOverheadEur),
+      })
+      return reply.send({ config: await configRepo.getCalculatorConfig() })
+    },
+  )
+
+  // Fleet variants CRUD (PRD §2.2: a table, not an enum).
+  app.post<{ Body: { name: string; monthlyCostEur: number } }>(
+    '/api/fleet-variants',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', minLength: 1, maxLength: 100 },
+            monthlyCostEur: { type: 'number', minimum: 0 },
+          },
+          required: ['name', 'monthlyCostEur'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      await variantRepo.upsertByName(request.body.name.trim(), request.body.monthlyCostEur, true)
+      return reply.status(201).send({ variants: await variantRepo.listAll() })
+    },
+  )
+
+  app.patch<{ Params: { id: string }; Body: { monthlyCostEur?: number; active?: boolean } }>(
+    '/api/fleet-variants/:id',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          properties: { id: { type: 'string', pattern: '^\\d+$' } },
+          required: ['id'],
+        },
+        body: {
+          type: 'object',
+          properties: {
+            monthlyCostEur: { type: 'number', minimum: 0 },
+            active: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const updated = await variantRepo.updateById(Number(request.params.id), request.body)
+      if (!updated) {
+        return reply.status(404).send({ error: { code: 'VARIANT_NOT_FOUND', message: 'Fleet variant not found.' } })
+      }
+      return reply.send({ variants: await variantRepo.listAll() })
+    },
+  )
+
+  // Calculation history with server-built frozen snapshots (PRD §5.2, §5.3).
+  app.post<{
+    Body: {
+      routeCode: string
+      days: number
+      drivers: DriverCount
+      fleetVariantId: number
+      ferriesEur: number
+      tunnelsEur: number
+      revenueEur?: number
+    }
+  }>(
+    '/api/calculations',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            routeCode: { type: 'string', minLength: 7, maxLength: 64 },
+            days: { type: 'number', minimum: 0.5 },
+            drivers: { type: 'integer', enum: [1, 2] },
+            fleetVariantId: { type: 'integer', minimum: 1 },
+            ferriesEur: { type: 'number', minimum: 0 },
+            tunnelsEur: { type: 'number', minimum: 0 },
+            revenueEur: { type: 'number', minimum: 0 },
+          },
+          required: ['routeCode', 'days', 'drivers', 'fleetVariantId', 'ferriesEur', 'tunnelsEur'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const calculation = await calculationService.saveCalculation({ ...request.body, createdBy: ACTOR })
+        return await reply.status(201).send({ calculation })
+      } catch (error) {
+        if (error instanceof CalculationSaveError) {
+          const status = error.code === 'INVALID_INPUT' ? 400 : 404
+          return reply.status(status).send({ error: { code: error.code, message: error.message } })
+        }
+        throw error
+      }
+    },
+  )
+
+  app.get<{ Querystring: { route?: string; limit?: string } }>(
+    '/api/calculations',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            route: { type: 'string', minLength: 7, maxLength: 64 },
+            limit: { type: 'string', pattern: '^\\d+$' },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const calculations = await calculationRepo.listHistory({
+        ...(request.query.route !== undefined ? { routeCode: request.query.route.trim().toUpperCase() } : {}),
+        limit: request.query.limit !== undefined ? Math.min(Number(request.query.limit), 500) : 100,
+      })
+      return reply.send({ calculations })
+    },
+  )
 
   app.get<{ Params: { routeCode: string } }>(
     '/api/routes/:routeCode',

@@ -91,6 +91,25 @@ export class CalculationRepository {
     return rows.map(toSaved)
   }
 
+  /** History view (PRD §5.3): newest first, optionally filtered by route code. */
+  async listHistory(filter: { routeCode?: string; limit?: number } = {}): Promise<
+    Array<SavedCalculation & { routeCode: string }>
+  > {
+    let query = this.db
+      .selectFrom('calculations')
+      .innerJoin('routes', 'routes.id', 'calculations.route_id')
+      .selectAll('calculations')
+      .select('routes.route_code')
+      .orderBy('calculations.created_at', 'desc')
+      .orderBy('calculations.id', 'desc')
+      .limit(filter.limit ?? 100)
+    if (filter.routeCode !== undefined) {
+      query = query.where('routes.route_code', '=', filter.routeCode)
+    }
+    const rows = await query.execute()
+    return rows.map(row => ({ ...toSaved(row), routeCode: row.route_code }))
+  }
+
   async listByRoute(routeId: number): Promise<SavedCalculation[]> {
     const rows = await this.db
       .selectFrom('calculations')
