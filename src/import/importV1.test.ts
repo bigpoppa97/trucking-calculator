@@ -144,6 +144,21 @@ describe('importV1 end-to-end (in-memory database)', () => {
   })
 })
 
+describe('importAirports — real v1 dataset', () => {
+  it('imports all 113 airports from the v1 export (Latitude/Longitude headers)', async () => {
+    const airportsCsv = readFileSync(join(import.meta.dirname, '../../data/v1/airports.csv'), 'utf-8')
+    const db = createTestDatabase()
+    try {
+      await migrateToLatest(db)
+      const report = await importAirports(db, airportsCsv)
+      expect(report.warnings).toEqual([])
+      expect(report.imported).toBe(113)
+    } finally {
+      await db.destroy()
+    }
+  })
+})
+
 describe('importAirports (skeleton — dataset file pending)', () => {
   it('imports a valid airport CSV and skips malformed rows with warnings', async () => {
     const db = createTestDatabase()

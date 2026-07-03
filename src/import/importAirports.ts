@@ -8,9 +8,8 @@ import { AirportRepository, type Airport } from '../repositories/airportReposito
  * Import for the ~113-airport dataset from v1 (PRD §3.1, §6; originally
  * derived from OurAirports public domain data).
  *
- * Expected CSV header (case-insensitive): iata,name,city,country,lat,lon
- * The v1 export file has not been provided yet — this importer is ready to
- * run as soon as it is: `npm run import:airports -- path/to/airports.csv`.
+ * Expected CSV header (case-insensitive): iata,name,city,country,lat,lon —
+ * `latitude`/`longitude` are accepted as aliases (the v1 export uses them).
  */
 
 export interface ImportAirportsReport {
@@ -19,8 +18,13 @@ export interface ImportAirportsReport {
 }
 
 export async function importAirports(db: Kysely<DB>, csvContent: string): Promise<ImportAirportsReport> {
+  const HEADER_ALIASES: Record<string, string> = { latitude: 'lat', longitude: 'lon' }
   const records = parse(csvContent, {
-    columns: header => (header as string[]).map(h => h.trim().toLowerCase()),
+    columns: header =>
+      (header as string[]).map(h => {
+        const key = h.trim().toLowerCase()
+        return HEADER_ALIASES[key] ?? key
+      }),
     skip_empty_lines: true,
     trim: true,
     bom: true,

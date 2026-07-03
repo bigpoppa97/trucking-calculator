@@ -1,0 +1,114 @@
+IATA,Name,City,Country,Latitude,Longitude
+AMS,Amsterdam Schiphol,Amsterdam,NL,52.3086,4.7639
+ARN,Stockholm Arlanda,Stockholm,SE,59.6519,17.9186
+ATH,Athens Eleftherios Venizelos,Athens,GR,37.9364,23.9445
+BCN,Barcelona El Prat,Barcelona,ES,41.2971,2.0785
+BEG,Belgrade Nikola Tesla,Belgrade,RS,44.8184,20.3091
+BER,Berlin Brandenburg,Berlin,DE,52.3667,13.5033
+BGO,Bergen Flesland,Bergen,NO,60.2934,5.2181
+BGY,Milan Bergamo,Bergamo,IT,45.6740,9.7040
+BHX,Birmingham,Birmingham,GB,52.4539,-1.7480
+BIO,Bilbao,Bilbao,ES,43.3011,-2.9106
+BLQ,Bologna Guglielmo Marconi,Bologna,IT,44.5354,11.2887
+BOD,Bordeaux Merignac,Bordeaux,FR,44.8283,-0.7156
+BRQ,Brno Turany,Brno,CZ,49.1513,16.6944
+BRU,Brussels,Brussels,BE,50.9014,4.4844
+BSL,Basel Mulhouse Freiburg,Basel,CH,47.5896,7.5299
+BTS,Bratislava Milan Rastislav Stefanik,Bratislava,SK,48.1702,17.2127
+BUD,Budapest Ferenc Liszt,Budapest,HU,47.4298,19.2611
+BZG,Bydgoszcz Ignacy Jan Paderewski,Bydgoszcz,PL,53.0968,17.9777
+CDG,Paris Charles de Gaulle,Paris,FR,49.0097,2.5479
+CGN,Cologne Bonn,Cologne,DE,50.8658,7.1427
+CLJ,Cluj-Napoca International,Cluj-Napoca,RO,46.7852,23.6862
+CPH,Copenhagen Kastrup,Copenhagen,DK,55.6180,12.6561
+CRL,Brussels South Charleroi,Charleroi,BE,50.4592,4.4528
+CTA,Catania Fontanarossa,Catania,IT,37.4668,15.0664
+DBV,Dubrovnik,Dubrovnik,HR,42.5614,18.2682
+DRS,Dresden,Dresden,DE,51.1328,13.7672
+DUB,Dublin,Dublin,IE,53.4213,-6.2701
+DUS,Dusseldorf,Dusseldorf,DE,51.2895,6.7668
+EDI,Edinburgh,Edinburgh,GB,55.9500,-3.3725
+EIN,Eindhoven,Eindhoven,NL,51.4501,5.3742
+FCO,Rome Fiumicino,Rome,IT,41.7999,12.2462
+FMO,Munster Osnabruck,Munster,DE,52.1346,7.6848
+FRA,Frankfurt am Main,Frankfurt,DE,50.0333,8.5706
+GDN,Gdansk Lech Walesa,Gdansk,PL,54.3776,18.4662
+GOT,Gothenburg Landvetter,Gothenburg,SE,57.6628,12.2798
+GRZ,Graz,Graz,AT,46.9911,15.4396
+GVA,Geneva,Geneva,CH,46.2380,6.1089
+HAJ,Hannover,Hannover,DE,52.4611,9.6851
+HAM,Hamburg,Hamburg,DE,53.6304,9.9882
+HEL,Helsinki Vantaa,Helsinki,FI,60.3172,24.9633
+HHN,Frankfurt Hahn,Hahn,DE,49.9487,7.2639
+IEV,Kyiv Zhuliany (Sikorsky),Kyiv,UA,50.4012,30.4497
+INN,Innsbruck,Innsbruck,AT,47.2602,11.3440
+KBP,Kyiv Boryspil,Kyiv,UA,50.3450,30.8947
+KLV,Karlovy Vary,Karlovy Vary,CZ,50.2030,12.9150
+KRK,Krakow John Paul II,Krakow,PL,50.0778,19.7848
+KSC,Kosice,Kosice,SK,48.6631,21.2411
+KTW,Katowice,Katowice,PL,50.4743,19.0800
+KUN,Kaunas,Kaunas,LT,54.9639,24.0848
+LCJ,Lodz Wladyslaw Reymont,Lodz,PL,51.7219,19.3981
+LEJ,Leipzig Halle,Leipzig,DE,51.4239,12.2163
+LGG,Liege,Liege,BE,50.6374,5.4432
+LGW,London Gatwick,London,GB,51.1481,-0.1903
+LHR,London Heathrow,London,GB,51.4775,-0.4614
+LIL,Lille Lesquin,Lille,FR,50.5614,3.0894
+LIN,Milan Linate,Milan,IT,45.4454,9.2763
+LIS,Lisbon Humberto Delgado,Lisbon,PT,38.7813,-9.1359
+LJU,Ljubljana Joze Pucnik,Ljubljana,SI,46.2237,14.4576
+LNZ,Linz Blue Danube,Linz,AT,48.2332,14.1875
+LUZ,Lublin,Lublin,PL,51.2403,22.7136
+LWO,Lviv Danylo Halytskyi,Lviv,UA,49.8125,23.9561
+LYS,Lyon Saint-Exupery,Lyon,FR,45.7256,5.0811
+MAD,Madrid Barajas,Madrid,ES,40.4936,-3.5668
+MAN,Manchester,Manchester,GB,53.3537,-2.2750
+MMX,Malmo,Malmo,SE,55.5363,13.3762
+MRS,Marseille Provence,Marseille,FR,43.4393,5.2214
+MUC,Munich,Munich,DE,48.3538,11.7861
+MXP,Milan Malpensa,Milan,IT,45.6306,8.7281
+NAP,Naples,Naples,IT,40.8860,14.2908
+NCE,Nice Cote d'Azur,Nice,FR,43.6584,7.2159
+NTE,Nantes Atlantique,Nantes,FR,47.1532,-1.6107
+NUE,Nuremberg,Nuremberg,DE,49.4987,11.0669
+OPO,Porto,Porto,PT,41.2481,-8.6814
+OSL,Oslo Gardermoen,Oslo,NO,60.1939,11.1004
+OSR,Ostrava Leos Janacek,Ostrava,CZ,49.6963,18.1111
+OTP,Bucharest Henri Coanda,Bucharest,RO,44.5722,26.1022
+OUL,Oulu,Oulu,FI,64.9301,25.3546
+PAD,Paderborn Lippstadt,Paderborn,DE,51.6143,8.6162
+PLQ,Palanga,Palanga,LT,55.9733,21.0939
+PMI,Palma de Mallorca,Palma,ES,39.5517,2.7388
+PMO,Palermo Falcone-Borsellino,Palermo,IT,38.1796,13.0910
+POZ,Poznan Lawica,Poznan,PL,52.4210,16.8263
+PRG,Prague Vaclav Havel,Prague,CZ,50.1008,14.2600
+RIX,Riga,Riga,LV,56.9236,23.9711
+RTM,Rotterdam The Hague,Rotterdam,NL,51.9569,4.4372
+RZE,Rzeszow Jasionka,Rzeszow,PL,50.1100,22.0189
+SBZ,Sibiu,Sibiu,RO,45.7856,24.0912
+SKG,Thessaloniki Macedonia,Thessaloniki,GR,40.5197,22.9709
+SOF,Sofia,Sofia,BG,42.6967,23.4114
+SPU,Split,Split,HR,43.5389,16.2980
+STN,London Stansted,London,GB,51.8850,0.2350
+STR,Stuttgart,Stuttgart,DE,48.6899,9.2221
+SXB,Strasbourg,Strasbourg,FR,48.5383,7.6283
+SZG,Salzburg,Salzburg,AT,47.7933,13.0043
+SZZ,Szczecin Goleniow,Szczecin,PL,53.5847,14.9022
+TAT,Poprad Tatry,Poprad,SK,49.0736,20.2411
+TAY,Tartu,Tartu,EE,58.3075,26.6904
+TKU,Turku,Turku,FI,60.5141,22.2628
+TLL,Tallinn Lennart Meri,Tallinn,EE,59.4133,24.8328
+TLS,Toulouse Blagnac,Toulouse,FR,43.6293,1.3638
+TMP,Tampere Pirkkala,Tampere,FI,61.4141,23.6044
+TRN,Turin,Turin,IT,45.2009,7.6496
+TSR,Timisoara Traian Vuia,Timisoara,RO,45.8099,21.3379
+VAR,Varna,Varna,BG,43.2321,27.8251
+VCE,Venice Marco Polo,Venice,IT,45.5053,12.3519
+VIE,Vienna,Vienna,AT,48.1103,16.5697
+VLC,Valencia,Valencia,ES,39.4893,-0.4816
+VNO,Vilnius,Vilnius,LT,54.6341,25.2858
+WAW,Warsaw Chopin,Warsaw,PL,52.1657,20.9671
+WMI,Warsaw Modlin,Warsaw,PL,52.4511,20.6518
+WRO,Wroclaw,Wroclaw,PL,51.1027,16.8858
+ZAG,Zagreb,Zagreb,HR,45.7429,16.0688
+ZRH,Zurich,Zurich,CH,47.4647,8.5492
