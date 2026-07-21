@@ -12,6 +12,7 @@ import type { AirportDto, FleetVariantDto } from '../lib/types.js'
 import { NumberField } from '../components/NumberField.js'
 import { CostBreakdownPanel } from '../components/CostBreakdownPanel.js'
 import { RoutePanel, type RouteState } from '../components/RoutePanel.js'
+import { RoutePreview } from '../components/RoutePreview/RoutePreview.js'
 
 /**
  * Calculator screen (PRD §5.3), mirroring the validated sheet layout:
@@ -151,6 +152,27 @@ export function CalculatorPage() {
     return null
   }, [routeState])
 
+  // Map + per-country breakdown data (sprint: route preview). Same atomic
+  // routeState source as the calculation — no stale shapes possible.
+  const previewData = useMemo(() => {
+    if (routeData === null) return null
+    if (routeState.kind === 'found') {
+      return {
+        stops: routeState.route.stops,
+        sections: routeState.route.polylineSections,
+        countryKm: routeState.route.countryKm,
+      }
+    }
+    if (routeState.kind === 'fetched') {
+      return {
+        stops: routeState.fetched.stops,
+        sections: routeState.fetched.sections,
+        countryKm: routeState.fetched.countryKm,
+      }
+    }
+    return null
+  }, [routeState, routeData])
+
   const calc = useMemo((): {
     breakdown: CostBreakdown | null
     errors: Record<string, string>
@@ -254,7 +276,8 @@ export function CalculatorPage() {
   }
 
   return (
-    <div className="mx-auto grid max-w-5xl gap-4 p-4 md:grid-cols-2">
+    <div className="mx-auto max-w-5xl space-y-4 p-4">
+    <div className="grid gap-4 md:grid-cols-2">
       <div className="space-y-4">
         <RoutePanel
           routeState={routeState}
@@ -369,6 +392,17 @@ export function CalculatorPage() {
           </section>
         )}
       </div>
+    </div>
+
+    {previewData !== null && routeData !== null && (
+      <RoutePreview
+        stops={previewData.stops}
+        airports={staticData.airports}
+        sections={previewData.sections}
+        countryKm={previewData.countryKm}
+        tolls={routeData.tolls}
+      />
+    )}
     </div>
   )
 }

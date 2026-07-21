@@ -5,6 +5,17 @@ import type { CalculatorConfig } from '@domain'
 import type { FetchedRouteDto, RouteDetailsDto } from '../lib/types.js'
 import { CalculatorPage } from './CalculatorPage.js'
 
+// Leaflet needs a real layout engine — stub react-leaflet out; the map's own
+// behavior is covered by RoutePreview.test.tsx.
+vi.mock('react-leaflet', () => ({
+  MapContainer: ({ children }: { children?: React.ReactNode }) => <div data-testid="map-container">{children}</div>,
+  TileLayer: () => null,
+  Polyline: () => null,
+  CircleMarker: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  Tooltip: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
+  useMap: () => ({ fitBounds: () => {} }),
+}))
+
 vi.mock('../lib/api.js', async importOriginal => {
   const original = await importOriginal<typeof import('../lib/api.js')>()
   return {
@@ -52,6 +63,7 @@ const WAW_PRG: RouteDetailsDto = {
     { country: 'CZ', tollEur: 35, status: 'verified', fetchedAt: null, verifiedBy: 'v1-import', verifiedAt: '2026-01-01' },
   ],
   tollsPendingCountries: [],
+  polylineSections: null,
 }
 
 const FETCHED_WAW_OSL: FetchedRouteDto = {
@@ -60,6 +72,7 @@ const FETCHED_WAW_OSL: FetchedRouteDto = {
   totalKm: 1250,
   countryKm: { PL: 300, DE: 700, DK: 150, SE: 50, NO: 50 },
   tollEstimates: { PL: 45.5, DE: 190.25 },
+  sections: [],
   vehicleProfile: { axleCount: 5, grossWeightKg: 40000, emissionType: 'euro6' },
   fetchedAt: '2026-07-02T12:00:00.000Z',
   warnings: [],
