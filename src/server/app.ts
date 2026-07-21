@@ -1,11 +1,14 @@
-import Fastify, { type FastifyError, type FastifyInstance } from 'fastify'
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest } from 'fastify'
+import fastifyCookie from '@fastify/cookie'
 import type { Kysely } from 'kysely'
 import type { DB } from '../db/schema.js'
+import { buildAuthDeps, registerAuthHook, registerAuthRoutes, requireRole } from './auth.js'
 import { AirportRepository } from '../repositories/airportRepository.js'
 import { ConfigRepository } from '../repositories/configRepository.js'
 import { FleetVariantRepository } from '../repositories/fleetVariantRepository.js'
 import { CalculationRepository } from '../repositories/calculationRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
+import { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
 import { RouteFetchError, type FetchedRoute, type RouteFetchService } from '../here/routeFetchService.js'
 import { CalculationSaveError, CalculationService } from './calculationService.js'
 import type { DriverCount } from '../domain/index.js'
@@ -56,6 +59,29 @@ const SAVE_BODY_SCHEMA = {
     totalKm: { type: 'number', exclusiveMinimum: 0 },
     countryKm: { type: 'object', additionalProperties: { type: 'number', minimum: 0 } },
     tollEstimates: { type: 'object', additionalProperties: { type: 'number', minimum: 0 } },
+    sections: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          polyline: { type: 'string', minLength: 1 },
+          spans: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                offset: { type: 'integer', minimum: 0 },
+                country: { type: 'string', minLength: 2, maxLength: 3 },
+              },
+              required: ['offset', 'country'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['polyline', 'spans'],
+        additionalProperties: false,
+      },
+    },
     vehicleProfile: {
       type: 'object',
       properties: {
@@ -85,9 +111,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     config: configRepo,
     calculations: calculationRepo,
   })
-  // Placeholder identity until auth lands (kickoff stack mentions roles, but
-  // no phase covers auth yet) — recorded in every audit field.
-  const ACTOR = 'portal-user'
+  const authDeps = buildAuthDeps(deps.db)
+  app.register(fastifyCookie)
+  registerAuthHook(app, authDeps)
+  registerAuthRoutes(app, authDeps)
+
+  // The authenticated user's email — written into every audit field. The
+  // auth hook guarantees request.user is set on all non-public routes.
+  const actor = (request: FastifyRequest): string => request.user?.email ?? 'unknown'
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     // Validation errors carry safe, schema-derived messages.
@@ -145,16 +176,18 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       }
       await routeRepo.overrideKm(code, request.body.totalKm, request.body.countryKm, {
         ...(request.body.note !== undefined ? { note: request.body.note } : {}),
-        updatedBy: ACTOR,
+        updatedBy: actor(request),
       })
       return reply.send({ route: await routeRepo.findByCode(code) })
     },
   )
 
-  // Fill in a pending toll manually — human value, stored as verified.
+  // Fill in a pending toll manually — human value, stored as verified, so
+  // like estimate→verified promotion this is finance/admin work (PRD §4.3).
   app.put<{ Params: { routeCode: string; country: string }; Body: { tollEur: number } }>(
     '/api/routes/:routeCode/tolls/:country',
     {
+      preHandler: requireRole('finance', 'admin'),
       schema: {
         params: TOLL_PARAMS_SCHEMA,
         body: {
@@ -171,7 +204,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       if (!route) {
         return reply.status(404).send({ error: { code: 'ROUTE_NOT_FOUND', message: 'Route not in database.' } })
       }
-      await routeRepo.setManualToll(route.id, request.params.country.toUpperCase(), request.body.tollEur, ACTOR)
+      await routeRepo.setManualToll(route.id, request.params.country.toUpperCase(), request.body.tollEur, actor(request))
       return reply.send({ route: await routeRepo.findByCode(code) })
     },
   )
@@ -180,6 +213,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.post<{ Params: { routeCode: string; country: string }; Body: { correctedTollEur?: number } }>(
     '/api/routes/:routeCode/tolls/:country/verify',
     {
+      preHandler: requireRole('finance', 'admin'),
       schema: {
         params: TOLL_PARAMS_SCHEMA,
         body: {
@@ -196,7 +230,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         return reply.status(404).send({ error: { code: 'ROUTE_NOT_FOUND', message: 'Route not in database.' } })
       }
       try {
-        await routeRepo.verifyToll(route.id, request.params.country.toUpperCase(), ACTOR, request.body.correctedTollEur)
+        await routeRepo.verifyToll(route.id, request.params.country.toUpperCase(), actor(request), request.body.correctedTollEur)
       } catch {
         return reply
           .status(404)
@@ -217,6 +251,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   }>(
     '/api/config',
     {
+      preHandler: requireRole('finance', 'admin'),
       schema: {
         body: {
           type: 'object',
@@ -242,10 +277,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     },
   )
 
-  // Fleet variants CRUD (PRD §2.2: a table, not an enum).
+  // Fleet variants CRUD (PRD §2.2: a table, not an enum) — config screen, so
+  // finance/admin only.
   app.post<{ Body: { name: string; monthlyCostEur: number } }>(
     '/api/fleet-variants',
     {
+      preHandler: requireRole('finance', 'admin'),
       schema: {
         body: {
           type: 'object',
@@ -267,6 +304,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.patch<{ Params: { id: string }; Body: { monthlyCostEur?: number; active?: boolean } }>(
     '/api/fleet-variants/:id',
     {
+      preHandler: requireRole('finance', 'admin'),
       schema: {
         params: {
           type: 'object',
@@ -289,6 +327,59 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         return reply.status(404).send({ error: { code: 'VARIANT_NOT_FOUND', message: 'Fleet variant not found.' } })
       }
       return reply.send({ variants: await variantRepo.listAll() })
+    },
+  )
+
+  // Toll-system correction rules (config screen): fix HERE fares returned at
+  // the wrong tariff. Finance/admin only, like the rest of the config.
+  const tollRuleRepo = new TollSystemRuleRepository(deps.db)
+
+  app.get('/api/toll-rules', async (_request, reply) => {
+    return reply.send({ rules: await tollRuleRepo.listAll() })
+  })
+
+  app.put<{ Body: { tollSystem: string; ruleType: 'replace_per_gate' | 'scale'; value: number; note?: string } }>(
+    '/api/toll-rules',
+    {
+      preHandler: requireRole('finance', 'admin'),
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            tollSystem: { type: 'string', minLength: 1, maxLength: 200 },
+            ruleType: { type: 'string', enum: ['replace_per_gate', 'scale'] },
+            value: { type: 'number', exclusiveMinimum: 0 },
+            note: { type: 'string', maxLength: 500 },
+          },
+          required: ['tollSystem', 'ruleType', 'value'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const rule = await tollRuleRepo.upsertBySystem(request.body, actor(request))
+      return reply.send({ rule, rules: await tollRuleRepo.listAll() })
+    },
+  )
+
+  app.delete<{ Params: { id: string } }>(
+    '/api/toll-rules/:id',
+    {
+      preHandler: requireRole('finance', 'admin'),
+      schema: {
+        params: {
+          type: 'object',
+          properties: { id: { type: 'string', pattern: '^\\d+$' } },
+          required: ['id'],
+        },
+      },
+    },
+    async (request, reply) => {
+      const deleted = await tollRuleRepo.deleteById(Number(request.params.id))
+      if (!deleted) {
+        return reply.status(404).send({ error: { code: 'RULE_NOT_FOUND', message: 'Toll rule not found.' } })
+      }
+      return reply.send({ rules: await tollRuleRepo.listAll() })
     },
   )
 
@@ -325,7 +416,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     },
     async (request, reply) => {
       try {
-        const calculation = await calculationService.saveCalculation({ ...request.body, createdBy: ACTOR })
+        const calculation = await calculationService.saveCalculation({ ...request.body, createdBy: actor(request) })
         return await reply.status(201).send({ calculation })
       } catch (error) {
         if (error instanceof CalculationSaveError) {
@@ -393,7 +484,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     { schema: { body: SAVE_BODY_SCHEMA } },
     async (request, reply) => {
       try {
-        const saved = await deps.fetchService.saveFetchedRoute(request.body, 'portal-user')
+        const saved = await deps.fetchService.saveFetchedRoute(request.body, actor(request))
         return await reply.status(201).send({ route: saved })
       } catch (error) {
         return sendRouteFetchError(reply, error)

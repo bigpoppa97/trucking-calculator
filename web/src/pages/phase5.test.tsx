@@ -1,10 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { CalculationDto, RouteDetailsDto, RouteSummaryDto } from '../lib/types.js'
+import type { CalculationDto, RouteDetailsDto, RouteSummaryDto, UserDto } from '../lib/types.js'
+import { AuthContext } from '../lib/auth.js'
 import { RouteDbPage } from './RouteDbPage.js'
 import { ConfigPage } from './ConfigPage.js'
 import { HistoryPage } from './HistoryPage.js'
+
+const FINANCE_USER: UserDto = {
+  id: 1,
+  email: 'kasia@firma.pl',
+  displayName: 'Kasia',
+  role: 'finance',
+  active: true,
+  createdAt: '2026-07-01',
+}
+
+const asFinance = (node: React.ReactNode) => (
+  <AuthContext.Provider value={{ user: FINANCE_USER, login: async () => {}, logout: async () => {} }}>
+    {node}
+  </AuthContext.Provider>
+)
 
 vi.mock('../lib/api.js', async importOriginal => {
   const original = await importOriginal<typeof import('../lib/api.js')>()
@@ -24,6 +40,9 @@ vi.mock('../lib/api.js', async importOriginal => {
       updateConfig: vi.fn(),
       createVariant: vi.fn(),
       patchVariant: vi.fn(),
+      listTollRules: vi.fn(),
+      upsertTollRule: vi.fn(),
+      deleteTollRule: vi.fn(),
       saveCalculation: vi.fn(),
       listCalculations: vi.fn(),
     },
@@ -53,6 +72,7 @@ const WAW_OSL: RouteDetailsDto = {
     { country: 'DE', tollEur: 190.25, status: 'verified', fetchedAt: null, verifiedBy: 'finance', verifiedAt: '2026-07-02' },
   ],
   tollsPendingCountries: ['DK'],
+  polylineSections: null,
 }
 
 beforeEach(() => {
@@ -63,7 +83,7 @@ describe('RouteDbPage (PRD §5.3)', () => {
   it('lists routes and the pending filter hides fully verified ones', async () => {
     mocked.listRoutes.mockResolvedValue(SUMMARIES)
     const user = userEvent.setup()
-    render(<RouteDbPage />)
+    render(asFinance(<RouteDbPage />))
 
     expect(await screen.findByText('WAW-PRG')).toBeInTheDocument()
     expect(screen.getByText('WAW-OSL')).toBeInTheDocument()
@@ -79,12 +99,12 @@ describe('RouteDbPage (PRD §5.3)', () => {
     const verified: RouteDetailsDto = {
       ...WAW_OSL,
       tolls: WAW_OSL.tolls.map(t =>
-        t.country === 'PL' ? { ...t, tollEur: 48, status: 'verified' as const, verifiedBy: 'portal-user' } : t,
+        t.country === 'PL' ? { ...t, tollEur: 48, status: 'verified' as const, verifiedBy: 'kasia@firma.pl' } : t,
       ),
     }
     mocked.verifyToll.mockResolvedValue(verified)
     const user = userEvent.setup()
-    render(<RouteDbPage />)
+    render(asFinance(<RouteDbPage />))
 
     await user.click(await screen.findByText('WAW-OSL'))
     const detail = await screen.findByRole('region', { name: 'Szczegóły trasy WAW-OSL' })
@@ -96,7 +116,7 @@ describe('RouteDbPage (PRD §5.3)', () => {
     await user.click(within(detail).getByRole('button', { name: 'Zweryfikuj' }))
 
     await waitFor(() => expect(mocked.verifyToll).toHaveBeenCalledWith('WAW-OSL', 'PL', 48))
-    expect(await within(detail).findByText(/zweryfikowana · portal-user/)).toBeInTheDocument()
+    expect(await within(detail).findByText(/zweryfikowana · kasia@firma\.pl/)).toBeInTheDocument()
   })
 
   it('fills a pending toll via setToll (manual entry → verified)', async () => {
@@ -104,7 +124,7 @@ describe('RouteDbPage (PRD §5.3)', () => {
     mocked.getRoute.mockResolvedValue(WAW_OSL)
     mocked.setToll.mockResolvedValue(WAW_OSL)
     const user = userEvent.setup()
-    render(<RouteDbPage />)
+    render(asFinance(<RouteDbPage />))
 
     await user.click(await screen.findByText('WAW-OSL'))
     const detail = await screen.findByRole('region', { name: 'Szczegóły trasy WAW-OSL' })
@@ -119,7 +139,7 @@ describe('RouteDbPage (PRD §5.3)', () => {
     mocked.getRoute.mockResolvedValue(WAW_OSL)
     mocked.overrideKm.mockResolvedValue({ ...WAW_OSL, totalKm: 1240, kmSource: 'manual' })
     const user = userEvent.setup()
-    render(<RouteDbPage />)
+    render(asFinance(<RouteDbPage />))
 
     await user.click(await screen.findByText('WAW-OSL'))
     await user.click(await screen.findByRole('button', { name: 'Koryguj km ręcznie' }))
@@ -151,6 +171,17 @@ describe('ConfigPage (finance)', () => {
     })
     mocked.getFleetVariants.mockResolvedValue([
       { id: 1, name: 'standard cooler', monthlyCostEur: 2750, active: true },
+    ])
+    mocked.listTollRules.mockResolvedValue([
+      {
+        id: 1,
+        tollSystem: 'A2 AUTOSTRADA WIELKOPOLSKA',
+        ruleType: 'replace_per_gate',
+        value: 105,
+        note: 'AWSA kat. 4',
+        updatedBy: null,
+        updatedAt: null,
+      },
     ])
   })
 
@@ -194,6 +225,38 @@ describe('ConfigPage (finance)', () => {
     expect(mocked.updateConfig).not.toHaveBeenCalled()
   })
 
+  it('lists toll-system rules and saves a new one', async () => {
+    mocked.upsertTollRule.mockResolvedValue([
+      {
+        id: 1,
+        tollSystem: 'A2 AUTOSTRADA WIELKOPOLSKA',
+        ruleType: 'replace_per_gate',
+        value: 105,
+        note: 'AWSA kat. 4',
+        updatedBy: null,
+        updatedAt: null,
+      },
+      { id: 2, tollSystem: 'A4 STALEXPORT', ruleType: 'replace_per_gate', value: 30, note: null, updatedBy: null, updatedAt: null },
+    ])
+    const user = userEvent.setup()
+    render(<ConfigPage />)
+
+    expect(await screen.findByText('A2 AUTOSTRADA WIELKOPOLSKA')).toBeInTheDocument()
+
+    await user.type(screen.getByLabelText('System poboru (nazwa z HERE)'), 'A4 Stalexport')
+    await user.type(screen.getByLabelText('Wartość'), '30')
+    await user.click(screen.getByRole('button', { name: 'Zapisz regułę' }))
+
+    await waitFor(() =>
+      expect(mocked.upsertTollRule).toHaveBeenCalledWith({
+        tollSystem: 'A4 Stalexport',
+        ruleType: 'replace_per_gate',
+        value: 30,
+      }),
+    )
+    expect(await screen.findByText('A4 STALEXPORT')).toBeInTheDocument()
+  })
+
   it('adds a fleet variant and toggles active state', async () => {
     mocked.createVariant.mockResolvedValue([
       { id: 1, name: 'standard cooler', monthlyCostEur: 2750, active: true },
@@ -226,7 +289,7 @@ describe('HistoryPage (frozen snapshots)', () => {
     ferriesEur: 0,
     tunnelsEur: 0,
     revenueEur: 900,
-    createdBy: 'portal-user',
+    createdBy: 'anna@firma.pl',
     createdAt: '2026-07-02 12:00:00',
     snapshot: {
       input: {

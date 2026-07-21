@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { parseDecimalInput } from '@domain'
 import { api, ApiError } from '../lib/api.js'
-import type { FleetVariantDto } from '../lib/types.js'
+import type { FleetVariantDto, TollRuleType, TollSystemRuleDto } from '../lib/types.js'
 import { NumberField } from '../components/NumberField.js'
 import { formatEur } from '../lib/format.js'
 
@@ -21,13 +21,14 @@ interface ConfigForm {
 export function ConfigPage() {
   const [form, setForm] = useState<ConfigForm | null>(null)
   const [variants, setVariants] = useState<FleetVariantDto[]>([])
+  const [tollRules, setTollRules] = useState<TollSystemRuleDto[]>([])
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([api.getConfig(), api.getFleetVariants()])
-      .then(([config, fleetVariants]) => {
+    Promise.all([api.getConfig(), api.getFleetVariants(), api.listTollRules()])
+      .then(([config, fleetVariants, rules]) => {
         if (cancelled) return
         setForm({
           fuelPrice: String(config.fuelPriceEurPerLitre).replace('.', ','),
@@ -36,6 +37,7 @@ export function ConfigPage() {
           overhead: String(config.monthlyOverheadEur).replace('.', ','),
         })
         setVariants(fleetVariants)
+        setTollRules(rules)
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -137,6 +139,8 @@ export function ConfigPage() {
       )}
 
       <VariantsSection variants={variants} onChanged={setVariants} onMessage={setMessage} />
+
+      <TollRulesSection rules={tollRules} onChanged={setTollRules} onMessage={setMessage} />
     </div>
   )
 }
@@ -249,6 +253,175 @@ function VariantsSection({
       <p className="mt-2 text-xs text-slate-500">
         Nazwa istniejącego wariantu aktualizuje jego koszt. Wariantów nie usuwa się — dezaktywuj, aby ukryć w
         kalkulatorze (historia kalkulacji pozostaje nienaruszona).
+      </p>
+    </section>
+  )
+}
+
+const RULE_TYPE_LABELS: Record<TollRuleType, string> = {
+  replace_per_gate: 'cena za bramkę (waluta oryginalna)',
+  scale: 'mnożnik',
+}
+
+function TollRulesSection({
+  rules,
+  onChanged,
+  onMessage,
+}: {
+  rules: TollSystemRuleDto[]
+  onChanged: (rules: TollSystemRuleDto[]) => void
+  onMessage: (message: { kind: 'ok' | 'error'; text: string }) => void
+}) {
+  const [system, setSystem] = useState('')
+  const [ruleType, setRuleType] = useState<TollRuleType>('replace_per_gate')
+  const [value, setValue] = useState('')
+  const [note, setNote] = useState('')
+
+  const addRule = async () => {
+    const parsed = parseDecimalInput(value)
+    if (system.trim() === '' || parsed === null || parsed <= 0) {
+      onMessage({ kind: 'error', text: 'Podaj nazwę systemu poboru opłat i dodatnią wartość reguły.' })
+      return
+    }
+    try {
+      onChanged(
+        await api.upsertTollRule({
+          tollSystem: system.trim(),
+          ruleType,
+          value: parsed,
+          ...(note.trim() !== '' ? { note: note.trim() } : {}),
+        }),
+      )
+      setSystem('')
+      setValue('')
+      setNote('')
+      onMessage({ kind: 'ok', text: 'Reguła zapisana. Zostanie zastosowana przy kolejnych pobraniach z HERE.' })
+    } catch (error) {
+      onMessage({ kind: 'error', text: error instanceof ApiError ? error.message : 'Nie udało się zapisać reguły.' })
+    }
+  }
+
+  const removeRule = async (rule: TollSystemRuleDto) => {
+    try {
+      onChanged(await api.deleteTollRule(rule.id))
+      onMessage({ kind: 'ok', text: `Reguła dla '${rule.tollSystem}' usunięta.` })
+    } catch (error) {
+      onMessage({ kind: 'error', text: error instanceof ApiError ? error.message : 'Nie udało się usunąć reguły.' })
+    }
+  }
+
+  return (
+    <section aria-label="Korekty systemów poboru opłat" className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <h2 className="mb-1 text-base font-semibold text-slate-800">Korekty systemów poboru opłat</h2>
+      <p className="mb-3 text-xs text-slate-500">
+        HERE potrafi zwrócić stawkę dla złej kategorii pojazdu (np. prywatna A2 liczona jak pojazd ponadnormatywny).
+        Reguła koryguje szacunek przy pobraniu trasy — wartość nadal pozostaje szacunkiem do weryfikacji.
+      </p>
+
+      {rules.length === 0 ? (
+        <p className="mb-3 text-sm text-slate-500">Brak reguł.</p>
+      ) : (
+        <table className="mb-3 w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
+              <th className="py-1.5 pr-2 font-medium">System poboru</th>
+              <th className="py-1.5 pr-2 font-medium">Typ reguły</th>
+              <th className="py-1.5 pr-2 font-medium">Wartość</th>
+              <th className="py-1.5 pr-2 font-medium">Notatka</th>
+              <th className="py-1.5 font-medium">Akcja</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rules.map(rule => (
+              <tr key={rule.id} className="border-b border-slate-100">
+                <td className="py-1.5 pr-2 font-medium text-slate-700">{rule.tollSystem}</td>
+                <td className="py-1.5 pr-2 text-xs">{RULE_TYPE_LABELS[rule.ruleType]}</td>
+                <td className="py-1.5 pr-2 tabular-nums">{String(rule.value).replace('.', ',')}</td>
+                <td className="py-1.5 pr-2 text-xs text-slate-500">{rule.note ?? '—'}</td>
+                <td className="py-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void removeRule(rule)}
+                    className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                  >
+                    Usuń
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="rule-system" className="text-xs font-medium text-slate-600">
+            System poboru (nazwa z HERE)
+          </label>
+          <input
+            id="rule-system"
+            type="text"
+            value={system}
+            onChange={e => setSystem(e.target.value)}
+            placeholder="np. A2 AUTOSTRADA WIELKOPOLSKA"
+            className="rounded border border-slate-300 px-2 py-1.5 text-sm"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label htmlFor="rule-type" className="text-xs font-medium text-slate-600">
+            Typ reguły
+          </label>
+          <select
+            id="rule-type"
+            value={ruleType}
+            onChange={e => setRuleType(e.target.value as TollRuleType)}
+            className="rounded border border-slate-300 px-2 py-1.5 text-sm"
+          >
+            {(Object.keys(RULE_TYPE_LABELS) as TollRuleType[]).map(t => (
+              <option key={t} value={t}>
+                {RULE_TYPE_LABELS[t]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label htmlFor="rule-value" className="text-xs font-medium text-slate-600">
+            Wartość
+          </label>
+          <input
+            id="rule-value"
+            type="text"
+            inputMode="decimal"
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            placeholder="np. 105"
+            className="rounded border border-slate-300 px-2 py-1.5 text-sm"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label htmlFor="rule-note" className="text-xs font-medium text-slate-600">
+            Notatka
+          </label>
+          <input
+            id="rule-note"
+            type="text"
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            placeholder="np. AWSA kat. 4, cennik 2026-03"
+            className="rounded border border-slate-300 px-2 py-1.5 text-sm"
+          />
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => void addRule()}
+        className="mt-2 rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-700"
+      >
+        Zapisz regułę
+      </button>
+      <p className="mt-2 text-xs text-slate-500">
+        Nazwa istniejącego systemu nadpisuje jego regułę. Dla typu „cena za bramkę" podaj cenę w walucie oryginalnej
+        opłaty (np. PLN) — przeliczenie na EUR używa kursu z danych HERE.
       </p>
     </section>
   )

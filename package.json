@@ -11,7 +11,8 @@
     "serve": "tsx src/server/index.ts",
     "migrate": "tsx scripts/migrate.ts",
     "import:v1": "tsx scripts/import-v1.ts",
-    "import:airports": "tsx scripts/import-airports.ts"
+    "import:airports": "tsx scripts/import-airports.ts",
+    "create-user": "tsx scripts/create-user.ts"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
@@ -22,9 +23,14 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.2",
     "@here/flexpolyline": "^0.1.0",
     "better-sqlite3": "^12.11.1",
     "fastify": "^5.9.0",
     "kysely": "^0.29.2"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.28.1": true
   }
 }

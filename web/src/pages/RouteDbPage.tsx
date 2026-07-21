@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { parseDecimalInput } from '@domain'
 import { api, ApiError } from '../lib/api.js'
+import { useAuth } from '../lib/auth.js'
 import type { RouteDetailsDto, RouteSummaryDto } from '../lib/types.js'
 import { formatEur, formatKm } from '../lib/format.js'
 
@@ -206,9 +207,14 @@ function TollRow({
   onUpdated: (route: RouteDetailsDto) => Promise<void>
   onError: (message: string) => void
 }) {
+  const { user } = useAuth()
   const toll = route.tolls.find(t => t.country === country)
   const [value, setValue] = useState(toll === undefined ? '' : String(toll.tollEur).replace('.', ','))
   const [busy, setBusy] = useState(false)
+  // Toll values are trust-tier data verified against invoices (PRD §4.3) —
+  // entry and verification are finance/admin actions; the backend enforces
+  // the same rule with a 403.
+  const canEditTolls = user?.role === 'finance' || user?.role === 'admin'
 
   const submit = async () => {
     const parsed = parseDecimalInput(value)
@@ -249,6 +255,8 @@ function TollRow({
       <td className="py-1.5">
         {toll?.status === 'verified' ? (
           <span className="text-xs text-slate-400">—</span>
+        ) : !canEditTolls ? (
+          <span className="text-xs text-slate-400">tylko finanse/administrator</span>
         ) : (
           <span className="flex items-center gap-1">
             <label className="sr-only" htmlFor={`toll-input-${country}`}>

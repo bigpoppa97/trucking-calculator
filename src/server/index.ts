@@ -4,6 +4,7 @@ import { createDatabase, migrateToLatest } from '../db/database.js'
 import { AirportRepository } from '../repositories/airportRepository.js'
 import { ConfigRepository } from '../repositories/configRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
+import { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
 import { HereRoutingClient } from '../here/hereRoutingClient.js'
 import { RouteFetchService } from '../here/routeFetchService.js'
 import { buildApp } from './app.js'
@@ -21,6 +22,7 @@ const fetchService = new RouteFetchService({
   airports: new AirportRepository(db),
   routes: new RouteRepository(db),
   config: new ConfigRepository(db),
+  tollRules: new TollSystemRuleRepository(db),
 })
 
 const app = buildApp({ db, fetchService })

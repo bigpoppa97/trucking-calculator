@@ -12,6 +12,8 @@ import type { ColumnType, Generated, Insertable, Selectable, Updateable } from '
 
 export type KmSource = 'here' | 'manual'
 export type TollStatusDb = 'estimate' | 'verified'
+export type UserRole = 'dispatcher' | 'finance' | 'admin'
+export type TollRuleType = 'replace_per_gate' | 'scale'
 
 export interface AirportsTable {
   iata: string // PK, 3-letter IATA code
@@ -34,6 +36,8 @@ export interface RoutesTable {
   km_note: ColumnType<string | null, string | null | undefined, string | null>
   km_updated_by: ColumnType<string | null, string | null | undefined, string | null>
   km_updated_at: ColumnType<string | null, string | null | undefined, string | null>
+  /** JSON array of {polyline, spans} per HERE section; NULL = no shape stored. */
+  polyline_encoded: ColumnType<string | null, string | null | undefined, string | null>
 }
 
 export interface RouteCountryKmTable {
@@ -79,6 +83,33 @@ export interface CalculationsTable {
   created_at: ColumnType<string, string | undefined, never>
 }
 
+export interface UsersTable {
+  id: Generated<number>
+  email: string // UNIQUE, lowercase
+  display_name: string
+  password_hash: string // scrypt, format: scrypt$N$r$p$saltHex$hashHex
+  role: UserRole
+  active: number // 0/1
+  created_at: ColumnType<string, string | undefined, never>
+}
+
+export interface SessionsTable {
+  token: string // PK, opaque random token
+  user_id: number
+  created_at: string
+  expires_at: string
+}
+
+export interface TollSystemRulesTable {
+  id: Generated<number>
+  toll_system: string // UNIQUE — HERE tollSystem name, matched case-insensitively
+  rule_type: TollRuleType
+  value: number // per-gate price in the fare's original currency, or scale factor
+  note: string | null
+  updated_by: string | null
+  updated_at: string | null
+}
+
 export interface DB {
   airports: AirportsTable
   routes: RoutesTable
@@ -87,6 +118,9 @@ export interface DB {
   fleet_variants: FleetVariantsTable
   config: ConfigTable
   calculations: CalculationsTable
+  users: UsersTable
+  sessions: SessionsTable
+  toll_system_rules: TollSystemRulesTable
 }
 
 export type AirportRow = Selectable<AirportsTable>
@@ -97,3 +131,6 @@ export type RouteCountryTollRow = Selectable<RouteCountryTollTable>
 export type FleetVariantRow = Selectable<FleetVariantsTable>
 export type FleetVariantUpdate = Updateable<FleetVariantsTable>
 export type CalculationRow = Selectable<CalculationsTable>
+export type UserRow = Selectable<UsersTable>
+export type SessionRow = Selectable<SessionsTable>
+export type TollSystemRuleRow = Selectable<TollSystemRulesTable>

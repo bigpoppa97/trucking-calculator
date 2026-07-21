@@ -1,9 +1,10 @@
 import type { AirportRepository } from '../repositories/airportRepository.js'
 import type { ConfigRepository } from '../repositories/configRepository.js'
 import type { RouteDetails, RouteRepository } from '../repositories/routeRepository.js'
+import type { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
 import { ROUTE_CODE_REGEX } from '../repositories/routeRepository.js'
 import type { HereRoutingClient, TollVehicleProfile } from './hereRoutingClient.js'
-import { parseHereRoute } from './routeParser.js'
+import { parseHereRoute, type RoutePolylineSection } from './routeParser.js'
 
 /**
  * Fetch-and-save flow for routes not in the database (PRD §3.2 steps 2–3).
@@ -33,6 +34,8 @@ export interface FetchedRoute {
   countryKm: Record<string, number>
   /** EUR per alpha-2 country, all status 'estimate'. */
   tollEstimates: Record<string, number>
+  /** Route shape per HERE section, for the map preview. */
+  sections: RoutePolylineSection[]
   vehicleProfile: TollVehicleProfile
   fetchedAt: string
   warnings: string[]
@@ -43,6 +46,8 @@ export interface RouteFetchServiceDeps {
   airports: AirportRepository
   routes: RouteRepository
   config: ConfigRepository
+  /** Optional: toll-system correction rules applied at parse time. */
+  tollRules?: Pick<TollSystemRuleRepository, 'listAll'>
   now?: () => string
 }
 
@@ -76,6 +81,7 @@ export class RouteFetchService {
     }
 
     const profile = await this.deps.config.getTollVehicleProfile()
+    const rules = (await this.deps.tollRules?.listAll()) ?? []
 
     let parsed
     try {
@@ -85,7 +91,7 @@ export class RouteFetchService {
         via: places.slice(1, -1),
         profile,
       })
-      parsed = parseHereRoute(response)
+      parsed = parseHereRoute(response, rules)
     } catch {
       // Detail stays server-side; the client gets a graceful, static message.
       throw new RouteFetchError(
@@ -111,6 +117,7 @@ export class RouteFetchService {
       totalKm: parsed.totalKm,
       countryKm: parsed.countryKm,
       tollEstimates,
+      sections: parsed.sections,
       vehicleProfile: profile,
       fetchedAt: (this.deps.now ?? (() => new Date().toISOString()))(),
       warnings,
@@ -135,6 +142,7 @@ export class RouteFetchService {
       kmSource: 'here',
       createdBy: actor,
       countryKm: fetched.countryKm,
+      polylineSections: fetched.sections,
       tolls: Object.entries(fetched.tollEstimates).map(([country, tollEur]) => ({
         country,
         tollEur,

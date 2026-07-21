@@ -7,6 +7,10 @@ import type {
   RouteDetailsDto,
   RouteSummaryDto,
   SaveCalculationInput,
+  TollRuleType,
+  TollSystemRuleDto,
+  UserDto,
+  UserRole,
 } from './types.js'
 
 /**
@@ -25,7 +29,17 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH', url: string, body?: unknown): Promise<T> {
+/**
+ * Called when any request (except login) comes back 401 — the session
+ * expired or was revoked. The auth provider registers a handler that
+ * returns the app to the login screen.
+ */
+let onUnauthenticated: (() => void) | null = null
+export function setUnauthenticatedHandler(handler: (() => void) | null): void {
+  onUnauthenticated = handler
+}
+
+async function request<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, body?: unknown): Promise<T> {
   const init: RequestInit =
     body === undefined
       ? { method }
@@ -47,12 +61,52 @@ async function request<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH', url: string,
     } catch {
       // keep generic message
     }
+    if (response.status === 401 && code === 'UNAUTHENTICATED' && onUnauthenticated !== null) {
+      onUnauthenticated()
+    }
     throw new ApiError(code, message, response.status)
   }
   return (await response.json()) as T
 }
 
 export const api = {
+  // --- Auth ---
+
+  async login(email: string, password: string): Promise<UserDto> {
+    return (await request<{ user: UserDto }>('POST', '/api/auth/login', { email, password })).user
+  },
+
+  async logout(): Promise<void> {
+    await request<{ ok: boolean }>('POST', '/api/auth/logout')
+  },
+
+  /** Returns null when there is no valid session. */
+  async me(): Promise<UserDto | null> {
+    try {
+      return (await request<{ user: UserDto }>('GET', '/api/auth/me')).user
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) return null
+      throw error
+    }
+  },
+
+  // --- Admin user management ---
+
+  async listUsers(): Promise<UserDto[]> {
+    return (await request<{ users: UserDto[] }>('GET', '/api/users')).users
+  },
+
+  async createUser(input: { email: string; displayName: string; role: UserRole; password: string }): Promise<UserDto> {
+    return (await request<{ user: UserDto }>('POST', '/api/users', input)).user
+  },
+
+  async patchUser(
+    id: number,
+    patch: { role?: UserRole; active?: boolean; password?: string; displayName?: string },
+  ): Promise<UserDto> {
+    return (await request<{ user: UserDto }>('PATCH', `/api/users/${id}`, patch)).user
+  },
+
   async getConfig(): Promise<CalculatorConfig> {
     return (await request<{ config: CalculatorConfig }>('GET', '/api/config')).config
   },
@@ -140,6 +194,25 @@ export const api = {
 
   async patchVariant(id: number, patch: { monthlyCostEur?: number; active?: boolean }): Promise<FleetVariantDto[]> {
     return (await request<{ variants: FleetVariantDto[] }>('PATCH', `/api/fleet-variants/${id}`, patch)).variants
+  },
+
+  // --- Toll-system correction rules (config screen) ---
+
+  async listTollRules(): Promise<TollSystemRuleDto[]> {
+    return (await request<{ rules: TollSystemRuleDto[] }>('GET', '/api/toll-rules')).rules
+  },
+
+  async upsertTollRule(input: {
+    tollSystem: string
+    ruleType: TollRuleType
+    value: number
+    note?: string
+  }): Promise<TollSystemRuleDto[]> {
+    return (await request<{ rules: TollSystemRuleDto[] }>('PUT', '/api/toll-rules', input)).rules
+  },
+
+  async deleteTollRule(id: number): Promise<TollSystemRuleDto[]> {
+    return (await request<{ rules: TollSystemRuleDto[] }>('DELETE', `/api/toll-rules/${id}`)).rules
   },
 
   // --- History screen (PRD §5.3) ---

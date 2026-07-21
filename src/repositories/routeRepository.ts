@@ -1,5 +1,6 @@
 import type { Kysely, Transaction } from 'kysely'
 import type { DB, KmSource, TollStatusDb } from '../db/schema.js'
+import type { RoutePolylineSection } from '../here/routeParser.js'
 
 /** Route ID format per PRD §3.1: hyphen-separated IATA codes, 2+ stops. */
 export const ROUTE_CODE_REGEX = /^[A-Z]{3}(-[A-Z]{3})+$/
@@ -31,6 +32,8 @@ export interface RouteDetails {
   tolls: RouteToll[]
   /** Countries with km > 0 but no toll row — "tolls pending" (PRD §3.2). */
   tollsPendingCountries: string[]
+  /** Route shape for the map preview; null for v1-imported routes. */
+  polylineSections: RoutePolylineSection[] | null
 }
 
 export interface NewRouteInput {
@@ -39,6 +42,7 @@ export interface NewRouteInput {
   kmSource: KmSource
   createdBy: string
   countryKm: Record<string, number>
+  polylineSections?: RoutePolylineSection[]
   tolls: Array<{
     country: string
     tollEur: number
@@ -78,6 +82,7 @@ export class RouteRepository {
           total_km: input.totalKm,
           km_source: input.kmSource,
           created_by: input.createdBy,
+          polyline_encoded: input.polylineSections === undefined ? null : JSON.stringify(input.polylineSections),
         })
         .returning('id')
         .executeTakeFirstOrThrow()
@@ -267,6 +272,8 @@ export class RouteRepository {
       countryKm,
       tolls,
       tollsPendingCountries,
+      polylineSections:
+        row.polyline_encoded === null ? null : (JSON.parse(row.polyline_encoded) as RoutePolylineSection[]),
     }
   }
 }

@@ -149,6 +149,131 @@ describe('parseHereRoute (PRD §4.2 hard-won details)', () => {
   })
 })
 
+describe('parseHereRoute — toll-system correction rules (real defect: A2 AWSA gates)', () => {
+  const polyline = encode({ polyline: [[52, 20], [52, 21]], precision: 5 })
+  // Mirrors the observed WAW-CDG response: HERE bills the private A2 gates
+  // at the oversized category (400–440 PLN) instead of kat. 4 (105 PLN).
+  const awsaResponse = (): HereRouteResponse => ({
+    routes: [
+      {
+        sections: [
+          {
+            summary: { length: 465_700 },
+            polyline,
+            spans: [{ offset: 0, countryCode: 'POL' }],
+            tolls: [
+              {
+                countryCode: 'POL',
+                tollSystem: 'E-TOLL A/S',
+                fares: [{ id: 'etoll', price: { value: 113.24, currency: 'PLN' }, convertedPrice: { value: 26.09, currency: 'EUR' } }],
+              },
+              {
+                countryCode: 'POL',
+                tollSystem: 'A2 AUTOSTRADA WIELKOPOLSKA',
+                fares: [{ id: 'gate-1', price: { value: 400, currency: 'PLN' }, convertedPrice: { value: 92.14, currency: 'EUR' } }],
+              },
+              {
+                countryCode: 'POL',
+                tollSystem: 'A2 AUTOSTRADA WIELKOPOLSKA',
+                fares: [{ id: 'gate-2', price: { value: 400, currency: 'PLN' }, convertedPrice: { value: 92.14, currency: 'EUR' } }],
+              },
+              {
+                countryCode: 'POL',
+                tollSystem: 'A2 AUTOSTRADA WIELKOPOLSKA',
+                fares: [{ id: 'gate-3', price: { value: 440, currency: 'PLN' }, convertedPrice: { value: 101.36, currency: 'EUR' } }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  })
+  const AWSA_RULE = {
+    id: 1,
+    tollSystem: 'A2 AUTOSTRADA WIELKOPOLSKA',
+    ruleType: 'replace_per_gate' as const,
+    value: 105,
+    note: null,
+    updatedBy: null,
+    updatedAt: null,
+  }
+
+  it('without rules the inflated HERE estimate passes through (~€312)', () => {
+    const parsed = parseHereRoute(awsaResponse())
+    expect(parsed.tollEstimates['PL']).toBe(311.73)
+  })
+
+  it('replace_per_gate converts the rule price with each fare\'s own FX ratio', () => {
+    const parsed = parseHereRoute(awsaResponse(), [AWSA_RULE])
+    // 26.09 + 3 gates × (105 PLN × fare FX ratio) ≈ €98.65 — matches AWSA kat. 4
+    expect(parsed.tollEstimates['PL']).toBe(98.65)
+    // Corrections are aggregated into a single warning per toll system.
+    const ruleWarnings = parsed.warnings.filter(w => w.includes("Toll rule applied to 'A2 AUTOSTRADA WIELKOPOLSKA'"))
+    expect(ruleWarnings).toHaveLength(1)
+    expect(ruleWarnings[0]).toContain('3 fares corrected')
+  })
+
+  it('matches toll systems case-insensitively', () => {
+    const rule = { ...AWSA_RULE, tollSystem: 'a2 autostrada wielkopolska' }
+    const parsed = parseHereRoute(awsaResponse(), [rule])
+    expect(parsed.tollEstimates['PL']).toBe(98.65)
+  })
+
+  it('scale rule multiplies the fare', () => {
+    const rule = { ...AWSA_RULE, ruleType: 'scale' as const, value: 0.5 }
+    const parsed = parseHereRoute(awsaResponse(), [rule])
+    // 26.09 + (92.14 + 92.14 + 101.36) / 2
+    expect(parsed.tollEstimates['PL']).toBe(168.91)
+  })
+
+  it('replace_per_gate on an EUR-priced fare uses the rule value directly', () => {
+    const response: HereRouteResponse = {
+      routes: [
+        {
+          sections: [
+            {
+              summary: { length: 100_000 },
+              polyline,
+              spans: [{ offset: 0, countryCode: 'FRA' }],
+              tolls: [
+                { countryCode: 'FRA', tollSystem: 'SANEF', fares: [{ id: 'f', price: { value: 50.2, currency: 'EUR' } }] },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const rule = { ...AWSA_RULE, tollSystem: 'SANEF', value: 42 }
+    expect(parseHereRoute(response, [rule]).tollEstimates['FR']).toBe(42)
+  })
+
+  it('keeps the HERE value with a warning when the fare has no original-currency price', () => {
+    const response: HereRouteResponse = {
+      routes: [
+        {
+          sections: [
+            {
+              summary: { length: 100_000 },
+              polyline,
+              spans: [{ offset: 0, countryCode: 'POL' }],
+              tolls: [
+                {
+                  countryCode: 'POL',
+                  tollSystem: 'A2 AUTOSTRADA WIELKOPOLSKA',
+                  fares: [{ id: 'g', convertedPrice: { value: 92.14, currency: 'EUR' } }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const parsed = parseHereRoute(response, [AWSA_RULE])
+    expect(parsed.tollEstimates['PL']).toBe(92.14)
+    expect(parsed.warnings.some(w => w.includes('could not be applied'))).toBe(true)
+  })
+})
+
 describe('buildRouteRequestUrl (params verified against current HERE docs)', () => {
   const url = buildRouteRequestUrl('https://router.hereapi.com/v8/routes', 'test-key', {
     origin: { lat: 52.1657, lon: 20.9671 },
