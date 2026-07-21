@@ -27,6 +27,15 @@ export interface RouteTollDto {
   verifiedAt: string | null
 }
 
+export interface RouteWaypointDto {
+  id: number
+  routeCode: string
+  seq: number
+  name: string
+  lat: number
+  lon: number
+}
+
 export interface PolylineSectionDto {
   /** Raw HERE flexible-polyline string — decode with @here/flexpolyline. */
   polyline: string

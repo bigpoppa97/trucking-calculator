@@ -110,6 +110,15 @@ export interface TollSystemRulesTable {
   updated_at: string | null
 }
 
+export interface RouteWaypointsTable {
+  id: Generated<number>
+  route_code: string // by CODE, not FK — definable before the route is fetched
+  seq: number // ordering along the journey; intermediate airport stops sit at (index+1)*1000
+  name: string
+  lat: number
+  lon: number
+}
+
 export interface DB {
   airports: AirportsTable
   routes: RoutesTable
@@ -121,6 +130,7 @@ export interface DB {
   users: UsersTable
   sessions: SessionsTable
   toll_system_rules: TollSystemRulesTable
+  route_waypoints: RouteWaypointsTable
 }
 
 export type AirportRow = Selectable<AirportsTable>

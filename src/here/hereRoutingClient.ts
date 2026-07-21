@@ -19,12 +19,18 @@ export interface TollVehicleProfile {
 export interface HerePlace {
   lat: number
   lon: number
+  /**
+   * Pass-through vias shape the route without stopping or splitting it into
+   * sections (`!passThrough=true` — HERE v8 waypoint option). Used for
+   * company-preferred border crossings (PRD §3.3). Default: stopover.
+   */
+  passThrough?: boolean
 }
 
 export interface HereRouteRequest {
   origin: HerePlace
   destination: HerePlace
-  /** Intermediate stops, in order. One `via` query parameter each. */
+  /** Intermediate stops/waypoints, in order. One `via` query parameter each. */
   via: HerePlace[]
   profile: TollVehicleProfile
 }
@@ -74,7 +80,9 @@ export function buildRouteRequestUrl(baseUrl: string, apiKey: string, request: H
   p.set('transportMode', 'truck')
   p.set('origin', `${request.origin.lat},${request.origin.lon}`)
   p.set('destination', `${request.destination.lat},${request.destination.lon}`)
-  for (const stop of request.via) p.append('via', `${stop.lat},${stop.lon}`)
+  for (const stop of request.via) {
+    p.append('via', `${stop.lat},${stop.lon}${stop.passThrough === true ? '!passThrough=true' : ''}`)
+  }
   // tolls in the SAME call as summary+polyline — zero extra quota (PRD §4.3)
   p.set('return', 'summary,polyline,tolls')
   p.set('spans', 'countryCode')

@@ -296,6 +296,22 @@ describe('buildRouteRequestUrl (params verified against current HERE docs)', () 
     expect(url.searchParams.get('currency')).toBe('EUR')
   })
 
+  it('marks pass-through vias with !passThrough=true (preferred border crossings)', () => {
+    const withWaypoint = buildRouteRequestUrl('https://router.hereapi.com/v8/routes', 'test-key', {
+      origin: { lat: 52.1657, lon: 20.9671 },
+      destination: { lat: 47.4298, lon: 19.2611 },
+      via: [
+        { lat: 49.4053, lon: 19.7204, passThrough: true },
+        { lat: 48.0742, lon: 18.949, passThrough: true },
+      ],
+      profile: PROFILE,
+    })
+    expect(withWaypoint.searchParams.getAll('via')).toEqual([
+      '49.4053,19.7204!passThrough=true',
+      '48.0742,18.949!passThrough=true',
+    ])
+  })
+
   it('sets origin/destination and one via per intermediate stop', () => {
     expect(url.searchParams.get('origin')).toBe('52.1657,20.9671')
     expect(url.searchParams.get('destination')).toBe('50.1008,14.26')

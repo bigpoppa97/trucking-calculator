@@ -6,6 +6,7 @@ import * as m0004 from './0004_users_and_sessions.js'
 import * as m0005 from './0005_toll_system_rules.js'
 import * as m0006 from './0006_route_polyline.js'
 import * as m0007 from './0007_editable_month_days.js'
+import * as m0008 from './0008_route_waypoints.js'
 
 /**
  * In-code migration registry (instead of FileMigrationProvider) so migrations
@@ -20,4 +21,5 @@ export const migrations: Record<string, Migration> = {
   '0005_toll_system_rules': m0005,
   '0006_route_polyline': m0006,
   '0007_editable_month_days': m0007,
+  '0008_route_waypoints': m0008,
 }

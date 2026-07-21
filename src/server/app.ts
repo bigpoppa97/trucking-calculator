@@ -9,6 +9,7 @@ import { FleetVariantRepository } from '../repositories/fleetVariantRepository.j
 import { CalculationRepository } from '../repositories/calculationRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
 import { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
+import { RouteWaypointRepository } from '../repositories/routeWaypointRepository.js'
 import { RouteFetchError, type FetchedRoute, type RouteFetchService } from '../here/routeFetchService.js'
 import { CalculationSaveError, CalculationService } from './calculationService.js'
 import type { DriverCount } from '../domain/index.js'
@@ -467,6 +468,63 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         })
       }
       return reply.send({ source: 'database', route })
+    },
+  )
+
+  // Company-preferred via waypoints per route code (PRD §3.3). Editable by
+  // any authenticated user (dispatchers own routing knowledge); applied on
+  // fetch and shape refresh as HERE pass-through vias.
+  const waypointRepo = new RouteWaypointRepository(deps.db)
+
+  app.get<{ Params: { routeCode: string } }>(
+    '/api/route-waypoints/:routeCode',
+    { schema: { params: ROUTE_CODE_PARAM_SCHEMA } },
+    async (request, reply) => {
+      return reply.send({ waypoints: await waypointRepo.listByRoute(request.params.routeCode) })
+    },
+  )
+
+  app.put<{
+    Params: { routeCode: string }
+    Body: { waypoints: Array<{ seq: number; name: string; lat: number; lon: number }> }
+  }>(
+    '/api/route-waypoints/:routeCode',
+    {
+      schema: {
+        params: ROUTE_CODE_PARAM_SCHEMA,
+        body: {
+          type: 'object',
+          properties: {
+            waypoints: {
+              type: 'array',
+              maxItems: 10,
+              items: {
+                type: 'object',
+                properties: {
+                  seq: { type: 'integer', minimum: 1, maximum: 99999 },
+                  name: { type: 'string', minLength: 1, maxLength: 100 },
+                  lat: { type: 'number', minimum: -90, maximum: 90 },
+                  lon: { type: 'number', minimum: -180, maximum: 180 },
+                },
+                required: ['seq', 'name', 'lat', 'lon'],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ['waypoints'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const seqs = request.body.waypoints.map(w => w.seq)
+      if (new Set(seqs).size !== seqs.length) {
+        return reply
+          .status(400)
+          .send({ error: { code: 'DUPLICATE_SEQ', message: 'Each waypoint needs a unique seq value.' } })
+      }
+      const waypoints = await waypointRepo.replaceForRoute(request.params.routeCode, request.body.waypoints)
+      return reply.send({ waypoints })
     },
   )
 

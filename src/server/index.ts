@@ -5,6 +5,7 @@ import { AirportRepository } from '../repositories/airportRepository.js'
 import { ConfigRepository } from '../repositories/configRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
 import { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
+import { RouteWaypointRepository } from '../repositories/routeWaypointRepository.js'
 import { HereRoutingClient } from '../here/hereRoutingClient.js'
 import { RouteFetchService } from '../here/routeFetchService.js'
 import { buildApp } from './app.js'
@@ -23,6 +24,7 @@ const fetchService = new RouteFetchService({
   routes: new RouteRepository(db),
   config: new ConfigRepository(db),
   tollRules: new TollSystemRuleRepository(db),
+  waypoints: new RouteWaypointRepository(db),
 })
 
 const app = buildApp({ db, fetchService })

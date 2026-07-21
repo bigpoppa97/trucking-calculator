@@ -6,6 +6,7 @@ import type {
   FleetVariantDto,
   RouteDetailsDto,
   RouteSummaryDto,
+  RouteWaypointDto,
   SaveCalculationInput,
   TollRuleType,
   TollSystemRuleDto,
@@ -138,6 +139,25 @@ export const api = {
   /** "Save to route database" (PRD §3.2 step 3). */
   async saveFetchedRoute(fetched: FetchedRouteDto): Promise<RouteDetailsDto> {
     return (await request<{ route: RouteDetailsDto }>('POST', '/api/routes', fetched)).route
+  },
+
+  // --- Company-preferred via waypoints (PRD §3.3) ---
+
+  async getRouteWaypoints(routeCode: string): Promise<RouteWaypointDto[]> {
+    return (
+      await request<{ waypoints: RouteWaypointDto[] }>('GET', `/api/route-waypoints/${encodeURIComponent(routeCode)}`)
+    ).waypoints
+  },
+
+  async saveRouteWaypoints(
+    routeCode: string,
+    waypoints: Array<{ seq: number; name: string; lat: number; lon: number }>,
+  ): Promise<RouteWaypointDto[]> {
+    return (
+      await request<{ waypoints: RouteWaypointDto[] }>('PUT', `/api/route-waypoints/${encodeURIComponent(routeCode)}`, {
+        waypoints,
+      })
+    ).waypoints
   },
 
   /** Backfill the map shape for a stored route (1 HERE request; shape only). */

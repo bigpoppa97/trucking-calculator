@@ -1,9 +1,10 @@
 import type { AirportRepository } from '../repositories/airportRepository.js'
 import type { ConfigRepository } from '../repositories/configRepository.js'
 import type { RouteDetails, RouteRepository } from '../repositories/routeRepository.js'
+import type { RouteWaypointRepository } from '../repositories/routeWaypointRepository.js'
 import type { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
 import { ROUTE_CODE_REGEX } from '../repositories/routeRepository.js'
-import type { HereRoutingClient, TollVehicleProfile } from './hereRoutingClient.js'
+import type { HerePlace, HereRoutingClient, TollVehicleProfile } from './hereRoutingClient.js'
 import { parseHereRoute, type RoutePolylineSection } from './routeParser.js'
 
 /**
@@ -48,11 +49,31 @@ export interface RouteFetchServiceDeps {
   config: ConfigRepository
   /** Optional: toll-system correction rules applied at parse time. */
   tollRules?: Pick<TollSystemRuleRepository, 'listAll'>
+  /** Optional: company-preferred via waypoints per route code (PRD §3.3). */
+  waypoints?: Pick<RouteWaypointRepository, 'listByRoute'>
   now?: () => string
 }
 
 export class RouteFetchService {
   constructor(private readonly deps: RouteFetchServiceDeps) {}
+
+  /**
+   * One ordered via chain: intermediate airport stops (implicit seq
+   * (index+1)*1000) merged with company-preferred waypoints by their seq.
+   * Waypoints ride as pass-through — they bend the route onto the preferred
+   * corridor without stopping it or splitting sections.
+   */
+  private async buildViaChain(code: string, intermediates: HerePlace[]): Promise<{ via: HerePlace[]; waypointNames: string[] }> {
+    const waypoints = (await this.deps.waypoints?.listByRoute(code)) ?? []
+    const entries = [
+      ...intermediates.map((place, i) => ({ seq: (i + 1) * 1000, place })),
+      ...waypoints.map(wp => ({ seq: wp.seq, place: { lat: wp.lat, lon: wp.lon, passThrough: true } })),
+    ]
+    return {
+      via: entries.sort((a, b) => a.seq - b.seq).map(e => e.place),
+      waypointNames: waypoints.map(wp => wp.name),
+    }
+  }
 
   /** Call HERE for a route that is not in the database. Does NOT save. */
   async fetchNewRoute(routeCode: string): Promise<FetchedRoute> {
@@ -82,13 +103,14 @@ export class RouteFetchService {
 
     const profile = await this.deps.config.getTollVehicleProfile()
     const rules = (await this.deps.tollRules?.listAll()) ?? []
+    const { via, waypointNames } = await this.buildViaChain(code, places.slice(1, -1))
 
     let parsed
     try {
       const response = await this.deps.client.fetchRoute({
         origin: places[0]!,
         destination: places[places.length - 1]!,
-        via: places.slice(1, -1),
+        via,
         profile,
       })
       parsed = parseHereRoute(response, rules)
@@ -100,6 +122,9 @@ export class RouteFetchService {
       )
     }
     const warnings = [...parsed.warnings]
+    if (waypointNames.length > 0) {
+      warnings.push(`Preferred waypoints applied: ${waypointNames.join(', ')}.`)
+    }
 
     const tollEstimates = { ...parsed.tollEstimates }
     for (const baltic of BALTIC_DEFAULT_ZERO) {
@@ -147,13 +172,14 @@ export class RouteFetchService {
       places.push({ lat: airport.lat, lon: airport.lon })
     }
     const profile = await this.deps.config.getTollVehicleProfile()
+    const { via } = await this.buildViaChain(code, places.slice(1, -1))
 
     let parsed
     try {
       const response = await this.deps.client.fetchRoute({
         origin: places[0]!,
         destination: places[places.length - 1]!,
-        via: places.slice(1, -1),
+        via,
         profile,
       })
       parsed = parseHereRoute(response)

@@ -8,8 +8,9 @@ import { AirportRepository } from '../repositories/airportRepository.js'
 import { ConfigRepository } from '../repositories/configRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
 import { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
+import { RouteWaypointRepository } from '../repositories/routeWaypointRepository.js'
 import { RouteFetchService } from '../here/routeFetchService.js'
-import type { HereRouteResponse } from '../here/hereRoutingClient.js'
+import type { HereRouteRequest, HereRouteResponse } from '../here/hereRoutingClient.js'
 import { buildApp } from './app.js'
 import { loadServerEnv } from './env.js'
 import { seedSession } from './testAuth.js'
@@ -36,6 +37,7 @@ describe('API endpoints', () => {
   let hereCalls: number
   let hereFails: boolean
   let hereResponse: () => HereRouteResponse
+  let lastHereRequest: HereRouteRequest | null
   let sessionCookies: { session: string }
 
   const inject = (opts: InjectOptions) => app.inject({ ...opts, cookies: sessionCookies })
@@ -72,10 +74,12 @@ describe('API endpoints', () => {
     hereCalls = 0
     hereFails = false
     hereResponse = fakeHereResponse
+    lastHereRequest = null
     const fetchService = new RouteFetchService({
       client: {
-        fetchRoute: async () => {
+        fetchRoute: async request => {
           hereCalls += 1
+          lastHereRequest = request
           if (hereFails) throw new Error('upstream detail that must never leak')
           return hereResponse()
         },
@@ -84,6 +88,7 @@ describe('API endpoints', () => {
       routes: new RouteRepository(db),
       config: new ConfigRepository(db),
       tollRules: new TollSystemRuleRepository(db),
+      waypoints: new RouteWaypointRepository(db),
       now: () => '2026-07-02T12:00:00.000Z',
     })
     app = buildApp({ db, fetchService })
@@ -235,6 +240,77 @@ describe('API endpoints', () => {
     expect(res.statusCode).toBe(404)
     expect((res.json() as { error: { code: string } }).error.code).toBe('ROUTE_NOT_FOUND')
     expect(hereCalls).toBe(0)
+  })
+
+  it('migration seeds WAW-BUD waypoints: Chyżne and Šahy', async () => {
+    const res = await inject({ method: 'GET', url: '/api/route-waypoints/WAW-BUD' })
+    expect(res.statusCode).toBe(200)
+    const { waypoints } = res.json() as { waypoints: Array<{ name: string; seq: number }> }
+    expect(waypoints.map(w => w.name)).toEqual(['Chyżne (PL/SK)', 'Šahy (SK/HU)'])
+  })
+
+  it('PUT /api/route-waypoints replaces the list; duplicate seq is a specific 400', async () => {
+    const put = await inject({
+      method: 'PUT',
+      url: '/api/route-waypoints/WAW-PRG',
+      payload: { waypoints: [{ seq: 1, name: 'Kudowa-Zdrój (PL/CZ)', lat: 50.4437, lon: 16.2262 }] },
+    })
+    expect(put.statusCode).toBe(200)
+    expect((put.json() as { waypoints: unknown[] }).waypoints).toHaveLength(1)
+
+    const dup = await inject({
+      method: 'PUT',
+      url: '/api/route-waypoints/WAW-PRG',
+      payload: {
+        waypoints: [
+          { seq: 1, name: 'A', lat: 50, lon: 16 },
+          { seq: 1, name: 'B', lat: 51, lon: 17 },
+        ],
+      },
+    })
+    expect(dup.statusCode).toBe(400)
+    expect((dup.json() as { error: { code: string } }).error.code).toBe('DUPLICATE_SEQ')
+  })
+
+  it('route-fetch sends stored waypoints as ordered passThrough vias and reports them', async () => {
+    await inject({
+      method: 'PUT',
+      url: '/api/route-waypoints/WAW-PRG',
+      payload: {
+        waypoints: [
+          { seq: 2, name: 'Šahy (SK/HU)', lat: 48.0742, lon: 18.949 },
+          { seq: 1, name: 'Chyżne (PL/SK)', lat: 49.4053, lon: 19.7204 },
+        ],
+      },
+    })
+    const res = await inject({ method: 'POST', url: '/api/here/route-fetch', payload: { routeCode: 'WAW-PRG' } })
+    expect(res.statusCode).toBe(200)
+    // Ordered by seq regardless of insertion order, all pass-through
+    expect(lastHereRequest?.via).toEqual([
+      { lat: 49.4053, lon: 19.7204, passThrough: true },
+      { lat: 48.0742, lon: 18.949, passThrough: true },
+    ])
+    const { fetched } = res.json() as { fetched: { warnings: string[] } }
+    expect(fetched.warnings.some(w => w.includes('Preferred waypoints applied: Chyżne (PL/SK), Šahy (SK/HU)'))).toBe(true)
+  })
+
+  it('shape refresh also honors stored waypoints', async () => {
+    await new RouteRepository(db).create({
+      routeCode: 'WAW-PRG',
+      totalKm: 680,
+      kmSource: 'manual',
+      createdBy: 'v1-import',
+      countryKm: { PL: 420, CZ: 260 },
+      tolls: [],
+    })
+    await inject({
+      method: 'PUT',
+      url: '/api/route-waypoints/WAW-PRG',
+      payload: { waypoints: [{ seq: 1, name: 'Kudowa-Zdrój (PL/CZ)', lat: 50.4437, lon: 16.2262 }] },
+    })
+    const res = await inject({ method: 'POST', url: '/api/routes/WAW-PRG/shape' })
+    expect(res.statusCode).toBe(200)
+    expect(lastHereRequest?.via).toEqual([{ lat: 50.4437, lon: 16.2262, passThrough: true }])
   })
 
   it('refuses a HERE fetch for a route already in the database (409, zero quota)', async () => {
