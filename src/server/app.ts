@@ -466,6 +466,21 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     },
   )
 
+  // Backfill the map shape for an existing route (1 HERE request). Shape
+  // only — stored km/tolls stay authoritative.
+  app.post<{ Params: { routeCode: string } }>(
+    '/api/routes/:routeCode/shape',
+    { schema: { params: ROUTE_CODE_PARAM_SCHEMA } },
+    async (request, reply) => {
+      try {
+        const route = await deps.fetchService.refreshRouteShape(request.params.routeCode)
+        return await reply.send({ route })
+      } catch (error) {
+        return sendRouteFetchError(reply, error)
+      }
+    },
+  )
+
   app.post<{ Body: { routeCode: string } }>(
     '/api/here/route-fetch',
     { schema: { body: FETCH_BODY_SCHEMA } },
@@ -503,6 +518,7 @@ function sendRouteFetchError(
     const status =
       error.code === 'INVALID_ROUTE_CODE' ? 400
       : error.code === 'AIRPORT_NOT_FOUND' ? 404
+      : error.code === 'ROUTE_NOT_FOUND' ? 404
       : error.code === 'ROUTE_ALREADY_EXISTS' ? 409
       : 502
     return reply.status(status).send({ error: { code: error.code, message: error.message } })

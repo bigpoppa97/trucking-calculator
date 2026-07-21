@@ -73,6 +73,25 @@ describe('RoutePreview / RouteMap', () => {
     expect(screen.getByText('FRA')).toBeInTheDocument()
   })
 
+  it('offers the shape backfill button in the fallback banner and reports failure explicitly', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default
+    const user = userEvent.setup()
+    const onRefreshShape = vi.fn<() => Promise<void>>().mockRejectedValue(new Error('boom'))
+    render(
+      <RoutePreview
+        stops={['WAW', 'FRA']}
+        airports={AIRPORTS}
+        sections={null}
+        countryKm={{ PL: 420 }}
+        tolls={[{ country: 'PL', tollEur: 102, status: 'verified' }]}
+        onRefreshShape={onRefreshShape}
+      />,
+    )
+    await user.click(screen.getByRole('button', { name: /Pobierz przebieg drogi z HERE/ }))
+    expect(onRefreshShape).toHaveBeenCalledOnce()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Nie udało się pobrać kształtu trasy')
+  })
+
   it('renders country-colored solid segments and via markers when the shape is stored', () => {
     const polyline = encode({
       polyline: [

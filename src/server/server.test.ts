@@ -206,6 +206,37 @@ describe('API endpoints', () => {
     expect((lookup.json() as { route: { polylineSections: unknown } }).route.polylineSections).toBeNull()
   })
 
+  it('POST …/shape backfills ONLY the polyline for an existing route — km and tolls untouched', async () => {
+    await new RouteRepository(db).create({
+      routeCode: 'WAW-PRG',
+      totalKm: 999, // deliberately different from HERE's 680 — must survive
+      kmSource: 'manual',
+      createdBy: 'v1-import',
+      countryKm: { PL: 500, CZ: 499 },
+      tolls: [{ country: 'PL', tollEur: 102, status: 'verified' }],
+    })
+
+    const res = await inject({ method: 'POST', url: '/api/routes/WAW-PRG/shape' })
+    expect(res.statusCode).toBe(200)
+    expect(hereCalls).toBe(1)
+    const { route } = res.json() as {
+      route: { totalKm: number; kmSource: string; countryKm: Record<string, number>; tolls: Array<{ tollEur: number }>; polylineSections: unknown[] | null }
+    }
+    expect(route.polylineSections).toHaveLength(1)
+    // Authoritative data unchanged (PRD §3.3)
+    expect(route.totalKm).toBe(999)
+    expect(route.kmSource).toBe('manual')
+    expect(route.countryKm).toEqual({ PL: 500, CZ: 499 })
+    expect(route.tolls[0]?.tollEur).toBe(102)
+  })
+
+  it('POST …/shape for an unknown route is a specific 404', async () => {
+    const res = await inject({ method: 'POST', url: '/api/routes/WAW-OSL/shape' })
+    expect(res.statusCode).toBe(404)
+    expect((res.json() as { error: { code: string } }).error.code).toBe('ROUTE_NOT_FOUND')
+    expect(hereCalls).toBe(0)
+  })
+
   it('refuses a HERE fetch for a route already in the database (409, zero quota)', async () => {
     await new RouteRepository(db).create({
       routeCode: 'WAW-PRG',

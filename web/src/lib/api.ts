@@ -140,6 +140,12 @@ export const api = {
     return (await request<{ route: RouteDetailsDto }>('POST', '/api/routes', fetched)).route
   },
 
+  /** Backfill the map shape for a stored route (1 HERE request; shape only). */
+  async refreshRouteShape(routeCode: string): Promise<RouteDetailsDto> {
+    return (await request<{ route: RouteDetailsDto }>('POST', `/api/routes/${encodeURIComponent(routeCode)}/shape`))
+      .route
+  },
+
   // --- Route DB screen (PRD §5.3) ---
 
   async listRoutes(): Promise<RouteSummaryDto[]> {

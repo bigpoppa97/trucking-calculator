@@ -16,9 +16,11 @@ export interface RoutePreviewProps {
   sections: PolylineSectionDto[] | null
   countryKm: Record<string, number>
   tolls: CountryToll[]
+  /** Offered in the fallback banner when the route has no stored shape. */
+  onRefreshShape?: (() => Promise<void>) | undefined
 }
 
-export function RoutePreview({ stops, airports, sections, countryKm, tolls }: RoutePreviewProps) {
+export function RoutePreview({ stops, airports, sections, countryKm, tolls, onRefreshShape }: RoutePreviewProps) {
   const rows = useMemo((): TollBreakdownRow[] => {
     const tollByCountry = new Map(tolls.map(t => [t.country, t]))
     const countries = new Set([...Object.keys(countryKm), ...tolls.map(t => t.country)])
@@ -50,7 +52,7 @@ export function RoutePreview({ stops, airports, sections, countryKm, tolls }: Ro
   return (
     <section aria-label="Podgląd trasy" className="grid gap-4 md:grid-cols-3">
       <div className="md:col-span-2">
-        <RouteMap stops={stops} airports={airports} sections={sections} />
+        <RouteMap stops={stops} airports={airports} sections={sections} onRefreshShape={onRefreshShape} />
       </div>
       <TollBreakdown rows={rows} />
     </section>

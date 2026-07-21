@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { MapContainer, TileLayer, Polyline, CircleMarker, Tooltip, useMap } from 'react-leaflet'
 import { decode } from '@here/flexpolyline'
 import type { LatLngBoundsExpression, LatLngExpression } from 'leaflet'
@@ -20,6 +20,8 @@ export interface RouteMapProps {
   airports: AirportDto[]
   /** Null → no stored shape; straight dashed line fallback. */
   sections: PolylineSectionDto[] | null
+  /** When set, the fallback banner offers to backfill the shape from HERE. */
+  onRefreshShape?: (() => Promise<void>) | undefined
 }
 
 interface CountrySegment {
@@ -64,8 +66,23 @@ function FitBounds({ bounds }: { bounds: LatLngBoundsExpression | null }) {
   return null
 }
 
-export function RouteMap({ stops, airports, sections }: RouteMapProps) {
+export function RouteMap({ stops, airports, sections, onRefreshShape }: RouteMapProps) {
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
   const airportByIata = useMemo(() => new Map(airports.map(a => [a.iata, a])), [airports])
+
+  const refreshShape = async () => {
+    if (onRefreshShape === undefined) return
+    setRefreshing(true)
+    setRefreshError(null)
+    try {
+      await onRefreshShape()
+    } catch {
+      setRefreshError('Nie udało się pobrać kształtu trasy z HERE. Spróbuj ponownie.')
+    } finally {
+      setRefreshing(false)
+    }
+  }
   const stopPoints = stops
     .map(iata => ({ iata, airport: airportByIata.get(iata) }))
     .filter((s): s is { iata: string; airport: AirportDto } => s.airport !== undefined)
@@ -136,9 +153,24 @@ export function RouteMap({ stops, airports, sections }: RouteMapProps) {
         })}
       </MapContainer>
       {segments === null && (
-        <p className="border-t border-slate-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
-          Podgląd trasy niedostępny — trasa z bazy danych (linia prosta między lotniskami).
-        </p>
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
+          <span>Podgląd trasy niedostępny — trasa z bazy danych (linia prosta między lotniskami).</span>
+          {onRefreshShape !== undefined && (
+            <button
+              type="button"
+              disabled={refreshing}
+              onClick={() => void refreshShape()}
+              className="rounded border border-amber-300 bg-white px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+            >
+              {refreshing ? 'Pobieram kształt…' : 'Pobierz przebieg drogi z HERE (1 zapytanie)'}
+            </button>
+          )}
+          {refreshError !== null && (
+            <span role="alert" className="text-red-700">
+              {refreshError}
+            </span>
+          )}
+        </div>
       )}
     </div>
   )

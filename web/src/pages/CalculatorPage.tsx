@@ -401,6 +401,15 @@ export function CalculatorPage() {
         sections={previewData.sections}
         countryKm={previewData.countryKm}
         tolls={routeData.tolls}
+        onRefreshShape={
+          routeState.kind === 'found' && routeState.route.polylineSections === null
+            ? async () => {
+                // Shape-only backfill (1 HERE request) — km and tolls stay as stored.
+                const route = await api.refreshRouteShape(routeState.route.routeCode)
+                setRouteState({ kind: 'found', route })
+              }
+            : undefined
+        }
       />
     )}
     </div>

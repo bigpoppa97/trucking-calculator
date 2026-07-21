@@ -143,6 +143,15 @@ export class RouteRepository {
     return summaries
   }
 
+  /** Store/replace ONLY the map shape — km and tolls stay untouched. */
+  async setPolylineSections(routeId: number, sections: RoutePolylineSection[]): Promise<void> {
+    await this.db
+      .updateTable('routes')
+      .set({ polyline_encoded: JSON.stringify(sections) })
+      .where('id', '=', routeId)
+      .execute()
+  }
+
   /**
    * Manual km override (PRD §3.3): dispatcher-entered values are
    * authoritative — km_source flips to 'manual'. Audited with who/when/why.

@@ -19,7 +19,7 @@ const BALTIC_DEFAULT_ZERO = ['EE', 'LV', 'LT']
 
 export class RouteFetchError extends Error {
   constructor(
-    readonly code: 'INVALID_ROUTE_CODE' | 'ROUTE_ALREADY_EXISTS' | 'AIRPORT_NOT_FOUND' | 'HERE_UNAVAILABLE',
+    readonly code: 'INVALID_ROUTE_CODE' | 'ROUTE_ALREADY_EXISTS' | 'ROUTE_NOT_FOUND' | 'AIRPORT_NOT_FOUND' | 'HERE_UNAVAILABLE',
     message: string,
   ) {
     super(message)
@@ -122,6 +122,52 @@ export class RouteFetchService {
       fetchedAt: (this.deps.now ?? (() => new Date().toISOString()))(),
       warnings,
     }
+  }
+
+  /**
+   * Backfill the map shape for an EXISTING route (v1 imports have none).
+   * Costs one HERE request; stores ONLY the polyline sections — stored km,
+   * manual overrides and toll values are authoritative and stay untouched
+   * (PRD §3.3). The shape is HERE's suggested road, which may differ from
+   * the company-preferred crossing.
+   */
+  async refreshRouteShape(routeCode: string): Promise<RouteDetails> {
+    const code = routeCode.trim().toUpperCase()
+    const route = await this.deps.routes.findByCode(code)
+    if (!route) {
+      throw new RouteFetchError('ROUTE_NOT_FOUND', `Route ${code} is not in the database.`)
+    }
+
+    const places = []
+    for (const iata of route.stops) {
+      const airport = await this.deps.airports.findByIata(iata)
+      if (!airport) {
+        throw new RouteFetchError('AIRPORT_NOT_FOUND', `Airport ${iata} is not in the airport database.`)
+      }
+      places.push({ lat: airport.lat, lon: airport.lon })
+    }
+    const profile = await this.deps.config.getTollVehicleProfile()
+
+    let parsed
+    try {
+      const response = await this.deps.client.fetchRoute({
+        origin: places[0]!,
+        destination: places[places.length - 1]!,
+        via: places.slice(1, -1),
+        profile,
+      })
+      parsed = parseHereRoute(response)
+    } catch {
+      throw new RouteFetchError(
+        'HERE_UNAVAILABLE',
+        'Route service is temporarily unavailable. Please try again later.',
+      )
+    }
+
+    await this.deps.routes.setPolylineSections(route.id, parsed.sections)
+    const updated = await this.deps.routes.findByCode(code)
+    if (!updated) throw new RouteFetchError('ROUTE_NOT_FOUND', `Route ${code} disappeared during shape refresh.`)
+    return updated
   }
 
   /**
