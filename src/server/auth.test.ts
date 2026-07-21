@@ -136,7 +136,7 @@ describe('role guards', () => {
       method: 'PUT',
       url: '/api/config',
       cookies,
-      payload: { fuelPriceEurPerLitre: 1.5, fuelConsumptionLPer100Km: 28, driverDayRateEur: 160, monthlyOverheadEur: 3012 },
+      payload: { fuelPriceEurPerLitre: 1.5, fuelConsumptionLPer100Km: 28, driverDayRateEur: 160, monthlyOverheadEur: 3012, monthDays: 30 },
     })
     expect(config.statusCode).toBe(403)
 
@@ -168,7 +168,7 @@ describe('role guards', () => {
       method: 'PUT',
       url: '/api/config',
       cookies,
-      payload: { fuelPriceEurPerLitre: 1.5, fuelConsumptionLPer100Km: 28, driverDayRateEur: 160, monthlyOverheadEur: 3012 },
+      payload: { fuelPriceEurPerLitre: 1.5, fuelConsumptionLPer100Km: 28, driverDayRateEur: 160, monthlyOverheadEur: 3012, monthDays: 30 },
     })
     expect(config.statusCode).toBe(200)
 

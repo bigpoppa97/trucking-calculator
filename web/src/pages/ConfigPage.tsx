@@ -16,6 +16,7 @@ interface ConfigForm {
   consumption: string
   driverRate: string
   overhead: string
+  monthDays: string
 }
 
 export function ConfigPage() {
@@ -35,6 +36,7 @@ export function ConfigPage() {
           consumption: String(config.fuelConsumptionLPer100Km).replace('.', ','),
           driverRate: String(config.driverDayRateEur).replace('.', ','),
           overhead: String(config.monthlyOverheadEur).replace('.', ','),
+          monthDays: String(config.monthDays),
         })
         setVariants(fleetVariants)
         setTollRules(rules)
@@ -59,6 +61,7 @@ export function ConfigPage() {
     const consumption = parseDecimalInput(form.consumption)
     const driverRate = parseDecimalInput(form.driverRate)
     const overhead = parseDecimalInput(form.overhead)
+    const monthDays = parseDecimalInput(form.monthDays)
     if (
       fuelPrice === null || fuelPrice <= 0 ||
       consumption === null || consumption <= 0 ||
@@ -68,6 +71,10 @@ export function ConfigPage() {
       setMessage({ kind: 'error', text: 'Popraw wartości — wszystkie pola muszą być liczbami dodatnimi.' })
       return
     }
+    if (monthDays === null || !Number.isInteger(monthDays) || monthDays < 1 || monthDays > 31) {
+      setMessage({ kind: 'error', text: 'Dni w miesiącu (mianownik) muszą być liczbą całkowitą od 1 do 31.' })
+      return
+    }
     setBusy(true)
     try {
       await api.updateConfig({
@@ -75,6 +82,7 @@ export function ConfigPage() {
         fuelConsumptionLPer100Km: consumption,
         driverDayRateEur: driverRate,
         monthlyOverheadEur: overhead,
+        monthDays,
       })
       setMessage({ kind: 'ok', text: 'Konfiguracja zapisana. Nowe kalkulacje użyją nowych wartości.' })
     } catch (error) {
@@ -123,9 +131,15 @@ export function ConfigPage() {
               value={form.overhead}
               onChange={overhead => setForm(f => (f === null ? f : { ...f, overhead }))}
             />
+            <NumberField
+              label="Dni w miesiącu (mianownik)"
+              value={form.monthDays}
+              onChange={monthDays => setForm(f => (f === null ? f : { ...f, monthDays }))}
+            />
           </div>
           <p className="mt-3 text-xs text-slate-500">
-            Dni w miesiącu (denominator): <strong>30</strong> — stała wartość, decyzja biznesowa, nieedytowalna.
+            Mianownik dzieli miesięczne koszty taboru i koszty stałe (koszt = dni zlecenia / mianownik × koszt
+            miesięczny). Mniejsza wartość = wyższy koszt na zlecenie. Zapisane kalkulacje pozostają zamrożone.
           </p>
           <button
             type="button"

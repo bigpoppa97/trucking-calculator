@@ -207,6 +207,7 @@ describe('ConfigPage (finance)', () => {
         fuelConsumptionLPer100Km: 28,
         driverDayRateEur: 160,
         monthlyOverheadEur: 3012,
+        monthDays: 30,
       }),
     )
     expect(await screen.findByRole('status')).toHaveTextContent('Konfiguracja zapisana')

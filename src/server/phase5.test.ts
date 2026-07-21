@@ -116,7 +116,7 @@ describe('route DB endpoints (PRD §5.3)', () => {
 })
 
 describe('config endpoints (finance screen)', () => {
-  it('PUT /api/config updates values; month_days stays fixed at 30', async () => {
+  it('PUT /api/config updates values including the month_days denominator', async () => {
     const res = await injectFinance({
       method: 'PUT',
       url: '/api/config',
@@ -125,17 +125,16 @@ describe('config endpoints (finance screen)', () => {
         fuelConsumptionLPer100Km: 27.5,
         driverDayRateEur: 170,
         monthlyOverheadEur: 3200,
+        monthDays: 24,
       },
     })
     expect(res.statusCode).toBe(200)
     const { config } = res.json() as { config: { fuelPriceEurPerLitre: number; monthDays: number } }
     expect(config.fuelPriceEurPerLitre).toBe(1.52)
-    expect(config.monthDays).toBe(30)
+    expect(config.monthDays).toBe(24)
   })
 
-  it('strips attempts to smuggle month_days into the config payload', async () => {
-    // Fastify's Ajv removes additionalProperties instead of rejecting —
-    // either way, the fixed 30-day denominator cannot be changed via the API.
+  it('rejects an out-of-range month_days at the schema boundary', async () => {
     const res = await injectFinance({
       method: 'PUT',
       url: '/api/config',
@@ -144,11 +143,10 @@ describe('config endpoints (finance screen)', () => {
         fuelConsumptionLPer100Km: 28,
         driverDayRateEur: 160,
         monthlyOverheadEur: 3012,
-        monthDays: 31,
+        monthDays: 0,
       },
     })
-    expect(res.statusCode).toBe(200)
-    expect((res.json() as { config: { monthDays: number } }).config.monthDays).toBe(30)
+    expect(res.statusCode).toBe(400)
   })
 
   it('fleet variant CRUD: create, reprice, deactivate', async () => {
@@ -257,7 +255,7 @@ describe('calculation history (frozen snapshots)', () => {
     await injectFinance({
       method: 'PUT',
       url: '/api/config',
-      payload: { fuelPriceEurPerLitre: 1.9, fuelConsumptionLPer100Km: 28, driverDayRateEur: 160, monthlyOverheadEur: 4000 },
+      payload: { fuelPriceEurPerLitre: 1.9, fuelConsumptionLPer100Km: 28, driverDayRateEur: 160, monthlyOverheadEur: 4000, monthDays: 30 },
     })
 
     const history = await injectDispatcher({ method: 'GET', url: '/api/calculations?route=WAW-PRG' })

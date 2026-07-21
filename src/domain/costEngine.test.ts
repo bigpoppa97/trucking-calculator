@@ -92,9 +92,9 @@ describe('current config values (kickoff confirmed facts)', () => {
     if (!result.ok) return
 
     expect(result.breakdown.fuelEur).toBe(266.56)
-    expect(result.breakdown.fleetEur).toBe(150.0) // 4500 / 30
-    expect(result.breakdown.overheadEur).toBe(100.4) // 3012 / 30
-    expect(result.breakdown.totalEur).toBe(813.96)
+    expect(result.breakdown.fleetEur).toBe(187.5) // 4500 / 24 (month_days default since 2026-07)
+    expect(result.breakdown.overheadEur).toBe(125.5) // 3012 / 24
+    expect(result.breakdown.totalEur).toBe(876.56)
   })
 })
 
@@ -104,7 +104,7 @@ describe('cost components', () => {
     expect(driversCost(0.5, 1, PROTOTYPE_CONFIG)).toBe(80)
   })
 
-  it('fleet and overhead prorate over a FIXED 30-day month', () => {
+  it('fleet and overhead prorate over the configured month_days denominator', () => {
     expect(roundEur(fleetCost(15, 3000, PROTOTYPE_CONFIG))).toBe(1500)
     expect(roundEur(overheadCost(3, { ...PROTOTYPE_CONFIG, monthlyOverheadEur: 3000 }))).toBe(300)
   })
@@ -202,11 +202,17 @@ describe('validation — no raw error states (PRD §5.4)', () => {
     expect(codes).toContain('order.revenue.invalid')
   })
 
-  it('rejects a config whose month denominator is not 30', () => {
-    const result = calculateOrderCost(WAW_PRG, { ...PROTOTYPE_CONFIG, monthDays: 31 })
-    expect(result.ok).toBe(false)
-    if (result.ok) return
-    expect(result.issues.map(i => i.code)).toContain('config.monthDays.notThirty')
+  it('accepts any whole month denominator in 1..31; rejects out-of-range or fractional', () => {
+    // Editable since 2026-07 (business sign-off) — 24 is the new default.
+    const ok = calculateOrderCost(WAW_PRG, { ...PROTOTYPE_CONFIG, monthDays: 24 })
+    expect(ok.ok).toBe(true)
+
+    for (const bad of [0, 32, 24.5]) {
+      const result = calculateOrderCost(WAW_PRG, { ...PROTOTYPE_CONFIG, monthDays: bad })
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.issues.map(i => i.code)).toContain('config.monthDays.invalid')
+    }
   })
 
   it('P&L margin is null when revenue is 0 (no division by zero)', () => {

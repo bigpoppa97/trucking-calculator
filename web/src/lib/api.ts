@@ -189,6 +189,7 @@ export const api = {
     fuelConsumptionLPer100Km: number
     driverDayRateEur: number
     monthlyOverheadEur: number
+    monthDays: number
   }): Promise<CalculatorConfig> {
     return (await request<{ config: CalculatorConfig }>('PUT', '/api/config', config)).config
   },

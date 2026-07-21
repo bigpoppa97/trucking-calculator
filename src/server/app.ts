@@ -240,13 +240,15 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     },
   )
 
-  // Finance-editable config (PRD §5.3). month_days is fixed at 30 — not editable.
+  // Finance-editable config (PRD §5.3). month_days editable since 2026-07
+  // (business sign-off, overrides the original PRD §2.1 fixed-30 decision).
   app.put<{
     Body: {
       fuelPriceEurPerLitre: number
       fuelConsumptionLPer100Km: number
       driverDayRateEur: number
       monthlyOverheadEur: number
+      monthDays: number
     }
   }>(
     '/api/config',
@@ -260,8 +262,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
             fuelConsumptionLPer100Km: { type: 'number', exclusiveMinimum: 0 },
             driverDayRateEur: { type: 'number', minimum: 0 },
             monthlyOverheadEur: { type: 'number', minimum: 0 },
+            monthDays: { type: 'integer', minimum: 1, maximum: 31 },
           },
-          required: ['fuelPriceEurPerLitre', 'fuelConsumptionLPer100Km', 'driverDayRateEur', 'monthlyOverheadEur'],
+          required: ['fuelPriceEurPerLitre', 'fuelConsumptionLPer100Km', 'driverDayRateEur', 'monthlyOverheadEur', 'monthDays'],
           additionalProperties: false,
         },
       },
@@ -272,6 +275,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         consumption: String(request.body.fuelConsumptionLPer100Km),
         driver_day_rate: String(request.body.driverDayRateEur),
         monthly_overhead: String(request.body.monthlyOverheadEur),
+        month_days: String(request.body.monthDays),
       })
       return reply.send({ config: await configRepo.getCalculatorConfig() })
     },
