@@ -10,6 +10,10 @@ export interface ServerEnv {
   databasePath: string
   port: number
   host: string
+  /** Mark session cookies Secure — set COOKIE_SECURE=true behind HTTPS. */
+  cookieSecure: boolean
+  /** Directory of the built web UI; served when it exists. */
+  webDistDir: string
 }
 
 export function loadServerEnv(env: NodeJS.ProcessEnv = process.env): ServerEnv {
@@ -31,5 +35,7 @@ export function loadServerEnv(env: NodeJS.ProcessEnv = process.env): ServerEnv {
     databasePath: env['DATABASE_PATH'] ?? 'data/calculator.sqlite',
     port,
     host: env['HOST'] ?? '127.0.0.1',
+    cookieSecure: env['COOKIE_SECURE'] === 'true',
+    webDistDir: env['WEB_DIST'] ?? 'web/dist',
   }
 }

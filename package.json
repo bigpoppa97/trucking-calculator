@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
+    "@fastify/static": "^10.1.0",
     "@here/flexpolyline": "^0.1.0",
     "better-sqlite3": "^12.11.1",
     "fastify": "^5.9.0",

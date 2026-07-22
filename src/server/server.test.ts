@@ -23,7 +23,18 @@ describe('loadServerEnv — startup assertion (kickoff Phase 3)', () => {
 
   it('parses a valid environment with defaults', () => {
     const env = loadServerEnv({ HERE_API_KEY: 'k' })
-    expect(env).toEqual({ hereApiKey: 'k', databasePath: 'data/calculator.sqlite', port: 3001, host: '127.0.0.1' })
+    expect(env).toEqual({
+      hereApiKey: 'k',
+      databasePath: 'data/calculator.sqlite',
+      port: 3001,
+      host: '127.0.0.1',
+      cookieSecure: false,
+      webDistDir: 'web/dist',
+    })
+  })
+
+  it('COOKIE_SECURE=true marks sessions Secure', () => {
+    expect(loadServerEnv({ HERE_API_KEY: 'k', COOKIE_SECURE: 'true' }).cookieSecure).toBe(true)
   })
 
   it('rejects an invalid PORT', () => {

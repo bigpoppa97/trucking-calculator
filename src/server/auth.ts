@@ -42,6 +42,10 @@ export function registerAuthHook(app: FastifyInstance, deps: AuthDeps): void {
   app.decorateRequest('user', null)
   app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
     const path = request.url.split('?')[0] ?? request.url
+    // Only the API is session-guarded. Static assets and the SPA shell are
+    // public — the app itself renders the login screen, and every data
+    // request it makes goes through /api/*.
+    if (!path.startsWith('/api/')) return
     if (PUBLIC_PATHS.has(path)) return
     const token = request.cookies[SESSION_COOKIE]
     if (!token) return reply.status(401).send(UNAUTHENTICATED)
@@ -60,7 +64,11 @@ export function requireRole(...roles: UserRole[]): preHandlerHookHandler {
   }
 }
 
-export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
+export function registerAuthRoutes(
+  app: FastifyInstance,
+  deps: AuthDeps,
+  options: { secureCookies?: boolean } = {},
+): void {
   app.post<{ Body: { email: string; password: string } }>(
     '/api/auth/login',
     {
@@ -91,6 +99,9 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
         httpOnly: true,
         sameSite: 'lax',
         maxAge: Math.floor(SESSION_TTL_MS / 1000),
+        // Secure when served over HTTPS (e.g. behind a tunnel/reverse proxy);
+        // opt-in via COOKIE_SECURE so plain-HTTP local dev keeps working.
+        ...(options.secureCookies === true ? { secure: true } : {}),
       })
       return reply.send({ user: UserRepository.toPublic(userRow) })
     },

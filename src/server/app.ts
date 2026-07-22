@@ -28,6 +28,8 @@ import type { DriverCount } from '../domain/index.js'
 export interface AppDeps {
   db: Kysely<DB>
   fetchService: RouteFetchService
+  /** Mark the session cookie Secure — enable when served over HTTPS. */
+  secureCookies?: boolean
 }
 
 const ROUTE_CODE_PARAM_SCHEMA = {
@@ -115,7 +117,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const authDeps = buildAuthDeps(deps.db)
   app.register(fastifyCookie)
   registerAuthHook(app, authDeps)
-  registerAuthRoutes(app, authDeps)
+  registerAuthRoutes(app, authDeps, { secureCookies: deps.secureCookies === true })
 
   // The authenticated user's email — written into every audit field. The
   // auth hook guarantees request.user is set on all non-public routes.
