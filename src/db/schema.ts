@@ -79,6 +79,177 @@ export interface CalculationsTable {
   created_at: ColumnType<string, string | undefined, never>
 }
 
+// ---------------------------------------------------------------------------
+// Tablica floty (board) — migration 0004.
+// ---------------------------------------------------------------------------
+
+type Created = ColumnType<string, string | undefined, never>
+type Nullable<T> = ColumnType<T | null, T | null | undefined, T | null>
+
+export type DistanceSource = 'here' | 'manual' | 'estimate' | 'calculator'
+export type PlaceKind = 'airport' | 'custom'
+export type ImportMode = 'daily' | 'history'
+export type NoteScope = 'order' | 'truck_day' | 'truck'
+export type NoteKind = 'note' | 'pause' | 'service' | 'driver' | 'trailer' | 'position'
+export type IssueStatus = 'open' | 'resolved' | 'ignored'
+
+export interface BoardTrucksTable {
+  id: Generated<number>
+  carrier: ColumnType<string, string | undefined, string>
+  driver: ColumnType<string, string | undefined, string>
+  phone: ColumnType<string, string | undefined, string>
+  trailer_plate: Nullable<string>
+  notes: ColumnType<string, string | undefined, string>
+  active: ColumnType<number, number | undefined, number>
+  sort_order: ColumnType<number, number | undefined, number>
+  created_at: Created
+}
+
+export interface BoardTruckPlatesTable {
+  id: Generated<number>
+  truck_id: number
+  plate: string
+  valid_from: string // YYYY-MM-DD
+  valid_to: Nullable<string> // YYYY-MM-DD, inclusive; null = still valid
+}
+
+export interface BoardTrailersTable {
+  plate: string
+  type_pl: ColumnType<string, string | undefined, string>
+  type_en: ColumnType<string, string | undefined, string>
+  notes: ColumnType<string, string | undefined, string>
+}
+
+export interface BoardTrailerAliasesTable {
+  alias: string
+  trailer_plate: string
+}
+
+export interface BoardPlacesTable {
+  code: string
+  name: string
+  country: ColumnType<string, string | undefined, string>
+  lat: number
+  lon: number
+  kind: PlaceKind
+}
+
+export interface BoardPlaceAliasesTable {
+  alias: string
+  place_code: string
+}
+
+export interface BoardDistancesTable {
+  from_code: string
+  to_code: string
+  km: number
+  source: DistanceSource
+  note: Nullable<string>
+  updated_at: ColumnType<string, string | undefined, string>
+}
+
+export interface BoardOwnPlatesTable {
+  plate: string
+  last_seen: string
+}
+
+export interface BoardIgnoredPlatesTable {
+  plate: string
+  reason: ColumnType<string, string | undefined, string>
+  created_at: Created
+}
+
+export interface BoardImportsTable {
+  id: Generated<number>
+  filename: string
+  imported_at: string
+  mode: ImportMode
+  rows_total: number
+  rows_in_scope: number
+  range_from: Nullable<string>
+  range_to: Nullable<string>
+  summary: string // JSON
+}
+
+export interface BoardOrdersTable {
+  order_no: string
+  client: string
+  client_ref: string
+  status_client: string
+  status_sped: string
+  carrier: string
+  sub_plate: string
+  own_plate: string
+  trailer_raw: string
+  load_places: string
+  load_country: string
+  load_date: string
+  unload_places: string
+  unload_country: string
+  unload_date: string
+  rev_eur: number | null
+  cost_eur: number | null
+  notes_app: string
+  history: ColumnType<number, number | undefined, number>
+  first_import_id: number
+  last_import_id: number
+  missing_since_import_id: Nullable<number>
+  created_at: Created
+  updated_at: ColumnType<string, string | undefined, string>
+}
+
+export interface BoardOrderChangesTable {
+  id: Generated<number>
+  order_no: string
+  import_id: Nullable<number>
+  field: string
+  old_value: Nullable<string>
+  new_value: Nullable<string>
+  created_at: string
+}
+
+export interface BoardOverridesTable {
+  id: Generated<number>
+  order_no: string
+  field: string
+  value: string
+  app_value: Nullable<string>
+  created_by: string
+  created_at: string
+  active: ColumnType<number, number | undefined, number>
+  superseded_at: Nullable<string>
+  superseded_note: Nullable<string>
+}
+
+export interface BoardNotesTable {
+  id: Generated<number>
+  scope: NoteScope
+  order_no: Nullable<string>
+  truck_id: Nullable<number>
+  day: Nullable<string>
+  kind: NoteKind
+  text: string
+  place_code: Nullable<string>
+  created_by: string
+  created_at: string
+  deleted: ColumnType<number, number | undefined, number>
+}
+
+export interface BoardIssuesTable {
+  id: Generated<number>
+  key: string
+  kind: string
+  ref: string
+  message: string
+  details: ColumnType<string, string | undefined, string>
+  fingerprint: ColumnType<string, string | undefined, string>
+  status: IssueStatus
+  created_at: string
+  updated_at: string
+  resolved_by: Nullable<string>
+  resolution: Nullable<string>
+}
+
 export interface DB {
   airports: AirportsTable
   routes: RoutesTable
@@ -87,6 +258,21 @@ export interface DB {
   fleet_variants: FleetVariantsTable
   config: ConfigTable
   calculations: CalculationsTable
+  board_trucks: BoardTrucksTable
+  board_truck_plates: BoardTruckPlatesTable
+  board_trailers: BoardTrailersTable
+  board_trailer_aliases: BoardTrailerAliasesTable
+  board_places: BoardPlacesTable
+  board_place_aliases: BoardPlaceAliasesTable
+  board_distances: BoardDistancesTable
+  board_own_plates: BoardOwnPlatesTable
+  board_ignored_plates: BoardIgnoredPlatesTable
+  board_imports: BoardImportsTable
+  board_orders: BoardOrdersTable
+  board_order_changes: BoardOrderChangesTable
+  board_overrides: BoardOverridesTable
+  board_notes: BoardNotesTable
+  board_issues: BoardIssuesTable
 }
 
 export type AirportRow = Selectable<AirportsTable>

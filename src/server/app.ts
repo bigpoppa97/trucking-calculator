@@ -9,6 +9,10 @@ import { RouteRepository } from '../repositories/routeRepository.js'
 import { RouteFetchError, type FetchedRoute, type RouteFetchService } from '../here/routeFetchService.js'
 import { CalculationSaveError, CalculationService } from './calculationService.js'
 import type { DriverCount } from '../domain/index.js'
+import { BoardService } from '../board/boardService.js'
+import { DistanceService } from '../board/distances.js'
+import { registerBoardRoutes } from '../board/routes.js'
+import type { HereGeocodingClient } from '../here/hereGeocodingClient.js'
 
 /**
  * HTTP layer for the route lookup / HERE proxy flow (PRD §3.2, §4):
@@ -24,6 +28,9 @@ import type { DriverCount } from '../domain/index.js'
 export interface AppDeps {
   db: Kysely<DB>
   fetchService: RouteFetchService
+  /** Fleet board (tablica). Defaults to an offline instance (estimated km). */
+  board?: BoardService
+  geocoder?: Pick<HereGeocodingClient, 'geocode'>
 }
 
 const ROUTE_CODE_PARAM_SCHEMA = {
@@ -400,6 +407,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       }
     },
   )
+
+  registerBoardRoutes(app, {
+    board: deps.board ?? new BoardService(deps.db, new DistanceService({ db: deps.db, allowHere: false })),
+    geocoder: deps.geocoder,
+  })
 
   return app
 }
