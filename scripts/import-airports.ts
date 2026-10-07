@@ -2,6 +2,9 @@ import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createDatabase, migrateToLatest } from '../src/db/database.js'
 import { importAirports } from '../src/import/importAirports.js'
+import { loadDotEnv } from '../src/loadDotEnv.js'
+
+loadDotEnv()
 
 const csvPath = process.argv[2]
 if (!csvPath) {

@@ -5,6 +5,9 @@ import { BoardService } from '../src/board/boardService.js'
 import { DistanceService } from '../src/board/distances.js'
 import { grafikWeekTotals, readGrafik } from '../src/board/grafik.js'
 import { addDays, weekStart } from '../src/board/normalize.js'
+import { loadDotEnv } from '../src/loadDotEnv.js'
+
+loadDotEnv()
 
 /**
  * Parallel-run check (stage 2): compares the board with the Excel planner

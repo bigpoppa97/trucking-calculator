@@ -14,6 +14,9 @@ import { ensurePlaceSeed } from '../board/placeSeed.js'
 import { importAirports } from '../import/importAirports.js'
 import { buildApp } from './app.js'
 import { loadServerEnv } from './env.js'
+import { loadDotEnv } from '../loadDotEnv.js'
+
+loadDotEnv()
 
 // Startup assertion first: no HERE_API_KEY → no server (kickoff Phase 3).
 const env = loadServerEnv()

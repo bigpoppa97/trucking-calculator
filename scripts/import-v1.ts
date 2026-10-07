@@ -2,6 +2,9 @@ import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createDatabase, migrateToLatest } from '../src/db/database.js'
 import { importV1 } from '../src/import/importV1.js'
+import { loadDotEnv } from '../src/loadDotEnv.js'
+
+loadDotEnv()
 
 const databasePath = process.env['DATABASE_PATH'] ?? 'data/calculator.sqlite'
 const trasyPath = process.argv[2] ?? 'data/v1/Trasy.csv'

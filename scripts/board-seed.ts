@@ -5,6 +5,9 @@ import { readExport } from '../src/board/exportReader.js'
 import { readGrafik } from '../src/board/grafik.js'
 import { ensurePlaceSeed } from '../src/board/placeSeed.js'
 import { importAirports } from '../src/import/importAirports.js'
+import { loadDotEnv } from '../src/loadDotEnv.js'
+
+loadDotEnv()
 
 /**
  * One-off seeding of the board from the files you already have:

@@ -6,25 +6,43 @@ trafia na listę „Do sprawdzenia”. Kalkulator zostaje osobną zakładką i d
 
 ## Pierwsze uruchomienie
 
+Wymagany Node.js 22 (`node -v`).
+
 ```bash
+git fetch origin
 git checkout feature/tablica-floty
 npm install
 cd web && npm install && cd ..
+```
 
+Plik `.env` w głównym katalogu (jeśli go nie ma: skopiuj `.env.example` jako `.env`) — serwer i skrypty
+czytają go same:
+
+```
+HERE_API_KEY=twój-klucz-here
+DATABASE_PATH=data/calculator.sqlite
+PORT=3001
+BOARD_USER=Twoje imię
+```
+
+`PORT` zostaw 3001 — na ten port interfejs przekierowuje zapytania. Przed pierwszym seedem zrób kopię
+`data/calculator.sqlite` (jeśli istnieje). Na zupełnie nowej bazie najpierw `npm run import:v1`
+(konfiguracja i trasy kalkulatora z v1).
+
+```bash
 # jednorazowo: auta, kierowcy i naczepy z obecnego grafiku (+ przewoźnicy z eksportu)
 npm run board:seed -- --grafik "ŚCIEŻKA/Grafik podwykonawców.xlsm" --export "ŚCIEŻKA/export.xlsx" --curtain KN560PP
 ```
 
-Seed zapisuje dane do tej samej bazy co kalkulator (`DATABASE_PATH`, domyślnie `data/calculator.sqlite`),
-więc trasy policzone w kalkulatorze od razu służą tablicy i odwrotnie. Dane osobowe (kierowcy, telefony,
-stawki) zostają w lokalnym pliku bazy — nic nie trafia do repozytorium. Seed można uruchomić ponownie,
-nie nadpisuje istniejących wpisów.
+Seed zapisuje dane do tej samej bazy co kalkulator, więc trasy policzone w kalkulatorze od razu służą
+tablicy i odwrotnie. Dane osobowe (kierowcy, telefony, stawki) zostają w lokalnym pliku bazy — nic nie
+trafia do repozytorium. Seed można uruchomić ponownie, nie nadpisuje istniejących wpisów.
 
 ## Codzienna praca
 
 ```bash
-npm run serve          # backend (wymaga HERE_API_KEY, jak kalkulator)
-cd web && npm run dev  # interfejs: http://localhost:5173
+npm run serve          # okno 1: serwer (czyta .env)
+cd web && npm run dev  # okno 2: interfejs, potem http://localhost:5173
 ```
 
 1. W aplikacji: zapisany widok AG Grid (wszyscy klienci, data załadunku od 7 dni wstecz + przyszłe) → eksport .xlsx.

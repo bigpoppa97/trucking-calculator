@@ -4,6 +4,9 @@ import { createDatabase, migrateToLatest } from '../src/db/database.js'
 import { BoardService } from '../src/board/boardService.js'
 import { DistanceService } from '../src/board/distances.js'
 import { ensurePlaceSeed } from '../src/board/placeSeed.js'
+import { loadDotEnv } from '../src/loadDotEnv.js'
+
+loadDotEnv()
 
 /**
  * Import an export file from the command line (the same thing the

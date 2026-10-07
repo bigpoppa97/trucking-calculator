@@ -1,6 +1,9 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createDatabase, migrateToLatest } from '../src/db/database.js'
+import { loadDotEnv } from '../src/loadDotEnv.js'
+
+loadDotEnv()
 
 const databasePath = process.env['DATABASE_PATH'] ?? 'data/calculator.sqlite'
 mkdirSync(dirname(databasePath), { recursive: true })
