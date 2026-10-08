@@ -37,6 +37,7 @@ vi.mock('../lib/api.js', async importOriginal => {
       overrideKm: vi.fn(),
       setToll: vi.fn(),
       verifyToll: vi.fn(),
+      fillRouteFromHere: vi.fn(),
       updateConfig: vi.fn(),
       createVariant: vi.fn(),
       patchVariant: vi.fn(),
@@ -157,6 +158,73 @@ describe('RouteDbPage (PRD §5.3)', () => {
         note: 'nasza trasa przez Świnoujście',
       }),
     )
+  })
+})
+
+describe('RouteDbPage — HERE gap fill and per-route form state', () => {
+  const WAW_PRG_DETAIL: RouteDetailsDto = {
+    ...WAW_OSL,
+    id: 1,
+    routeCode: 'WAW-PRG',
+    stops: ['WAW', 'PRG'],
+    totalKm: 680,
+    kmSource: 'manual',
+    countryKm: { PL: 420, CZ: 260 },
+    tolls: [],
+    tollsPendingCountries: ['PL', 'CZ'],
+  }
+
+  it('fills a pending toll from HERE and shows it as an estimate', async () => {
+    mocked.listRoutes.mockResolvedValue(SUMMARIES)
+    mocked.getRoute.mockResolvedValue(WAW_OSL)
+    const filled: RouteDetailsDto = {
+      ...WAW_OSL,
+      tolls: [
+        ...WAW_OSL.tolls,
+        { country: 'DK', tollEur: 22.4, status: 'estimate', fetchedAt: '2026-10-06', verifiedBy: null, verifiedAt: null },
+      ],
+      tollsPendingCountries: [],
+    }
+    mocked.fillRouteFromHere.mockResolvedValue({
+      route: filled,
+      summary: {
+        addedCountryKm: {},
+        addedTolls: { DK: 22.4 },
+        keptTollCountries: ['DE', 'PL'],
+        stillPendingCountries: [],
+        hereTotalKm: 1244,
+        warnings: [],
+      },
+    })
+    const user = userEvent.setup()
+    render(asFinance(<RouteDbPage />))
+
+    await user.click(await screen.findByText('WAW-OSL'))
+    const detail = await screen.findByRole('region', { name: 'Szczegóły trasy WAW-OSL' })
+    await user.click(within(detail).getByRole('button', { name: 'Uzupełnij z HERE' }))
+    await user.click(within(detail).getByRole('button', { name: 'Pobierz z HERE' }))
+
+    await waitFor(() => expect(mocked.fillRouteFromHere).toHaveBeenCalledWith('WAW-OSL'))
+    expect(await within(detail).findByText(/Dodane opłaty \(szacunek\): DK 22,40 €/)).toBeInTheDocument()
+    expect(within(detail).getByText('Bez zmian: DE, PL')).toBeInTheDocument()
+    expect(within(detail).getByLabelText('Kwota opłaty DK')).toHaveValue('22,4')
+    // List refreshed so the "brakujące opłaty" badge can update
+    expect(mocked.listRoutes).toHaveBeenCalledTimes(2)
+  })
+
+  it('never carries the km form of one route over to another', async () => {
+    mocked.listRoutes.mockResolvedValue(SUMMARIES)
+    mocked.getRoute.mockImplementation(async code => (code === 'WAW-OSL' ? WAW_OSL : WAW_PRG_DETAIL))
+    const user = userEvent.setup()
+    render(asFinance(<RouteDbPage />))
+
+    await user.click(await screen.findByText('WAW-OSL'))
+    await screen.findByRole('region', { name: 'Szczegóły trasy WAW-OSL' })
+    await user.click(screen.getByText('WAW-PRG'))
+    await screen.findByRole('region', { name: 'Szczegóły trasy WAW-PRG' })
+    await user.click(screen.getByRole('button', { name: 'Koryguj km ręcznie' }))
+
+    expect(screen.getByLabelText('Łącznie km')).toHaveValue('680')
   })
 })
 

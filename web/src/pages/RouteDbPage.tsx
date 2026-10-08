@@ -4,6 +4,7 @@ import { api, ApiError } from '../lib/api.js'
 import { useAuth } from '../lib/auth.js'
 import type { RouteDetailsDto, RouteSummaryDto, RouteWaypointDto } from '../lib/types.js'
 import { formatEur, formatKm } from '../lib/format.js'
+import { FillFromHerePanel } from '../components/FillFromHere.js'
 
 /**
  * Route database screen (PRD §5.3): all routes, "tolls pending verification"
@@ -143,7 +144,8 @@ export function RouteDbPage() {
       )}
 
       {selected !== null && (
-        <RouteDetailPanel route={selected} onUpdated={onRouteUpdated} onError={setDetailError} />
+        // Keyed by route: per-route form state must never carry over to another route.
+        <RouteDetailPanel key={selected.routeCode} route={selected} onUpdated={onRouteUpdated} onError={setDetailError} />
       )}
 
       <WaypointsSection />
@@ -374,13 +376,31 @@ function RouteDetailPanel({
           </tr>
         </thead>
         <tbody>
-          {countries.map(country => (
-            <TollRow key={country} route={route} country={country} onUpdated={onUpdated} onError={onError} />
-          ))}
+          {countries.map(country => {
+            const toll = route.tolls.find(t => t.country === country)
+            // Re-mount when the stored toll changes so the input shows the current value.
+            return (
+              <TollRow
+                key={`${country}|${toll?.status ?? 'pending'}|${toll?.tollEur ?? ''}`}
+                route={route}
+                country={country}
+                onUpdated={onUpdated}
+                onError={onError}
+              />
+            )
+          })}
         </tbody>
       </table>
 
-      <KmOverrideForm route={route} onUpdated={onUpdated} onError={onError} />
+      <FillFromHerePanel route={route} onFilled={onUpdated} className="mb-4" />
+
+      {/* Re-mount on km changes (e.g. after a HERE fill) so the form never submits a stale country split. */}
+      <KmOverrideForm
+        key={`${route.totalKm}|${JSON.stringify(route.countryKm)}`}
+        route={route}
+        onUpdated={onUpdated}
+        onError={onError}
+      />
     </section>
   )
 }

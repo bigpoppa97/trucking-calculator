@@ -28,6 +28,7 @@ vi.mock('../lib/api.js', async importOriginal => {
       fetchRouteFromHere: vi.fn(),
       saveFetchedRoute: vi.fn(),
       saveCalculation: vi.fn(),
+      fillRouteFromHere: vi.fn(),
     },
   }
 })
@@ -288,5 +289,63 @@ describe('fleet variant select (PRD §5.4 — free text impossible)', () => {
     await user.selectOptions(select, 'mega COOL')
     // fleet: 4500/30 = 150 vs 116.67 → total 751.local: 266.56+137+150+160+37.4 = 750.96
     await waitFor(() => expect(screen.getByTestId('total-cost')).toHaveTextContent('750,96'))
+  })
+})
+
+describe('"Uzupełnij z HERE" for a stored route with gaps', () => {
+  const WAW_PRG_GAPS: RouteDetailsDto = {
+    ...WAW_PRG,
+    totalKm: 680,
+    countryKm: { PL: 420 }, // v1 sheet without a CZ column
+    tolls: [],
+    tollsPendingCountries: ['PL'],
+  }
+  const FILLED: RouteDetailsDto = {
+    ...WAW_PRG_GAPS,
+    countryKm: { PL: 420, CZ: 255.3 },
+    tolls: [
+      { country: 'PL', tollEur: 98.5, status: 'estimate', fetchedAt: '2026-10-06T09:00:00Z', verifiedBy: null, verifiedAt: null },
+      { country: 'CZ', tollEur: 33.2, status: 'estimate', fetchedAt: '2026-10-06T09:00:00Z', verifiedBy: null, verifiedAt: null },
+    ],
+    tollsPendingCountries: [],
+  }
+
+  it('fills the gaps after confirmation and recalculates from the filled route', async () => {
+    mocked.getRoute.mockResolvedValue(WAW_PRG_GAPS)
+    mocked.fillRouteFromHere.mockResolvedValue({
+      route: FILLED,
+      summary: {
+        addedCountryKm: { CZ: 255.3 },
+        addedTolls: { PL: 98.5, CZ: 33.2 },
+        keptTollCountries: [],
+        stillPendingCountries: [],
+        hereTotalKm: 675.4,
+        warnings: [],
+      },
+    })
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-PRG')
+
+    // Without tolls: 266.56 + 0 + 116.67 + 160 + 37.40
+    expect(await screen.findByTestId('total-cost')).toHaveTextContent('580,63')
+    expect(screen.getByText('Brak opłat dla: PL.')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Uzupełnij z HERE' }))
+    expect(mocked.fillRouteFromHere).not.toHaveBeenCalled() // explicit confirmation first
+    await user.click(screen.getByRole('button', { name: 'Pobierz z HERE' }))
+
+    await waitFor(() => expect(mocked.fillRouteFromHere).toHaveBeenCalledWith('WAW-PRG'))
+    // + 98.50 + 33.20 tolls
+    await waitFor(() => expect(screen.getByTestId('total-cost')).toHaveTextContent('712,33'))
+    expect(screen.getByText('Uzupełniono z HERE ✓')).toBeInTheDocument()
+    expect(screen.getByText(/Dodane kraje: CZ 255,3 km/)).toBeInTheDocument()
+  })
+
+  it('offers nothing for a complete route', async () => {
+    mocked.getRoute.mockResolvedValue(WAW_PRG)
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-PRG')
+    await screen.findByTestId('total-cost')
+    expect(screen.queryByRole('button', { name: 'Uzupełnij z HERE' })).not.toBeInTheDocument()
   })
 })

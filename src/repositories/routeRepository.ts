@@ -153,6 +153,61 @@ export class RouteRepository {
   }
 
   /**
+   * Apply a HERE gap fill atomically. ADD-ONLY for data: a country km row or
+   * toll row that already exists is never replaced (re-checked inside the
+   * transaction). total_km and km_source are not touched. The shape is
+   * replaced; added countries are audited on the km_* fields (an existing
+   * note is kept and the new one appended).
+   */
+  async applyGapFill(
+    routeId: number,
+    fill: {
+      addCountryKm: Record<string, number>
+      addTolls: NewRouteInput['tolls']
+      polylineSections: RoutePolylineSection[]
+      kmAudit?: { note: string; updatedBy: string; updatedAt: string }
+    },
+  ): Promise<void> {
+    await this.db.transaction().execute(async trx => {
+      const existingKm = new Set(
+        (await trx.selectFrom('route_country_km').select('country').where('route_id', '=', routeId).execute()).map(
+          r => r.country,
+        ),
+      )
+      for (const [country, km] of Object.entries(fill.addCountryKm)) {
+        if (km <= 0 || existingKm.has(country)) continue
+        await trx.insertInto('route_country_km').values({ route_id: routeId, country, km }).execute()
+      }
+
+      const existingTolls = new Set(
+        (await trx.selectFrom('route_country_toll').select('country').where('route_id', '=', routeId).execute()).map(
+          r => r.country,
+        ),
+      )
+      for (const toll of fill.addTolls) {
+        if (existingTolls.has(toll.country)) continue
+        await insertToll(trx, routeId, toll)
+      }
+
+      const route = await trx.selectFrom('routes').select('km_note').where('id', '=', routeId).executeTakeFirstOrThrow()
+      await trx
+        .updateTable('routes')
+        .set({
+          polyline_encoded: JSON.stringify(fill.polylineSections),
+          ...(fill.kmAudit !== undefined
+            ? {
+                km_note: route.km_note === null ? fill.kmAudit.note : `${route.km_note} | ${fill.kmAudit.note}`,
+                km_updated_by: fill.kmAudit.updatedBy,
+                km_updated_at: fill.kmAudit.updatedAt,
+              }
+            : {}),
+        })
+        .where('id', '=', routeId)
+        .execute()
+    })
+  }
+
+  /**
    * Manual km override (PRD §3.3): dispatcher-entered values are
    * authoritative — km_source flips to 'manual'. Audited with who/when/why.
    */

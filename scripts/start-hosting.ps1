@@ -14,14 +14,20 @@ Set-Location $repo
 & "$env:USERPROFILE\.fnm\fnm.exe" env | Out-String | Invoke-Expression
 & "$env:USERPROFILE\.fnm\fnm.exe" use lts-latest
 
-# Backend (reads HERE_API_KEY etc. from .env; serves web/dist + /api on :3001)
-$node = (Get-Command node).Source
-$backend = Start-Process -FilePath $node -ArgumentList "--env-file=.env", "--import", "tsx", "src/server/index.ts" -NoNewWindow -PassThru
-Write-Host "Backend PID: $($backend.Id) — http://127.0.0.1:3001"
-Start-Sleep 4
+# Backend (reads HERE_API_KEY etc. from .env; serves web/dist + /api on :3001).
+# If autostart (scripts\kalkulator-serwer.cmd) already runs it, reuse that one.
+$backend = $null
+if (Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue) {
+    Write-Host "Backend already running on :3001 (autostart) - reusing it."
+} else {
+    $node = (Get-Command node).Source
+    $backend = Start-Process -FilePath $node -ArgumentList "--env-file=.env", "--import", "tsx", "src/server/index.ts" -NoNewWindow -PassThru
+    Write-Host "Backend PID: $($backend.Id) — http://127.0.0.1:3001"
+    Start-Sleep 4
+}
 
 # Public tunnel (foreground — the URL appears in the box below)
 & "$env:USERPROFILE\.cloudflared\cloudflared.exe" tunnel --url http://127.0.0.1:3001 --no-autoupdate
 
-# Tunnel ended — stop the backend too.
-Stop-Process -Id $backend.Id -Force -Confirm:$false -ErrorAction SilentlyContinue
+# Tunnel ended — stop the backend too (only if this script started it).
+if ($backend) { Stop-Process -Id $backend.Id -Force -Confirm:$false -ErrorAction SilentlyContinue }

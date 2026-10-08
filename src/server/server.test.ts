@@ -399,4 +399,97 @@ describe('API endpoints', () => {
     expect(res.statusCode).toBe(400)
     expect((res.json() as { error: { code: string } }).error.code).toBe('VALIDATION')
   })
+
+  it('POST …/fill-from-here adds missing tolls as estimates and keeps stored km (1 HERE call)', async () => {
+    await new RouteRepository(db).create({
+      routeCode: 'WAW-PRG',
+      totalKm: 700,
+      kmSource: 'manual',
+      createdBy: 'v1-import',
+      countryKm: { PL: 400 },
+      tolls: [],
+    })
+    const res = await inject({ method: 'POST', url: '/api/routes/WAW-PRG/fill-from-here' })
+    expect(res.statusCode).toBe(200)
+    expect(hereCalls).toBe(1)
+    const { route, summary } = res.json() as {
+      route: {
+        totalKm: number
+        countryKm: Record<string, number>
+        tolls: Array<{ country: string; tollEur: number; status: string }>
+        tollsPendingCountries: string[]
+        polylineSections: unknown[] | null
+      }
+      summary: { addedTolls: Record<string, number>; addedCountryKm: Record<string, number>; stillPendingCountries: string[] }
+    }
+    expect(summary.addedTolls).toEqual({ PL: 102 })
+    expect(summary.addedCountryKm).toEqual({})
+    expect(route.totalKm).toBe(700)
+    expect(route.countryKm).toEqual({ PL: 400 })
+    expect(route.tolls).toEqual([expect.objectContaining({ country: 'PL', tollEur: 102, status: 'estimate' })])
+    expect(route.tollsPendingCountries).toEqual([])
+    expect(route.polylineSections).toHaveLength(1)
+  })
+
+  it('POST …/fill-from-here for an unknown route is a specific 404 with zero quota', async () => {
+    const res = await inject({ method: 'POST', url: '/api/routes/WAW-PRG/fill-from-here' })
+    expect(res.statusCode).toBe(404)
+    expect((res.json() as { error: { code: string } }).error.code).toBe('ROUTE_NOT_FOUND')
+    expect(hereCalls).toBe(0)
+  })
+
+  it('POST …/fill-from-here returns a graceful 502 when HERE is down and leaves the route as it was', async () => {
+    await new RouteRepository(db).create({
+      routeCode: 'WAW-PRG',
+      totalKm: 700,
+      kmSource: 'manual',
+      createdBy: 'v1-import',
+      countryKm: { PL: 400 },
+      tolls: [],
+    })
+    hereFails = true
+    const res = await inject({ method: 'POST', url: '/api/routes/WAW-PRG/fill-from-here' })
+    expect(res.statusCode).toBe(502)
+    expect(res.body).not.toContain('upstream detail')
+    const route = await new RouteRepository(db).findByCode('WAW-PRG')
+    expect(route?.tolls).toEqual([])
+    expect(route?.polylineSections).toBeNull()
+  })
+
+  it('POST …/fill-from-here applies toll-system correction rules like a new fetch', async () => {
+    await new RouteRepository(db).create({
+      routeCode: 'WAW-PRG',
+      totalKm: 466,
+      kmSource: 'manual',
+      createdBy: 'v1-import',
+      countryKm: { PL: 466 },
+      tolls: [],
+    })
+    hereResponse = () => ({
+      routes: [
+        {
+          sections: [
+            {
+              summary: { length: 465_700 },
+              polyline: encode({ polyline: [[52, 20], [52.4, 16.9]], precision: 5 }),
+              spans: [{ offset: 0, countryCode: 'POL' }],
+              tolls: [
+                {
+                  countryCode: 'POL',
+                  tollSystem: 'A2 AUTOSTRADA WIELKOPOLSKA',
+                  fares: [{ id: 'g1', price: { value: 400, currency: 'PLN' }, convertedPrice: { value: 92.14, currency: 'EUR' } }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+    const res = await inject({ method: 'POST', url: '/api/routes/WAW-PRG/fill-from-here' })
+    expect(res.statusCode).toBe(200)
+    const { summary } = res.json() as { summary: { addedTolls: Record<string, number>; warnings: string[] } }
+    // Seeded rule value × the fare's own FX ratio, not HERE's 92.14
+    expect(summary.addedTolls['PL']).toBe(24.19)
+    expect(summary.warnings.some(w => w.includes('Toll rule applied'))).toBe(true)
+  })
 })

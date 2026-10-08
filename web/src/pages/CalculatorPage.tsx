@@ -13,6 +13,7 @@ import { NumberField } from '../components/NumberField.js'
 import { CostBreakdownPanel } from '../components/CostBreakdownPanel.js'
 import { RoutePanel, type RouteState } from '../components/RoutePanel.js'
 import { RoutePreview } from '../components/RoutePreview/RoutePreview.js'
+import { FillFromHerePanel } from '../components/FillFromHere.js'
 
 /**
  * Calculator screen (PRD §5.3), mirroring the validated sheet layout:
@@ -409,6 +410,17 @@ export function CalculatorPage() {
                 setRouteState({ kind: 'found', route })
               }
             : undefined
+        }
+        tollFooter={
+          routeState.kind === 'found' ? (
+            <FillFromHerePanel
+              key={routeState.route.routeCode}
+              route={routeState.route}
+              // Same atomic replacement as a lookup — every derived value
+              // (km, tolls, breakdown, map) re-renders from the filled route.
+              onFilled={route => setRouteState({ kind: 'found', route })}
+            />
+          ) : undefined
         }
       />
     )}

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import type { CountryToll } from '@domain'
 import type { AirportDto, PolylineSectionDto } from '../../lib/types.js'
 import { RouteMap } from './RouteMap.js'
@@ -18,9 +18,11 @@ export interface RoutePreviewProps {
   tolls: CountryToll[]
   /** Offered in the fallback banner when the route has no stored shape. */
   onRefreshShape?: (() => Promise<void>) | undefined
+  /** Rendered under the per-country breakdown (e.g. "Uzupełnij z HERE"). */
+  tollFooter?: ReactNode
 }
 
-export function RoutePreview({ stops, airports, sections, countryKm, tolls, onRefreshShape }: RoutePreviewProps) {
+export function RoutePreview({ stops, airports, sections, countryKm, tolls, onRefreshShape, tollFooter }: RoutePreviewProps) {
   const rows = useMemo((): TollBreakdownRow[] => {
     const tollByCountry = new Map(tolls.map(t => [t.country, t]))
     const countries = new Set([...Object.keys(countryKm), ...tolls.map(t => t.country)])
@@ -54,7 +56,7 @@ export function RoutePreview({ stops, airports, sections, countryKm, tolls, onRe
       <div className="md:col-span-2">
         <RouteMap stops={stops} airports={airports} sections={sections} onRefreshShape={onRefreshShape} />
       </div>
-      <TollBreakdown rows={rows} />
+      <TollBreakdown rows={rows} footer={tollFooter} />
     </section>
   )
 }

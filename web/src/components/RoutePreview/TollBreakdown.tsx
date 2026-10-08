@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import type { TollStatus } from '@domain'
 import { formatEur, formatKm } from '../../lib/format.js'
 
@@ -31,8 +32,9 @@ export interface TollBreakdownRow {
   status: TollStatus | null
 }
 
-export function TollBreakdown({ rows }: { rows: TollBreakdownRow[] }) {
+export function TollBreakdown({ rows, footer }: { rows: TollBreakdownRow[]; footer?: ReactNode }) {
   const total = rows.reduce((sum, row) => sum + (row.tollEur ?? 0), 0)
+  const totalKm = rows.reduce((sum, row) => sum + (row.km ?? 0), 0)
 
   return (
     <section aria-label="Autostrady — podział na kraje" className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -46,7 +48,7 @@ export function TollBreakdown({ rows }: { rows: TollBreakdownRow[] }) {
           <li key={row.country} className="flex items-center gap-2 text-sm">
             <span aria-hidden="true">{FLAGS[row.country] ?? '🏳️'}</span>
             <span className="text-slate-700">{NAMES_PL[row.country] ?? row.country}</span>
-            <span className="ml-auto tabular-nums text-xs text-slate-400">
+            <span className="ml-auto whitespace-nowrap tabular-nums text-xs text-slate-400">
               {row.km === null ? '' : formatKm(row.km)}
             </span>
             <span className="w-20 text-right tabular-nums font-semibold text-slate-800">
@@ -63,10 +65,12 @@ export function TollBreakdown({ rows }: { rows: TollBreakdownRow[] }) {
         ))}
       </ul>
 
-      <div className="mt-3 flex items-baseline justify-between border-t border-slate-200 pt-2 text-sm">
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-200 pt-2 text-sm">
         <span className="font-medium text-slate-700">Razem</span>
-        <span className="font-bold text-slate-900">{formatEur(total)}</span>
+        <span className="ml-auto whitespace-nowrap tabular-nums text-xs text-slate-400">{formatKm(totalKm)}</span>
+        <span className="w-20 text-right tabular-nums font-bold text-slate-900">{formatEur(total)}</span>
       </div>
+      {footer}
     </section>
   )
 }

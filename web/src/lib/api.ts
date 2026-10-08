@@ -4,6 +4,7 @@ import type {
   CalculatorConfig,
   FetchedRouteDto,
   FleetVariantDto,
+  GapFillResultDto,
   RouteDetailsDto,
   RouteSummaryDto,
   RouteWaypointDto,
@@ -164,6 +165,14 @@ export const api = {
   async refreshRouteShape(routeCode: string): Promise<RouteDetailsDto> {
     return (await request<{ route: RouteDetailsDto }>('POST', `/api/routes/${encodeURIComponent(routeCode)}/shape`))
       .route
+  },
+
+  /**
+   * Fill the gaps of a stored route from HERE (1 request): missing tolls as
+   * estimates + missing countries' km. Stored/verified data stays untouched.
+   */
+  async fillRouteFromHere(routeCode: string): Promise<GapFillResultDto> {
+    return request<GapFillResultDto>('POST', `/api/routes/${encodeURIComponent(routeCode)}/fill-from-here`)
   },
 
   // --- Route DB screen (PRD §5.3) ---

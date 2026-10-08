@@ -545,6 +545,24 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     },
   )
 
+  // Fill the gaps of an existing route from HERE (1 request): toll estimates
+  // for countries without any toll value + km for countries missing from the
+  // stored split. Verified tolls, existing estimates, stored country km and
+  // the binding total km stay untouched (PRD §3.3). Estimates still go
+  // through the finance verification workflow.
+  app.post<{ Params: { routeCode: string } }>(
+    '/api/routes/:routeCode/fill-from-here',
+    { schema: { params: ROUTE_CODE_PARAM_SCHEMA } },
+    async (request, reply) => {
+      try {
+        const result = await deps.fetchService.fillRouteGaps(request.params.routeCode, actor(request))
+        return await reply.send(result)
+      } catch (error) {
+        return sendRouteFetchError(reply, error)
+      }
+    },
+  )
+
   app.post<{ Body: { routeCode: string } }>(
     '/api/here/route-fetch',
     { schema: { body: FETCH_BODY_SCHEMA } },

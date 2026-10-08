@@ -2,10 +2,10 @@ import type { AirportRepository } from '../repositories/airportRepository.js'
 import type { ConfigRepository } from '../repositories/configRepository.js'
 import type { RouteDetails, RouteRepository } from '../repositories/routeRepository.js'
 import type { RouteWaypointRepository } from '../repositories/routeWaypointRepository.js'
-import type { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
+import type { TollSystemRule, TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
 import { ROUTE_CODE_REGEX } from '../repositories/routeRepository.js'
 import type { HerePlace, HereRoutingClient, TollVehicleProfile } from './hereRoutingClient.js'
-import { parseHereRoute, type RoutePolylineSection } from './routeParser.js'
+import { parseHereRoute, type ParsedHereRoute, type RoutePolylineSection } from './routeParser.js'
 
 /**
  * Fetch-and-save flow for routes not in the database (PRD §3.2 steps 2–3).
@@ -42,6 +42,66 @@ export interface FetchedRoute {
   warnings: string[]
 }
 
+/** What a gap fill changed (and deliberately did not) on an existing route. */
+export interface GapFillSummary {
+  /** Countries that were missing from the stored km split, with HERE km. */
+  addedCountryKm: Record<string, number>
+  /** Countries that had no toll value at all — now HERE estimates. */
+  addedTolls: Record<string, number>
+  /** Countries whose stored toll (verified or estimate) was left untouched. */
+  keptTollCountries: string[]
+  /** Countries still without a toll value after the fill. */
+  stillPendingCountries: string[]
+  /** HERE's own total, for comparison only — the stored total is kept. */
+  hereTotalKm: number
+  warnings: string[]
+}
+
+export interface GapFillResult {
+  route: RouteDetails
+  summary: GapFillSummary
+}
+
+/**
+ * Pure planning step of a gap fill: only ADDS what the stored route lacks.
+ * Stored country km and any existing toll row (verified or estimate) win.
+ */
+export function planGapFill(
+  route: Pick<RouteDetails, 'countryKm' | 'tolls'>,
+  hereCountryKm: Record<string, number>,
+  hereTollEstimates: Record<string, number>,
+): { addedCountryKm: Record<string, number>; addedTolls: Record<string, number>; keptTollCountries: string[] } {
+  const addedCountryKm: Record<string, number> = {}
+  for (const [country, km] of Object.entries(hereCountryKm)) {
+    if (km > 0 && route.countryKm[country] === undefined) addedCountryKm[country] = km
+  }
+  const tollCountries = new Set(route.tolls.map(t => t.country))
+  const addedTolls: Record<string, number> = {}
+  for (const [country, eur] of Object.entries(hereTollEstimates)) {
+    if (!tollCountries.has(country)) addedTolls[country] = eur
+  }
+  return { addedCountryKm, addedTolls, keptTollCountries: [...tollCountries].sort() }
+}
+
+/** Baltic €0 defaults for driven countries HERE did not price (PRD §4.3). */
+function withBalticDefaults(
+  countryKm: Record<string, number>,
+  tollEstimates: Record<string, number>,
+): { tollEstimates: Record<string, number>; defaulted: string[] } {
+  const result = { ...tollEstimates }
+  const defaulted: string[] = []
+  for (const baltic of BALTIC_DEFAULT_ZERO) {
+    if (countryKm[baltic] !== undefined && result[baltic] === undefined) {
+      result[baltic] = 0
+      defaulted.push(baltic)
+    }
+  }
+  return { tollEstimates: result, defaulted }
+}
+
+const balticWarning = (country: string): string =>
+  `${country}: time-based truck charge defaulted to €0 (period pass assumed) — override manually if needed.`
+
 export interface RouteFetchServiceDeps {
   client: Pick<HereRoutingClient, 'fetchRoute'>
   airports: AirportRepository
@@ -75,6 +135,50 @@ export class RouteFetchService {
     }
   }
 
+  /** Airport coordinates for each stop, in order — fails before any HERE call. */
+  private async resolvePlaces(stops: string[]): Promise<HerePlace[]> {
+    const places: HerePlace[] = []
+    for (const iata of stops) {
+      const airport = await this.deps.airports.findByIata(iata)
+      if (!airport) {
+        throw new RouteFetchError('AIRPORT_NOT_FOUND', `Airport ${iata} is not in the airport database.`)
+      }
+      places.push({ lat: airport.lat, lon: airport.lon })
+    }
+    return places
+  }
+
+  /** ONE HERE request for the given stops (+ stored waypoints), parsed. */
+  private async queryHere(
+    code: string,
+    stops: string[],
+    rules: TollSystemRule[],
+  ): Promise<{ parsed: ParsedHereRoute; profile: TollVehicleProfile; waypointNames: string[] }> {
+    const places = await this.resolvePlaces(stops)
+    const profile = await this.deps.config.getTollVehicleProfile()
+    const { via, waypointNames } = await this.buildViaChain(code, places.slice(1, -1))
+
+    try {
+      const response = await this.deps.client.fetchRoute({
+        origin: places[0]!,
+        destination: places[places.length - 1]!,
+        via,
+        profile,
+      })
+      return { parsed: parseHereRoute(response, rules), profile, waypointNames }
+    } catch {
+      // Detail stays server-side; the client gets a graceful, static message.
+      throw new RouteFetchError(
+        'HERE_UNAVAILABLE',
+        'Route service is temporarily unavailable. Please try again later.',
+      )
+    }
+  }
+
+  private now(): string {
+    return (this.deps.now ?? (() => new Date().toISOString()))()
+  }
+
   /** Call HERE for a route that is not in the database. Does NOT save. */
   async fetchNewRoute(routeCode: string): Promise<FetchedRoute> {
     const code = routeCode.trim().toUpperCase()
@@ -92,49 +196,15 @@ export class RouteFetchService {
     }
 
     const stops = code.split('-')
-    const places = []
-    for (const iata of stops) {
-      const airport = await this.deps.airports.findByIata(iata)
-      if (!airport) {
-        throw new RouteFetchError('AIRPORT_NOT_FOUND', `Airport ${iata} is not in the airport database.`)
-      }
-      places.push({ lat: airport.lat, lon: airport.lon })
-    }
-
-    const profile = await this.deps.config.getTollVehicleProfile()
     const rules = (await this.deps.tollRules?.listAll()) ?? []
-    const { via, waypointNames } = await this.buildViaChain(code, places.slice(1, -1))
+    const { parsed, profile, waypointNames } = await this.queryHere(code, stops, rules)
 
-    let parsed
-    try {
-      const response = await this.deps.client.fetchRoute({
-        origin: places[0]!,
-        destination: places[places.length - 1]!,
-        via,
-        profile,
-      })
-      parsed = parseHereRoute(response, rules)
-    } catch {
-      // Detail stays server-side; the client gets a graceful, static message.
-      throw new RouteFetchError(
-        'HERE_UNAVAILABLE',
-        'Route service is temporarily unavailable. Please try again later.',
-      )
-    }
     const warnings = [...parsed.warnings]
     if (waypointNames.length > 0) {
       warnings.push(`Preferred waypoints applied: ${waypointNames.join(', ')}.`)
     }
-
-    const tollEstimates = { ...parsed.tollEstimates }
-    for (const baltic of BALTIC_DEFAULT_ZERO) {
-      if (parsed.countryKm[baltic] !== undefined && tollEstimates[baltic] === undefined) {
-        tollEstimates[baltic] = 0
-        warnings.push(
-          `${baltic}: time-based truck charge defaulted to €0 (period pass assumed) — override manually if needed.`,
-        )
-      }
-    }
+    const { tollEstimates, defaulted } = withBalticDefaults(parsed.countryKm, parsed.tollEstimates)
+    warnings.push(...defaulted.map(balticWarning))
 
     return {
       routeCode: code,
@@ -144,7 +214,7 @@ export class RouteFetchService {
       tollEstimates,
       sections: parsed.sections,
       vehicleProfile: profile,
-      fetchedAt: (this.deps.now ?? (() => new Date().toISOString()))(),
+      fetchedAt: this.now(),
       warnings,
     }
   }
@@ -163,37 +233,79 @@ export class RouteFetchService {
       throw new RouteFetchError('ROUTE_NOT_FOUND', `Route ${code} is not in the database.`)
     }
 
-    const places = []
-    for (const iata of route.stops) {
-      const airport = await this.deps.airports.findByIata(iata)
-      if (!airport) {
-        throw new RouteFetchError('AIRPORT_NOT_FOUND', `Airport ${iata} is not in the airport database.`)
-      }
-      places.push({ lat: airport.lat, lon: airport.lon })
-    }
-    const profile = await this.deps.config.getTollVehicleProfile()
-    const { via } = await this.buildViaChain(code, places.slice(1, -1))
-
-    let parsed
-    try {
-      const response = await this.deps.client.fetchRoute({
-        origin: places[0]!,
-        destination: places[places.length - 1]!,
-        via,
-        profile,
-      })
-      parsed = parseHereRoute(response)
-    } catch {
-      throw new RouteFetchError(
-        'HERE_UNAVAILABLE',
-        'Route service is temporarily unavailable. Please try again later.',
-      )
-    }
-
+    const { parsed } = await this.queryHere(code, route.stops, [])
     await this.deps.routes.setPolylineSections(route.id, parsed.sections)
     const updated = await this.deps.routes.findByCode(code)
     if (!updated) throw new RouteFetchError('ROUTE_NOT_FOUND', `Route ${code} disappeared during shape refresh.`)
     return updated
+  }
+
+  /**
+   * Fill the GAPS of an EXISTING route from HERE (one request) — e.g. v1
+   * imports whose sheet had no columns for FR/ES/NL/CH and no toll values.
+   * Adds toll estimates for countries without any toll value and km for
+   * countries missing from the stored split; stores the shape. Never
+   * overwrites: verified tolls, existing estimates, stored country km and
+   * the (binding) total km stay exactly as they are (PRD §3.3).
+   */
+  async fillRouteGaps(routeCode: string, actor: string): Promise<GapFillResult> {
+    const code = routeCode.trim().toUpperCase()
+    const route = await this.deps.routes.findByCode(code)
+    if (!route) {
+      throw new RouteFetchError('ROUTE_NOT_FOUND', `Route ${code} is not in the database.`)
+    }
+
+    const rules = (await this.deps.tollRules?.listAll()) ?? []
+    const { parsed, profile, waypointNames } = await this.queryHere(code, route.stops, rules)
+    const warnings = [...parsed.warnings]
+    if (waypointNames.length > 0) {
+      warnings.push(`Preferred waypoints applied: ${waypointNames.join(', ')}.`)
+    }
+
+    // Baltic defaults judged against the km the route will have after the fill.
+    const { tollEstimates, defaulted } = withBalticDefaults(
+      { ...parsed.countryKm, ...route.countryKm },
+      parsed.tollEstimates,
+    )
+    const plan = planGapFill(route, parsed.countryKm, tollEstimates)
+    warnings.push(...defaulted.filter(c => plan.addedTolls[c] !== undefined).map(balticWarning))
+
+    const fetchedAt = this.now()
+    const addedKmEntries = Object.entries(plan.addedCountryKm)
+    await this.deps.routes.applyGapFill(route.id, {
+      addCountryKm: plan.addedCountryKm,
+      addTolls: Object.entries(plan.addedTolls).map(([country, tollEur]) => ({
+        country,
+        tollEur,
+        status: 'estimate' as const,
+        fetchedAt,
+        vehicleProfile: profile,
+      })),
+      polylineSections: parsed.sections,
+      ...(addedKmEntries.length > 0
+        ? {
+            kmAudit: {
+              note: `Kraje uzupełnione z HERE: ${addedKmEntries.map(([c, km]) => `${c} ${String(km).replace('.', ',')} km`).join(', ')}`,
+              updatedBy: actor,
+              updatedAt: fetchedAt,
+            },
+          }
+        : {}),
+    })
+
+    const updated = await this.deps.routes.findByCode(code)
+    if (!updated) throw new RouteFetchError('ROUTE_NOT_FOUND', `Route ${code} disappeared during the HERE fill.`)
+    return {
+      route: updated,
+      summary: {
+        addedCountryKm: plan.addedCountryKm,
+        addedTolls: plan.addedTolls,
+        keptTollCountries: plan.keptTollCountries,
+        stillPendingCountries: updated.tollsPendingCountries,
+        hereTotalKm: parsed.totalKm,
+        warnings,
+      },
+    }
   }
 
   /**

@@ -58,6 +58,21 @@ export interface RouteDetailsDto {
   polylineSections: PolylineSectionDto[] | null
 }
 
+/** Result of "Uzupełnij z HERE" on an existing route (add-only gap fill). */
+export interface GapFillSummaryDto {
+  addedCountryKm: Record<string, number>
+  addedTolls: Record<string, number>
+  keptTollCountries: string[]
+  stillPendingCountries: string[]
+  hereTotalKm: number
+  warnings: string[]
+}
+
+export interface GapFillResultDto {
+  route: RouteDetailsDto
+  summary: GapFillSummaryDto
+}
+
 export interface RouteSummaryDto {
   id: number
   routeCode: string
