@@ -6,9 +6,10 @@ import {
   type GeocodeCandidate,
   type Place,
   type Thresholds,
+  type FleetSyncResult,
   type Trailer,
 } from './boardApi.js'
-import { todayIso } from './format.js'
+import { addDaysIso, todayIso } from './format.js'
 import { Icon } from './Icon.js'
 
 /**
@@ -24,11 +25,12 @@ const CARD = 'flex flex-col gap-4 rounded-xl border border-[#D5D9D3] bg-white px
 const TH = 'px-3 py-2 text-left text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]'
 const TD = 'px-3 py-2.5 align-top'
 
-type Section = 'trucks' | 'trailers' | 'places' | 'thresholds'
+type Section = 'trucks' | 'trailers' | 'list' | 'places' | 'thresholds'
 
 const SECTIONS: Array<{ id: Section; label: string }> = [
   { id: 'trucks', label: 'Ciągniki' },
   { id: 'trailers', label: 'Naczepy' },
+  { id: 'list', label: 'Wklej stan floty' },
   { id: 'places', label: 'Miejsca i odległości' },
   { id: 'thresholds', label: 'Progi ostrzeżeń' },
 ]
@@ -58,6 +60,7 @@ export function FleetPage({ onChanged }: { onChanged?: () => void }) {
       </div>
       {section === 'trucks' && <TrucksSection {...(onChanged ? { onChanged } : {})} />}
       {section === 'trailers' && <TrailersSection />}
+      {section === 'list' && <FleetListSection {...(onChanged ? { onChanged } : {})} />}
       {section === 'places' && <PlacesSection />}
       {section === 'thresholds' && <ThresholdsSection {...(onChanged ? { onChanged } : {})} />}
     </div>
@@ -167,7 +170,8 @@ function TrucksSection({ onChanged }: { onChanged?: () => void }) {
             Ciągniki w dziale
           </h2>
           <span className="text-[13px] text-[#545B63]">
-            Kolejność tutaj = kolejność wierszy na tablicy. Numer rejestracyjny zmieniaj przez „Nowy numer” — stare zlecenia zostaną przy tym samym aucie.
+            Kolejność tutaj = kolejność wierszy na tablicy. Numer rejestracyjny zmieniaj przez „Nowy numer” — stare zlecenia zostaną przy tym samym aucie. Stała
+            naczepa tylko przy jednym zestawie przewoźnika; puste = naczepy rotują, tablica pokazuje naczepę z ostatniego zlecenia.
           </span>
         </div>
         <Alert text={loadError ?? action.error} />
@@ -510,8 +514,10 @@ function NewTruckForm({ onCreated }: { onCreated: (plate: string) => Promise<str
 function TrailersSection() {
   const id = useId()
   const [trailers, setTrailers] = useState<Trailer[] | null>(null)
+  const [carriers, setCarriers] = useState<string[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [plate, setPlate] = useState('')
+  const [carrier, setCarrier] = useState('')
   const [typePl, setTypePl] = useState('')
   const [typeEn, setTypeEn] = useState('')
   const [aliasFor, setAliasFor] = useState<string | null>(null)
@@ -520,7 +526,9 @@ function TrailersSection() {
 
   const load = useCallback(async () => {
     try {
-      setTrailers(await boardApi.trailers())
+      const [list, fleet] = await Promise.all([boardApi.trailers(), boardApi.fleet()])
+      setTrailers(list)
+      setCarriers([...new Set([...fleet.map(t => t.carrier), ...list.map(t => t.carrier)].filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pl')))
       setLoadError(null)
     } catch (e) {
       setLoadError(errorMessage(e, 'Nie udało się wczytać naczep.'))
@@ -531,8 +539,15 @@ function TrailersSection() {
     void load()
   }, [load])
 
+  const inFleet = useMemo(
+    () => (trailers ?? []).filter(t => t.activeTo === null).sort((a, b) => (a.carrier || '~').localeCompare(b.carrier || '~', 'pl') || a.plate.localeCompare(b.plate)),
+    [trailers],
+  )
+  const retired = useMemo(() => (trailers ?? []).filter(t => t.activeTo !== null).sort((a, b) => a.plate.localeCompare(b.plate)), [trailers])
+
   const startEdit = (t: Trailer) => {
     setPlate(t.plate)
+    setCarrier(t.carrier)
     setTypePl(t.typePl)
     setTypeEn(t.typeEn)
   }
@@ -543,6 +558,7 @@ function TrailersSection() {
         async () => {
           await boardApi.saveTrailer({
             plate: plate.trim(),
+            carrier,
             ...(typePl.trim() ? { typePl: typePl.trim() } : {}),
             ...(typeEn.trim() ? { typeEn: typeEn.trim() } : {}),
           })
@@ -554,10 +570,21 @@ function TrailersSection() {
       .then(ok => {
         if (ok) {
           setPlate('')
+          setCarrier('')
           setTypePl('')
           setTypeEn('')
         }
       })
+
+  const setInFleet = (t: Trailer, back: boolean) =>
+    void action.run(
+      async () => {
+        await boardApi.saveTrailer({ plate: t.plate, activeTo: back ? null : addDaysIso(todayIso(), -1) })
+        await load()
+      },
+      back ? `${t.plate} wraca do floty.` : `${t.plate} wycofana z floty — stare zlecenia bez zmian, nowe z tą naczepą trafią do sprawdzenia.`,
+      'Nie udało się zapisać.',
+    )
 
   const saveAlias = (trailerPlate: string) =>
     void action
@@ -576,23 +603,67 @@ function TrailersSection() {
         }
       })
 
+  const aliasCell = (t: Trailer) => (
+    <span className="flex flex-wrap items-center gap-1.5">
+      {t.aliases.map(a => (
+        <span key={a} className="rounded bg-[#ECEEEA] px-2 py-0.5 font-mono text-xs">
+          {a}
+        </span>
+      ))}
+      {aliasFor === t.plate ? (
+        <form
+          className="flex items-center gap-1.5"
+          onSubmit={e => {
+            e.preventDefault()
+            if (alias.trim()) saveAlias(t.plate)
+          }}
+        >
+          <label className="sr-only" htmlFor={`${id}-alias-${t.plate}`}>
+            Alias dla {t.plate}
+          </label>
+          <input id={`${id}-alias-${t.plate}`} value={alias} onChange={e => setAlias(e.target.value)} className={`${INPUT} h-8 w-32 font-mono uppercase`} autoFocus />
+          <button type="submit" disabled={action.busy || !alias.trim()} className="h-8 rounded-md bg-[#1E4E9C] px-2.5 text-xs font-semibold text-white disabled:opacity-50">
+            Dodaj
+          </button>
+          <button type="button" onClick={() => setAliasFor(null)} className="h-8 px-1.5 text-xs text-[#545B63] underline">
+            Anuluj
+          </button>
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            setAlias('')
+            setAliasFor(t.plate)
+          }}
+          className="h-7 rounded-md border border-dashed border-[#C9CEC6] px-2 text-xs text-[#545B63] hover:text-[#15181C]"
+        >
+          + alias
+        </button>
+      )}
+    </span>
+  )
+
   return (
     <section aria-labelledby="trailers-h" className="flex flex-col gap-4">
       <div className={CARD}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 id="trailers-h" className="text-base font-bold">
-            Naczepy
+            Naczepy we flocie
           </h2>
-          <span className="text-[13px] text-[#545B63]">Typ trafia do tekstu „Kopiuj dane auta”. Alias = literówka z aplikacji, którą tablica ma rozpoznawać.</span>
+          <span className="text-[13px] text-[#545B63]">
+            Naczepa należy do przewoźnika i może jeździć z każdym jego ciągnikiem. Typ trafia do „Kopiuj dane auta”, alias to literówka z aplikacji.
+          </span>
         </div>
         <Alert text={loadError ?? action.error} />
         <Done text={action.done} />
         {trailers && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] border-collapse text-sm">
+            <table className="w-full min-w-[900px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-[#D5D9D3]">
                   <th className={TH}>Naczepa</th>
+                  <th className={TH}>Przewoźnik</th>
                   <th className={TH}>Typ (PL)</th>
                   <th className={TH}>Typ (EN)</th>
                   <th className={TH}>Rozpoznawane też jako</th>
@@ -602,61 +673,53 @@ function TrailersSection() {
                 </tr>
               </thead>
               <tbody>
-                {trailers.map(t => (
+                {inFleet.map(t => (
                   <tr key={t.plate} className="border-b border-[#ECEEEA]">
                     <td className={`${TD} font-mono font-semibold`}>{t.plate}</td>
+                    <td className={TD}>{t.carrier || <span className="text-[#B4690E]">nieprzypisana</span>}</td>
                     <td className={TD}>{t.typePl}</td>
                     <td className={TD}>{t.typeEn}</td>
-                    <td className={TD}>
-                      <span className="flex flex-wrap items-center gap-1.5">
-                        {t.aliases.map(a => (
-                          <span key={a} className="rounded bg-[#ECEEEA] px-2 py-0.5 font-mono text-xs">
-                            {a}
-                          </span>
-                        ))}
-                        {aliasFor === t.plate ? (
-                          <form
-                            className="flex items-center gap-1.5"
-                            onSubmit={e => {
-                              e.preventDefault()
-                              if (alias.trim()) saveAlias(t.plate)
-                            }}
-                          >
-                            <label className="sr-only" htmlFor={`${id}-alias-${t.plate}`}>
-                              Alias dla {t.plate}
-                            </label>
-                            <input id={`${id}-alias-${t.plate}`} value={alias} onChange={e => setAlias(e.target.value)} className={`${INPUT} h-8 w-32 font-mono uppercase`} autoFocus />
-                            <button type="submit" disabled={action.busy || !alias.trim()} className="h-8 rounded-md bg-[#1E4E9C] px-2.5 text-xs font-semibold text-white disabled:opacity-50">
-                              Dodaj
-                            </button>
-                            <button type="button" onClick={() => setAliasFor(null)} className="h-8 px-1.5 text-xs text-[#545B63] underline">
-                              Anuluj
-                            </button>
-                          </form>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setAlias('')
-                              setAliasFor(t.plate)
-                            }}
-                            className="h-7 rounded-md border border-dashed border-[#C9CEC6] px-2 text-xs text-[#545B63] hover:text-[#15181C]"
-                          >
-                            + alias
-                          </button>
-                        )}
+                    <td className={TD}>{aliasCell(t)}</td>
+                    <td className={`${TD} whitespace-nowrap text-right`}>
+                      <span className="inline-flex gap-2">
+                        <button type="button" onClick={() => startEdit(t)} className={BTN}>
+                          <Icon name="pencil" size={14} /> Edytuj
+                        </button>
+                        <button type="button" disabled={action.busy} onClick={() => setInFleet(t, false)} className={BTN}>
+                          Wycofaj
+                        </button>
                       </span>
-                    </td>
-                    <td className={`${TD} text-right`}>
-                      <button type="button" onClick={() => startEdit(t)} className={BTN}>
-                        <Icon name="pencil" size={14} /> Edytuj typ
-                      </button>
                     </td>
                   </tr>
                 ))}
+                {inFleet.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-4 text-sm text-[#545B63]">
+                      Brak naczep we flocie — dodaj je niżej albo wklej stan floty.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
+        )}
+        {retired.length > 0 && (
+          <details className="rounded-lg bg-[#F6F7F4] px-3 py-2">
+            <summary className="cursor-pointer text-sm font-semibold">Wycofane z floty ({retired.length})</summary>
+            <p className="mt-1 text-xs text-[#545B63]">Zlecenia sprzed wycofania pokazują je jak dawniej; nowe zlecenie z taką naczepą trafi do sprawdzenia.</p>
+            <ul className="mt-2 flex flex-col">
+              {retired.map(t => (
+                <li key={t.plate} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-[#E3E6E1] py-2 text-sm">
+                  <span className="w-28 font-mono font-semibold">{t.plate}</span>
+                  <span className="min-w-40 text-[#545B63]">{t.carrier || '—'}</span>
+                  <span className="text-xs text-[#545B63]">ostatni dzień {fmtDay(t.activeTo)}</span>
+                  <button type="button" disabled={action.busy} onClick={() => setInFleet(t, true)} className={`${BTN} ml-auto h-8`}>
+                    Przywróć
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
       </div>
       <form
@@ -672,13 +735,24 @@ function TrailersSection() {
             Numer *
             <input id={`${id}-plate`} value={plate} onChange={e => setPlate(e.target.value)} className={`${INPUT} w-36 font-mono uppercase`} />
           </label>
+          <label className="flex flex-col gap-1 text-xs font-semibold text-[#545B63]" htmlFor={`${id}-carrier`}>
+            Przewoźnik
+            <select id={`${id}-carrier`} value={carrier} onChange={e => setCarrier(e.target.value)} className={`${INPUT} w-72`}>
+              <option value="">— nieprzypisana —</option>
+              {carriers.map(c => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="flex flex-col gap-1 text-xs font-semibold text-[#545B63]" htmlFor={`${id}-pl`}>
             Typ (PL)
-            <input id={`${id}-pl`} value={typePl} onChange={e => setTypePl(e.target.value)} placeholder="chłodnia 2,61 m · rolki" className={`${INPUT} w-64`} />
+            <input id={`${id}-pl`} value={typePl} onChange={e => setTypePl(e.target.value)} placeholder="chłodnia 2,61 m · rolki" className={`${INPUT} w-56`} />
           </label>
           <label className="flex flex-col gap-1 text-xs font-semibold text-[#545B63]" htmlFor={`${id}-en`}>
             Typ (EN)
-            <input id={`${id}-en`} value={typeEn} onChange={e => setTypeEn(e.target.value)} placeholder="cooler 2.61m rollerbed" className={`${INPUT} w-64`} />
+            <input id={`${id}-en`} value={typeEn} onChange={e => setTypeEn(e.target.value)} placeholder="cooler 2.61m rollerbed" className={`${INPUT} w-56`} />
           </label>
           <button type="submit" disabled={action.busy || !plate.trim()} className={BTN_PRIMARY}>
             Zapisz naczepę
@@ -686,6 +760,119 @@ function TrailersSection() {
         </div>
         <span className="text-xs text-[#545B63]">Puste pola typu przy nowej naczepie = domyślna chłodnia 2,61 m z rolkami.</span>
       </form>
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------- fleet list
+
+const LIST_EXAMPLE = `Mozdyniewicz:
+Ciągniki: KN1234A, KN5678B
+Naczepy: KNS111AA, KNS222BB
+
+Karol Czerpak:
+Ciągnik: KN9999C
+Naczepa: KN333CC`
+
+function FleetListSection({ onChanged }: { onChanged?: () => void }) {
+  const id = useId()
+  const [text, setText] = useState('')
+  const [plan, setPlan] = useState<FleetSyncResult | null>(null)
+  const action = useAction()
+
+  const check = () =>
+    void action.run(
+      async () => {
+        setPlan(await boardApi.syncFleet(text, false))
+      },
+      null,
+      'Nie udało się sprawdzić listy.',
+    )
+
+  const apply = () =>
+    void action.run(
+      async () => {
+        const result = await boardApi.syncFleet(text, true)
+        setPlan(result)
+        onChanged?.()
+      },
+      'Zapisano stan floty.',
+      'Nie udało się zapisać zmian.',
+    )
+
+  const ready = plan !== null && plan.errors.length === 0 && !plan.applied && plan.changes.length > 0
+
+  return (
+    <section aria-labelledby="list-h" className="flex flex-col gap-4">
+      <div className={CARD}>
+        <div className="flex flex-col gap-1">
+          <h2 id="list-h" className="text-base font-bold">
+            Aktualizuj stan floty z listy
+          </h2>
+          <span className="text-[13px] text-[#545B63]">
+            Wklej aktualną listę: przewoźnik, a pod nim ciągniki i naczepy. Naczepy przypisuję przewoźnikom; przy jednym zestawie naczepa staje się stałą naczepą
+            ciągnika, przy kilku zestawach naczepy rotują. Naczepy spoza listy wycofam z floty od dziś. Ciągników nie dodaję ani nie usuwam — pokażę tylko różnice.
+          </span>
+        </div>
+        <label className="flex flex-col gap-1 text-xs font-semibold text-[#545B63]" htmlFor={`${id}-text`}>
+          Lista
+          <textarea
+            id={`${id}-text`}
+            value={text}
+            onChange={e => {
+              setText(e.target.value)
+              setPlan(null)
+            }}
+            rows={12}
+            placeholder={LIST_EXAMPLE}
+            className="rounded-lg border border-[#C9CEC6] bg-white px-3 py-2 font-mono text-[13px] font-normal text-[#15181C]"
+          />
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={check} disabled={action.busy || !text.trim()} className={BTN}>
+            Sprawdź zmiany
+          </button>
+          <button type="button" onClick={apply} disabled={action.busy || !ready} className={BTN_PRIMARY}>
+            Zastosuj {plan && !plan.applied && plan.changes.length > 0 ? `(${plan.changes.length})` : ''}
+          </button>
+        </div>
+        <Alert text={action.error} />
+        <Done text={action.done} />
+        {plan && (
+          <div className="flex flex-col gap-3 text-sm" aria-live="polite">
+            {plan.errors.map(e => (
+              <p key={e} className="rounded-lg bg-red-50 px-3 py-2 text-red-800">
+                {e}
+              </p>
+            ))}
+            {plan.errors.length === 0 && plan.changes.length === 0 && <p className="rounded-lg bg-[#F6F7F4] px-3 py-2">{plan.applied ? 'Zapisane.' : 'Baza jest już zgodna z listą.'}</p>}
+            {plan.changes.length > 0 && (
+              <div>
+                <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">{plan.applied ? 'Zapisane zmiany' : 'Zmiany do zapisania'}</span>
+                <ul className="mt-1 flex flex-col gap-1">
+                  {plan.changes.map(c => (
+                    <li key={c} className="rounded-md bg-[#F6F7F4] px-3 py-1.5 font-mono text-[12.5px]">
+                      {c}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {plan.warnings.length > 0 && (
+              <div>
+                <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Do zrobienia ręcznie</span>
+                <ul className="mt-1 flex flex-col gap-1">
+                  {plan.warnings.map(w => (
+                    <li key={w} className="rounded-md bg-[#FBEBD0] px-3 py-1.5 text-[13px] text-[#3A2400]">
+                      {w}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </section>
   )
 }

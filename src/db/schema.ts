@@ -158,6 +158,8 @@ export interface BoardTrailersTable {
   type_pl: ColumnType<string, string | undefined, string>
   type_en: ColumnType<string, string | undefined, string>
   notes: ColumnType<string, string | undefined, string>
+  carrier: ColumnType<string, string | undefined, string> // migration 0010; '' = not assigned
+  active_to: Nullable<string> // migration 0010; last day in the fleet, null = in the fleet
 }
 
 export interface BoardTrailerAliasesTable {

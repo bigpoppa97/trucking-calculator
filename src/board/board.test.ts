@@ -7,6 +7,7 @@ import { BoardService } from './boardService.js'
 import { DistanceService } from './distances.js'
 import { ExportFormatError, readExport } from './exportReader.js'
 import { ensurePlaceSeed } from './placeSeed.js'
+import { parseFleetList } from './fleetList.js'
 
 /**
  * End-to-end tests of the board on synthetic exports (same columns as the
@@ -406,5 +407,102 @@ describe('notes', () => {
     const week = await board.weekView('2026-09-21')
     const bar = week.trucks.find(t => t.plate === 'AA1001A')!.bars[0]!
     expect(bar.noteLines).toEqual(['Z aplikacji: 224R', expect.stringContaining('Awizacja 2 h przed')])
+  })
+})
+
+describe('fleet list (trailers belong to carriers)', () => {
+  const LIST = `Alfa:
+Ciągniki: AA1001A, AA 1002A
+Naczepy: TR100, tr200
+
+Beta:
+Ciągnik: BB2001B
+Naczepa: TR960PE
+`
+
+  it('parses the pasted list in the department format', () => {
+    expect(parseFleetList(LIST)).toEqual({
+      blocks: [
+        { name: 'Alfa', tractors: ['AA1001A', 'AA1002A'], trailers: ['TR100', 'TR200'] },
+        { name: 'Beta', tractors: ['BB2001B'], trailers: ['TR960PE'] },
+      ],
+      errors: [],
+    })
+    expect(parseFleetList('Naczepy: X1').errors[0]).toMatch(/przed nazwą przewoźnika/)
+    expect(parseFleetList('Gamma:\nNaczepy: X1').errors[0]).toMatch(/nie ma linii „Ciągniki/)
+  })
+
+  it('shows the plan first, then assigns trailers to carriers, fixes single sets and retires the rest', async () => {
+    await board.upsertTrailer({ plate: 'OLD1' })
+    const dry = await board.syncFleetList(LIST, false)
+    expect(dry.applied).toBe(false)
+    expect(dry.errors).toEqual([])
+    expect(dry.warnings).toEqual([])
+    expect(dry.changes).toEqual([
+      'TR100: przewoźnik Przewoźnik Alfa.',
+      'TR200: przewoźnik Przewoźnik Alfa.',
+      'AA1001A: bez stałej naczepy (było TR100) — naczepy przewoźnika rotują, tablica pokaże naczepę z ostatniego zlecenia.',
+      'TR960PE: przewoźnik Beta Trans.',
+      'BB2001B: stała naczepa TR960PE.',
+      'OLD1: wycofana z floty (ostatni dzień 26.09.2026).',
+    ])
+    expect((await db.selectFrom('board_trailers').select('carrier').where('plate', '=', 'TR100').executeTakeFirstOrThrow()).carrier).toBe('')
+
+    const done = await board.syncFleetList(LIST, true)
+    expect(done.applied).toBe(true)
+    const trailers = await board.trailers()
+    expect(trailers.map(t => [t.plate, t.carrier, t.activeTo])).toEqual(
+      expect.arrayContaining([
+        ['TR100', 'Przewoźnik Alfa', null],
+        ['TR200', 'Przewoźnik Alfa', null],
+        ['TR960PE', 'Beta Trans', null],
+        ['OLD1', '', '2026-09-26'],
+      ]),
+    )
+    const fleet = await board.fleet()
+    expect(fleet.map(t => [t.currentPlate, t.trailerPlate])).toEqual([
+      ['AA1001A', null],
+      ['AA1002A', null],
+      ['BB2001B', 'TR960PE'],
+    ])
+    expect((await board.syncFleetList(LIST, false)).changes).toEqual([])
+  })
+
+  it('reports tractors it cannot place and refuses duplicates', async () => {
+    const plan = await board.syncFleetList('Alfa:\nCiągniki: AA1001A, CC3003C\nNaczepy: TR100', false)
+    expect(plan.warnings.join('\n')).toMatch(/CC3003C .*nie ma w bazie/)
+    expect(plan.warnings.join('\n')).toMatch(/AA1002A .*nie ma go na liście/)
+    expect(plan.warnings.join('\n')).toMatch(/BB2001B .*nie ma go na liście/)
+    const dup = await board.syncFleetList('Alfa:\nCiągniki: AA1001A\nNaczepy: TR100\nBeta:\nCiągniki: BB2001B\nNaczepy: TR100', true)
+    expect(dup.applied).toBe(false)
+    expect(dup.errors[0]).toMatch(/TR100 jest na liście dwa razy/)
+  })
+
+  it('flags a retired trailer only on orders loaded after it left the fleet, and suggests the carrier pool', async () => {
+    await board.upsertTrailer({ plate: 'OLD1' })
+    await board.syncFleetList(LIST, true) // OLD1 last day 26.09
+    await board.importFile(
+      await xlsx([
+        { no: '79-1-26', from: 'Warszawa', ld: '2026-09-25', to: 'Budapest', ud: '2026-09-26', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'OLD1' },
+        { no: '79-2-26', from: 'Warszawa', ld: '2026-09-27', to: 'Budapest', ud: '2026-09-28', rev: 1450, cost: 1250, sub: 'AA1002A', trailer: 'OLD1' },
+        { no: '79-3-26', from: 'Warszawa', ld: '2026-09-27', to: 'Wien', ud: '2026-09-28', rev: 1000, cost: 900, sub: 'AA1001A' },
+        { no: '79-4-26', from: 'Warszawa', ld: '2026-09-27', to: 'Wien', ud: '2026-09-28', rev: 1000, cost: 900, sub: 'AA1001A', trailer: 'TRX9' },
+      ]),
+      'e.xlsx',
+      'daily',
+    )
+    const unknown = await issuesOf('UNKNOWN_TRAILER')
+    const retired = unknown.find(i => i.ref === 'OLD1')
+    expect(retired?.message).toBe('Naczepy „OLD1” nie ma już we flocie (do 26.09), a jest w zleceniu: 79-2-26.')
+    expect(retired?.details).toMatchObject({ retired: 'OLD1', suggestions: [] })
+    const fresh = unknown.find(i => i.ref === 'TRX9')
+    expect(fresh?.details).toMatchObject({ retired: null, suggestions: ['TR100', 'TR200'], carrier: 'Przewoźnik Alfa' })
+    const missing = await issuesOf('MISSING_TRAILER')
+    expect(missing[0]?.details).toMatchObject({ pool: ['TR100', 'TR200'], lastKnown: null })
+
+    // Bringing the retired trailer back clears the flag.
+    await board.resolveIssue(retired!.id, 'new', {})
+    expect((await issuesOf('UNKNOWN_TRAILER')).map(i => i.ref)).toEqual(['TRX9'])
+    expect((await board.trailers()).find(t => t.plate === 'OLD1')?.activeTo).toBeNull()
   })
 })

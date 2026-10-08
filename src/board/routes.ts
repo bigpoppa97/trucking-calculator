@@ -204,6 +204,21 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
       }),
   )
 
+  app.post<{ Body: { text: string; apply?: boolean } }>(
+    '/api/board/fleet/sync',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: { text: { type: 'string', minLength: 1, maxLength: 20000 }, apply: { type: 'boolean' } },
+          required: ['text'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => handle(reply, () => as(request).syncFleetList(request.body.text, request.body.apply === true)),
+  )
+
   app.patch<{ Params: { id: string }; Body: { carrier?: string; driver?: string; phone?: string; trailerPlate?: string | null; notes?: string; active?: boolean; sortOrder?: number } }>(
     '/api/board/fleet/:id',
     {
@@ -250,7 +265,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
   // Trailers
   app.get('/api/board/trailers', async (_request, reply) => handle(reply, async () => ({ trailers: await board.trailers() })))
 
-  app.post<{ Body: { plate: string; typePl?: string; typeEn?: string; notes?: string } }>(
+  app.post<{ Body: { plate: string; typePl?: string; typeEn?: string; notes?: string; carrier?: string; activeTo?: string | null } }>(
     '/api/board/trailers',
     {
       schema: {
@@ -261,6 +276,8 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
             typePl: { type: 'string', maxLength: 100 },
             typeEn: { type: 'string', maxLength: 100 },
             notes: { type: 'string', maxLength: 500 },
+            carrier: { type: 'string', maxLength: 200 },
+            activeTo: { anyOf: [DATE, { type: 'null' }] },
           },
           required: ['plate'],
           additionalProperties: false,

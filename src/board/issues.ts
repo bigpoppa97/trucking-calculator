@@ -61,7 +61,7 @@ const eur = (n: number) => `${Math.round(n).toLocaleString('pl-PL').replace(/ /
 export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: IssueThresholds): IssueDraft[] {
   const out: IssueDraft[] = []
   const unknownPlaces = new Map<string, { raw: string; orders: Set<string> }>()
-  const unknownTrailers = new Map<string, { raw: string; orders: Set<string> }>()
+  const unknownTrailers = new Map<string, { raw: string; orders: Set<string>; carriers: Set<string> }>()
 
   for (const o of orders) {
     if (o.history || !o.hasFleetLeg) continue
@@ -224,13 +224,15 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
           kind: 'MISSING_TRAILER',
           ref,
           message: 'Brak numeru naczepy w zleceniu.',
-          details: { lastKnown: truck?.trailerPlate ?? null, plate: fleetLeg.plate },
+          details: { lastKnown: truck?.trailerPlate ?? null, plate: fleetLeg.plate, pool: ctx.trailers.poolOf(truck?.carrier ?? '') },
           fingerprint: '',
         })
       } else if (!fleetLeg.trailerKnown) {
         const k = normalizePlate(fleetLeg.trailerRaw)
-        const entry = unknownTrailers.get(k) ?? { raw: fleetLeg.trailerRaw, orders: new Set<string>() }
+        const entry = unknownTrailers.get(k) ?? { raw: fleetLeg.trailerRaw, orders: new Set<string>(), carriers: new Set<string>() }
         entry.orders.add(ref)
+        const carrier = fleetLeg.truckId !== null ? ctx.fleet.byId(fleetLeg.truckId)?.carrier : undefined
+        if (carrier) entry.carriers.add(carrier)
         unknownTrailers.set(k, entry)
       }
     }
@@ -260,12 +262,23 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
   }
   for (const [k, v] of unknownTrailers) {
     const orders = [...v.orders]
+    const list = `${orders.slice(0, 3).join(', ')}${orders.length > 3 ? '…' : ''}`
+    const canonical = ctx.trailers.canonical(v.raw)
+    const retired = canonical ? ctx.trailers.get(canonical) : undefined
+    // Similar spellings first; for an unknown plate also the trailers of the carrier(s)
+    // that drove it. A retired trailer is a real past trailer — only spelling matches,
+    // never "the carrier's other trailer", so its history is not rewritten.
+    const similar = ctx.trailers.suggest(v.raw)
+    const pool = retired ? [] : [...v.carriers].flatMap(c => ctx.trailers.poolOf(c))
+    const suggestions = [...new Set([...similar, ...pool])].slice(0, 4)
     out.push({
       key: `UNKNOWN_TRAILER:${k}`,
       kind: 'UNKNOWN_TRAILER',
       ref: v.raw,
-      message: `Naczepa „${v.raw}” nie istnieje w bazie (${orders.slice(0, 3).join(', ')}${orders.length > 3 ? '…' : ''}).`,
-      details: { raw: v.raw, orders, suggestions: ctx.trailers.suggest(v.raw) },
+      message: retired
+        ? `Naczepy „${retired.plate}” nie ma już we flocie (do ${fmtDate(retired.activeTo ?? '')}), a jest w zleceniu: ${list}.`
+        : `Naczepa „${v.raw}” nie istnieje w bazie (${list}).`,
+      details: { raw: v.raw, orders, suggestions, retired: retired ? retired.plate : null, carrier: v.carriers.size === 1 ? [...v.carriers][0] : null },
       fingerprint: k,
     })
   }

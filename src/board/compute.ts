@@ -183,7 +183,8 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     orderNo: row.order_no,
     trailer,
     trailerRaw,
-    trailerKnown: trailerCanonical !== null,
+    // Known = in the fleet on the loading day; a retired trailer goes to review like an unknown one.
+    trailerKnown: trailerCanonical !== null && ctx.trailers.isActiveOn(trailerCanonical, row.load_date),
     kmLoaded: null,
     kmEmpty: null,
     kmEmptyFrom: null,

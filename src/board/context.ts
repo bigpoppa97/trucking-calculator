@@ -41,6 +41,10 @@ export interface TrailerRecord {
   typePl: string
   typeEn: string
   notes: string
+  /** Owning carrier ('' = not assigned). Trailers rotate between a carrier's tractors. */
+  carrier: string
+  /** Last day in the fleet (YYYY-MM-DD); null = still in the fleet. */
+  activeTo: string | null
 }
 
 export class FleetIndex {
@@ -121,11 +125,27 @@ export class TrailerIndex {
     return [...this.byPlate.values()]
   }
 
-  /** Closest known trailers to an unknown spelling ("KN96PE" → KN960PE). */
+  /** Trailer was in the fleet on that day (unknown plates are never "active"). */
+  isActiveOn(plate: string, date: string): boolean {
+    const t = this.byPlate.get(plate)
+    return t !== undefined && (t.activeTo === null || t.activeTo >= date)
+  }
+
+  /** Trailers currently in the fleet of this carrier (word-prefix carrier match). */
+  poolOf(carrier: string): string[] {
+    if (!carrier) return []
+    return [...this.byPlate.values()]
+      .filter(t => t.activeTo === null && t.carrier && sameCarrier(t.carrier, carrier))
+      .map(t => t.plate)
+      .sort()
+  }
+
+  /** Closest trailers in the fleet to an unknown or retired spelling ("KN96PE" → KN960PE). */
   suggest(raw: string, limit = 3): string[] {
     const key = normalizePlate(raw)
-    return [...this.byPlate.keys()]
-      .map(plate => ({ plate, d: editDistance(key, normalizePlate(plate)) }))
+    return [...this.byPlate.values()]
+      .filter(t => t.activeTo === null && t.plate !== key)
+      .map(t => ({ plate: t.plate, d: editDistance(key, normalizePlate(t.plate)) }))
       .filter(x => x.d <= 2)
       .sort((a, b) => a.d - b.d)
       .slice(0, limit)
@@ -233,7 +253,7 @@ export async function loadBoardContext(db: Kysely<DB>): Promise<BoardContext> {
   return {
     fleet,
     trailers: new TrailerIndex(
-      trailers.map(t => ({ plate: t.plate, typePl: t.type_pl, typeEn: t.type_en, notes: t.notes })),
+      trailers.map(t => ({ plate: t.plate, typePl: t.type_pl, typeEn: t.type_en, notes: t.notes, carrier: t.carrier, activeTo: t.active_to })),
       trailerAliases.map(a => ({ alias: a.alias, plate: a.trailer_plate })),
     ),
     places: new PlaceIndex(

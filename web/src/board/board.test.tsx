@@ -238,3 +238,24 @@ describe('FleetPage', () => {
     expect(screen.getByRole('button', { name: 'Zapisz progi' })).toBeDisabled()
   })
 })
+
+describe('FleetPage — wklej stan floty', () => {
+  it('shows the planned changes first and applies them on request', async () => {
+    api.fleet.mockResolvedValue(FLEET)
+    api.syncFleet
+      .mockResolvedValueOnce({ changes: ['KN1111P: przewoźnik Przewoźnik A.'], warnings: ['KN9999X jest na tablicy, ale nie ma go na liście.'], errors: [], applied: false })
+      .mockResolvedValueOnce({ changes: ['KN1111P: przewoźnik Przewoźnik A.'], warnings: [], errors: [], applied: true })
+    render(<FleetPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Wklej stan floty' }))
+    const apply = screen.getByRole('button', { name: /Zastosuj/ })
+    expect(apply).toBeDisabled()
+    await userEvent.type(screen.getByLabelText('Lista'), 'Przewoźnik A:{enter}Ciągnik: KN1050H{enter}Naczepa: KN1111P')
+    await userEvent.click(screen.getByRole('button', { name: 'Sprawdź zmiany' }))
+    expect(api.syncFleet).toHaveBeenLastCalledWith('Przewoźnik A:\nCiągnik: KN1050H\nNaczepa: KN1111P', false)
+    expect(await screen.findByText('KN1111P: przewoźnik Przewoźnik A.')).toBeInTheDocument()
+    expect(screen.getByText(/nie ma go na liście/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Zastosuj (1)' }))
+    expect(api.syncFleet).toHaveBeenLastCalledWith('Przewoźnik A:\nCiągnik: KN1050H\nNaczepa: KN1111P', true)
+    expect(await screen.findByText('Zapisane zmiany')).toBeInTheDocument()
+  })
+})

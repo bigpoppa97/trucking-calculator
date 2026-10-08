@@ -5,6 +5,7 @@ import { loadBoardContext, type BoardContext } from './context.js'
 import type { DistanceService } from './distances.js'
 import { importExportFile, FIELD_LABELS, type ImportSummary } from './importService.js'
 import { DEFAULT_THRESHOLDS, deriveIssues, fmtDate, syncDerivedIssues, type IssueThresholds } from './issues.js'
+import { planFleetSync, type FleetPlan } from './fleetList.js'
 import { addDays, aliasKey, isoWeekNumber, normalizePlate, weekStart } from './normalize.js'
 
 /**
@@ -216,8 +217,17 @@ export class BoardService {
         break
       }
       case 'UNKNOWN_TRAILER:new': {
+        // New trailer, or a retired one brought back into the fleet.
         const plate = normalizePlate(str('plate') || String(details['raw'] ?? issue.ref))
-        await this.upsertTrailer({ plate, typePl: str('typePl') || undefined, typeEn: str('typeEn') || undefined })
+        const carrier = typeof details['carrier'] === 'string' ? details['carrier'] : undefined
+        const exists = await this.db.selectFrom('board_trailers').select(['plate', 'carrier']).where('plate', '=', plate).executeTakeFirst()
+        await this.upsertTrailer({
+          plate,
+          typePl: str('typePl') || undefined,
+          typeEn: str('typeEn') || undefined,
+          activeTo: null,
+          ...(carrier && !exists?.carrier ? { carrier } : {}),
+        })
         await this.addTrailerAlias(String(details['raw'] ?? issue.ref), plate)
         await done(`new:${plate}`)
         break
@@ -666,6 +676,49 @@ export class BoardService {
 
   // ---------------------------------------------------------------- registries
 
+  /**
+   * Current fleet pasted as text (see fleetList.ts). Without `apply` only the plan is returned,
+   * so the user sees every change before it is made.
+   */
+  async syncFleetList(text: string, apply: boolean): Promise<Omit<FleetPlan, 'operations'> & { applied: boolean }> {
+    const ctx = await loadBoardContext(this.db)
+    const today = this.now().slice(0, 10)
+    const plan = planFleetSync(text, ctx, today)
+    const { operations, ...summary } = plan
+    if (!apply || plan.errors.length > 0 || operations.length === 0) return { ...summary, applied: false }
+    await this.db.transaction().execute(async trx => {
+      for (const o of operations) {
+        switch (o.op) {
+          case 'truck-fixed-trailer':
+            await trx.updateTable('board_trucks').set({ trailer_plate: o.trailer }).where('id', '=', o.truckId).execute()
+            break
+          case 'truck-activate':
+            await trx.updateTable('board_trucks').set({ active: 1 }).where('id', '=', o.truckId).execute()
+            break
+          case 'trailer-add':
+            await trx.insertInto('board_trailers').values({ plate: o.plate, carrier: o.carrier }).execute()
+            await trx
+              .insertInto('board_trailer_aliases')
+              .values({ alias: o.plate, trailer_plate: o.plate })
+              .onConflict(oc => oc.column('alias').doUpdateSet({ trailer_plate: o.plate }))
+              .execute()
+            break
+          case 'trailer-carrier':
+            await trx.updateTable('board_trailers').set({ carrier: o.carrier }).where('plate', '=', o.plate).execute()
+            break
+          case 'trailer-reactivate':
+            await trx.updateTable('board_trailers').set({ active_to: null }).where('plate', '=', o.plate).execute()
+            break
+          case 'trailer-retire':
+            await trx.updateTable('board_trailers').set({ active_to: o.activeTo }).where('plate', '=', o.plate).execute()
+            break
+        }
+      }
+    })
+    await this.refreshIssues()
+    return { ...summary, applied: true }
+  }
+
   async fleet() {
     const ctx = await loadBoardContext(this.db)
     const today = this.now().slice(0, 10)
@@ -741,20 +794,30 @@ export class BoardService {
     }))
   }
 
-  async upsertTrailer(input: { plate: string; typePl?: string | undefined; typeEn?: string | undefined; notes?: string | undefined }) {
+  /**
+   * Add or change a trailer. `carrier`: owning carrier ('' = none); `activeTo`: last day in the
+   * fleet (null = back in the fleet, undefined = unchanged; a new trailer starts in the fleet).
+   */
+  async upsertTrailer(input: {
+    plate: string
+    typePl?: string | undefined
+    typeEn?: string | undefined
+    notes?: string | undefined
+    carrier?: string | undefined
+    activeTo?: string | null | undefined
+  }) {
     const plate = normalizePlate(input.plate)
     if (!plate) throw new BoardError('BAD_PLATE', 'Podaj numer naczepy.')
-    const values = {
-      plate,
+    if (input.activeTo && !/^\d{4}-\d{2}-\d{2}$/.test(input.activeTo)) throw new BoardError('BAD_DATE', 'Podaj datę w formacie RRRR-MM-DD.')
+    const changes = {
       ...(input.typePl ? { type_pl: input.typePl } : {}),
       ...(input.typeEn ? { type_en: input.typeEn } : {}),
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
+      ...(input.carrier !== undefined ? { carrier: input.carrier.trim() } : {}),
+      ...(input.activeTo !== undefined ? { active_to: input.activeTo } : {}),
     }
-    const update = {
-      ...(input.typePl ? { type_pl: input.typePl } : {}),
-      ...(input.typeEn ? { type_en: input.typeEn } : {}),
-      ...(input.notes !== undefined ? { notes: input.notes } : {}),
-    }
+    const values = { plate, ...changes }
+    const update = changes
     await this.db
       .insertInto('board_trailers')
       .values(values)

@@ -8,6 +8,7 @@ import * as m0006 from './0006_route_polyline.js'
 import * as m0007 from './0007_editable_month_days.js'
 import * as m0008 from './0008_route_waypoints.js'
 import * as m0009 from './0009_board.js'
+import * as m0010 from './0010_trailer_carrier.js'
 
 /**
  * In-code migration registry (instead of FileMigrationProvider) so migrations
@@ -24,4 +25,5 @@ export const migrations: Record<string, Migration> = {
   '0007_editable_month_days': m0007,
   '0008_route_waypoints': m0008,
   '0009_board': m0009,
+  '0010_trailer_carrier': m0010,
 }

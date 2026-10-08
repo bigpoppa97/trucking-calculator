@@ -173,7 +173,18 @@ export interface Trailer {
   typePl: string
   typeEn: string
   notes: string
+  /** Owning carrier ('' = not assigned). */
+  carrier: string
+  /** Last day in the fleet; null = in the fleet. */
+  activeTo: string | null
   aliases: string[]
+}
+
+export interface FleetSyncResult {
+  changes: string[]
+  warnings: string[]
+  errors: string[]
+  applied: boolean
 }
 
 export interface Place {
@@ -258,7 +269,8 @@ export const boardApi = {
     call('PATCH', `/api/board/fleet/${id}`, patch),
   addPlate: (id: number, plate: string, validFrom: string) => call('POST', `/api/board/fleet/${id}/plates`, { plate, validFrom }),
   trailers: async () => (await call<{ trailers: Trailer[] }>('GET', '/api/board/trailers')).trailers,
-  saveTrailer: (input: { plate: string; typePl?: string; typeEn?: string }) => call('POST', '/api/board/trailers', input),
+  saveTrailer: (input: { plate: string; typePl?: string; typeEn?: string; carrier?: string; activeTo?: string | null }) => call('POST', '/api/board/trailers', input),
+  syncFleet: (text: string, apply: boolean) => call<FleetSyncResult>('POST', '/api/board/fleet/sync', { text, apply }),
   addTrailerAlias: (alias: string, trailer: string) => call('POST', '/api/board/trailers/aliases', { alias, trailer }),
   places: async () => (await call<{ places: Place[] }>('GET', '/api/board/places')).places,
   createPlace: async (input: { code?: string; name: string; country?: string; lat: number; lon: number }) =>

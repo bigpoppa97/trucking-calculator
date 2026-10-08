@@ -303,10 +303,19 @@ function IssueCard({
                 To {String(s)} — zapamiętaj zapis
               </ActionButton>
             ))}
-            <ActionButton onClick={() => onResolve('new', {})}>Dodaj jako nową naczepę</ActionButton>
+            <ActionButton onClick={() => onResolve('new', {})}>{typeof d['retired'] === 'string' ? 'Przywróć do floty' : 'Dodaj jako nową naczepę'}</ActionButton>
           </>
         )}
-        {issue.kind === 'MISSING_TRAILER' && <TrailerSetter lastKnown={typeof d['lastKnown'] === 'string' ? d['lastKnown'] : ''} onSet={t => onResolve('set', { trailer: t })} />}
+        {issue.kind === 'MISSING_TRAILER' && (
+          <>
+            {(Array.isArray(d['pool']) ? (d['pool'] as string[]) : []).map(t => (
+              <ActionButton key={t} primary onClick={() => onResolve('set', { trailer: t })}>
+                {t}
+              </ActionButton>
+            ))}
+            <TrailerSetter lastKnown={typeof d['lastKnown'] === 'string' ? d['lastKnown'] : ''} onSet={t => onResolve('set', { trailer: t })} />
+          </>
+        )}
         {(issue.kind === 'UNKNOWN_PLACE' || issue.kind === 'PRZ_PLACE_UNKNOWN') && (
           <PlaceResolver raw={String(d['raw'] ?? issue.ref)} suggestions={suggestions as Array<{ code: string; name: string }>} onResolve={onResolve} />
         )}
