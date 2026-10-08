@@ -76,11 +76,5 @@ export function parseKonfiguracja(csvContent: string): ParsedKonfiguracja {
   for (const { key } of PARAM_PREFIXES) {
     if (!(key in config)) warnings.push(`Konfiguracja: required config '${key}' not found in sheet export.`)
   }
-  if (config[CONFIG_KEYS.monthDays] !== undefined && config[CONFIG_KEYS.monthDays] !== '30') {
-    warnings.push(
-      `Konfiguracja: month_days is ${config[CONFIG_KEYS.monthDays]}, but the validated business decision fixes it at 30.`,
-    )
-  }
-
   return { config, variants, warnings }
 }

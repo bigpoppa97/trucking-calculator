@@ -1,5 +1,6 @@
 import type { Kysely, Transaction } from 'kysely'
 import type { DB, KmSource, TollStatusDb } from '../db/schema.js'
+import type { RoutePolylineSection } from '../here/routeParser.js'
 
 /** Route ID format per PRD §3.1: hyphen-separated IATA codes, 2+ stops. */
 export const ROUTE_CODE_REGEX = /^[A-Z]{3}(-[A-Z]{3})+$/
@@ -31,6 +32,8 @@ export interface RouteDetails {
   tolls: RouteToll[]
   /** Countries with km > 0 but no toll row — "tolls pending" (PRD §3.2). */
   tollsPendingCountries: string[]
+  /** Route shape for the map preview; null for v1-imported routes. */
+  polylineSections: RoutePolylineSection[] | null
 }
 
 export interface NewRouteInput {
@@ -39,6 +42,7 @@ export interface NewRouteInput {
   kmSource: KmSource
   createdBy: string
   countryKm: Record<string, number>
+  polylineSections?: RoutePolylineSection[]
   tolls: Array<{
     country: string
     tollEur: number
@@ -78,6 +82,7 @@ export class RouteRepository {
           total_km: input.totalKm,
           km_source: input.kmSource,
           created_by: input.createdBy,
+          polyline_encoded: input.polylineSections === undefined ? null : JSON.stringify(input.polylineSections),
         })
         .returning('id')
         .executeTakeFirstOrThrow()
@@ -136,6 +141,70 @@ export class RouteRepository {
       })
     }
     return summaries
+  }
+
+  /** Store/replace ONLY the map shape — km and tolls stay untouched. */
+  async setPolylineSections(routeId: number, sections: RoutePolylineSection[]): Promise<void> {
+    await this.db
+      .updateTable('routes')
+      .set({ polyline_encoded: JSON.stringify(sections) })
+      .where('id', '=', routeId)
+      .execute()
+  }
+
+  /**
+   * Apply a HERE gap fill atomically. ADD-ONLY for data: a country km row or
+   * toll row that already exists is never replaced (re-checked inside the
+   * transaction). total_km and km_source are not touched. The shape is
+   * replaced; added countries are audited on the km_* fields (an existing
+   * note is kept and the new one appended).
+   */
+  async applyGapFill(
+    routeId: number,
+    fill: {
+      addCountryKm: Record<string, number>
+      addTolls: NewRouteInput['tolls']
+      polylineSections: RoutePolylineSection[]
+      kmAudit?: { note: string; updatedBy: string; updatedAt: string }
+    },
+  ): Promise<void> {
+    await this.db.transaction().execute(async trx => {
+      const existingKm = new Set(
+        (await trx.selectFrom('route_country_km').select('country').where('route_id', '=', routeId).execute()).map(
+          r => r.country,
+        ),
+      )
+      for (const [country, km] of Object.entries(fill.addCountryKm)) {
+        if (km <= 0 || existingKm.has(country)) continue
+        await trx.insertInto('route_country_km').values({ route_id: routeId, country, km }).execute()
+      }
+
+      const existingTolls = new Set(
+        (await trx.selectFrom('route_country_toll').select('country').where('route_id', '=', routeId).execute()).map(
+          r => r.country,
+        ),
+      )
+      for (const toll of fill.addTolls) {
+        if (existingTolls.has(toll.country)) continue
+        await insertToll(trx, routeId, toll)
+      }
+
+      const route = await trx.selectFrom('routes').select('km_note').where('id', '=', routeId).executeTakeFirstOrThrow()
+      await trx
+        .updateTable('routes')
+        .set({
+          polyline_encoded: JSON.stringify(fill.polylineSections),
+          ...(fill.kmAudit !== undefined
+            ? {
+                km_note: route.km_note === null ? fill.kmAudit.note : `${route.km_note} | ${fill.kmAudit.note}`,
+                km_updated_by: fill.kmAudit.updatedBy,
+                km_updated_at: fill.kmAudit.updatedAt,
+              }
+            : {}),
+        })
+        .where('id', '=', routeId)
+        .execute()
+    })
   }
 
   /**
@@ -267,6 +336,8 @@ export class RouteRepository {
       countryKm,
       tolls,
       tollsPendingCountries,
+      polylineSections:
+        row.polyline_encoded === null ? null : (JSON.parse(row.polyline_encoded) as RoutePolylineSection[]),
     }
   }
 }

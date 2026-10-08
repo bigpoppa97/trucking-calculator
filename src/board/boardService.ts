@@ -117,7 +117,12 @@ export class BoardService {
   }
 
   private actor(): string {
-    return this.options.actor ?? 'kierownik'
+    return this.options.actor ?? 'tablica'
+  }
+
+  /** Same service, with notes/corrections/resolutions signed by the given user. */
+  withActor(actor: string): BoardService {
+    return new BoardService(this.db, this.distances, { ...this.options, actor })
   }
 
   async thresholds(): Promise<IssueThresholds> {

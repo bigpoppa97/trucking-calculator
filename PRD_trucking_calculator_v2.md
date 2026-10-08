@@ -35,14 +35,14 @@ Order total cost = Fuel + Highways + Fleet + Drivers + Overhead + Ferries/Tunnel
 |---|---|---|
 | **Fuel** | `total_km × (consumption/100) × fuel_price` | Defaults: 28 L/100km, €1.40/L. Both configurable. |
 | **Highways (tolls)** | `Σ toll_per_country` from route DB | **MANUAL VALUES ONLY** — see §4.3 |
-| **Fleet (tabor)** | `(order_days / 30) × monthly_fleet_cost` | Per fleet variant, see §2.2 |
+| **Fleet (tabor)** | `(order_days / month_days) × monthly_fleet_cost` | Per fleet variant, see §2.2 |
 | **Drivers** | `order_days × 160 × driver_count` | Rate €160/day configurable; drivers ∈ {1, 2} |
-| **Overhead (inne)** | `(order_days / 30) × monthly_overhead` | Static monthly figure set by finance (currently ~€3,012/month — confirm current value at build time; the config value is the source of truth) |
+| **Overhead (inne)** | `(order_days / month_days) × monthly_overhead` | Static monthly figure set by finance (currently ~€3,012/month — confirm current value at build time; the config value is the source of truth) |
 | **Ferries/Tunnels** | Manual EUR input per order | e.g. Helsinki ferry €220, Mont Blanc €450 |
 
 **P&L (optional):** if revenue entered → `profit = revenue − total_cost`, `margin % = profit / revenue`.
 
-**Denominator convention:** 30 days/month, fixed. Not calendar-aware. This is a validated business decision.
+**Denominator convention:** `month_days` config entry, finance-editable, integer 1–31, default **24**. Not calendar-aware. *(Revised 2026-07 by business sign-off; the original v2.0 decision fixed it at 30.)* Saved calculation snapshots are frozen and unaffected by later changes.
 
 ### 2.2 Fleet variants
 
@@ -145,7 +145,7 @@ route_country_toll(route_id FK, country CHAR(2), toll_eur NUMERIC,
                    status ENUM(estimate|verified), fetched_at, vehicle_profile JSONB,
                    verified_by NULL, verified_at NULL)
 fleet_variants(id PK, name UNIQUE, monthly_cost_eur, active BOOL)
-config(key PK, value)                     -- fuel_price, consumption, driver_day_rate, monthly_overhead, month_days=30
+config(key PK, value)                     -- fuel_price, consumption, driver_day_rate, monthly_overhead, month_days (default 24, editable)
 calculations(id PK, route_id FK, days, drivers, fleet_variant_id FK, ferries_eur, tunnels_eur,
              revenue_eur NULL, snapshot JSONB, created_by, created_at)
 ```
@@ -154,7 +154,7 @@ calculations(id PK, route_id FK, days, drivers, fleet_variant_id FK, ferries_eur
 ### 5.3 Key screens
 1. **Calculator** (main) — mirrors the validated sheet layout: route input with autocomplete, days, drivers, fleet dropdown, ferries/tunnels, live cost breakdown, total, optional P&L. Route status indicator: "✓ from database" / "✓ from HERE (unverified tolls)" / "⚠ new route".
 2. **Route database** — table view of all routes, per-country km & toll editing, "tolls pending" filter, manual km override with audit note.
-3. **Config** (finance/admin) — fuel price, consumption, driver rate, monthly overhead, fleet variants CRUD.
+3. **Config** (finance/admin) — fuel price, consumption, driver rate, monthly overhead, month_days denominator, fleet variants CRUD.
 4. **History** — saved calculations, filterable by route/date/user.
 
 ### 5.4 Validation & UX rules (from v1 pain points)

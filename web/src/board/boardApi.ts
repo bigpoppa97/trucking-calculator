@@ -1,4 +1,4 @@
-import { ApiError } from '../lib/api.js'
+import { ApiError, reportUnauthenticated } from '../lib/api.js'
 
 /** Client for /api/board — mirrors src/board/boardService.ts DTOs. */
 
@@ -207,7 +207,7 @@ async function call<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url:
       body === undefined ? { method } : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
     )
   } catch {
-    throw new ApiError('NETWORK', 'Brak połączenia z serwerem tablicy. Sprawdź, czy backend działa (npm run serve).')
+    throw new ApiError('NETWORK', 'Brak połączenia z serwerem tablicy. Sprawdź, czy okno „Kalkulator kosztow - serwer” jest uruchomione.')
   }
   if (!response.ok) {
     let code = 'HTTP_ERROR'
@@ -219,6 +219,7 @@ async function call<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url:
     } catch {
       // keep generic message
     }
+    if (response.status === 401 && code === 'UNAUTHENTICATED') reportUnauthenticated()
     throw new ApiError(code, message, response.status)
   }
   return (await response.json()) as T

@@ -1,0 +1,52 @@
+# Local development stack (handoff item 4).
+#
+# The database is SQLite (PRD §5.1: acceptable for a single-instance MVP),
+# so there is no separate database server container — the backend owns the
+# database file, persisted in the `calculator-data` named volume.
+#
+# Usage:
+#   cp .env.example .env      # then fill in HERE_API_KEY
+#   docker compose up
+#   docker compose exec backend npm run import:airports -- data/v1/airports.csv
+#   docker compose exec backend npm run import:v1
+#   docker compose exec backend npm run create-user -- admin@example.com Admin admin <password>
+#
+# Frontend: http://localhost:5173  ·  Backend API: http://localhost:3001
+
+services:
+  backend:
+    image: node:24-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run migrate && npm run serve"
+    environment:
+      HERE_API_KEY: ${HERE_API_KEY:?set HERE_API_KEY in .env}
+      DATABASE_PATH: /data/calculator.sqlite
+      PORT: "3001"
+      HOST: 0.0.0.0
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/app
+      # Container-private node_modules: better-sqlite3 is a native module and
+      # host binaries (e.g. Windows) are incompatible with the Linux container.
+      - backend-node-modules:/app/node_modules
+      - calculator-data:/data
+
+  web:
+    image: node:24-alpine
+    working_dir: /app/web
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      API_PROXY_TARGET: http://backend:3001
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/app
+      - web-node-modules:/app/web/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  backend-node-modules:
+  web-node-modules:
+  calculator-data:

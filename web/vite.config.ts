@@ -14,8 +14,9 @@ export default defineConfig({
   },
   server: {
     // The HERE API key lives in the backend only; the browser talks to our
-    // proxy, never to HERE (PRD §4.1).
-    proxy: { '/api': 'http://127.0.0.1:3001' },
+    // proxy, never to HERE (PRD §4.1). API_PROXY_TARGET lets docker-compose
+    // point at the backend container instead of localhost.
+    proxy: { '/api': process.env['API_PROXY_TARGET'] ?? 'http://127.0.0.1:3001' },
     fs: { allow: ['..'] },
   },
   test: {

@@ -27,6 +27,21 @@ export interface RouteTollDto {
   verifiedAt: string | null
 }
 
+export interface RouteWaypointDto {
+  id: number
+  routeCode: string
+  seq: number
+  name: string
+  lat: number
+  lon: number
+}
+
+export interface PolylineSectionDto {
+  /** Raw HERE flexible-polyline string — decode with @here/flexpolyline. */
+  polyline: string
+  spans: Array<{ offset: number; country: string }>
+}
+
 export interface RouteDetailsDto {
   id: number
   routeCode: string
@@ -39,6 +54,23 @@ export interface RouteDetailsDto {
   countryKm: Record<string, number>
   tolls: RouteTollDto[]
   tollsPendingCountries: string[]
+  /** Null for v1-imported routes — map shows the straight-line fallback. */
+  polylineSections: PolylineSectionDto[] | null
+}
+
+/** Result of "Uzupełnij z HERE" on an existing route (add-only gap fill). */
+export interface GapFillSummaryDto {
+  addedCountryKm: Record<string, number>
+  addedTolls: Record<string, number>
+  keptTollCountries: string[]
+  stillPendingCountries: string[]
+  hereTotalKm: number
+  warnings: string[]
+}
+
+export interface GapFillResultDto {
+  route: RouteDetailsDto
+  summary: GapFillSummaryDto
 }
 
 export interface RouteSummaryDto {
@@ -63,6 +95,7 @@ export interface FetchedRouteDto {
   totalKm: number
   countryKm: Record<string, number>
   tollEstimates: Record<string, number>
+  sections: PolylineSectionDto[]
   vehicleProfile: VehicleProfileDto
   fetchedAt: string
   warnings: string[]
@@ -108,6 +141,29 @@ export interface SaveCalculationInput {
   ferriesEur: number
   tunnelsEur: number
   revenueEur?: number
+}
+
+export type UserRole = 'dispatcher' | 'finance' | 'admin'
+
+export type TollRuleType = 'replace_per_gate' | 'scale'
+
+export interface TollSystemRuleDto {
+  id: number
+  tollSystem: string
+  ruleType: TollRuleType
+  value: number
+  note: string | null
+  updatedBy: string | null
+  updatedAt: string | null
+}
+
+export interface UserDto {
+  id: number
+  email: string
+  displayName: string
+  role: UserRole
+  active: boolean
+  createdAt: string
 }
 
 export type { CalculatorConfig }

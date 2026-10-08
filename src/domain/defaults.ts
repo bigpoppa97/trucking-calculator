@@ -12,7 +12,7 @@ export const DEFAULT_CONFIG: CalculatorConfig = {
   // PRD §2.1: "currently ~€3,012/month — confirm current value at build time".
   // PLACEHOLDER pending confirmation; migration imports the Konfiguracja tab value.
   monthlyOverheadEur: 3012,
-  monthDays: 30, // fixed by validated business decision — do not change
+  monthDays: 24, // finance-editable denominator (2026-07 business sign-off); default = working days
 }
 
 /**

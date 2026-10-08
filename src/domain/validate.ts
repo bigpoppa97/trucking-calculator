@@ -32,9 +32,10 @@ export function validateConfig(config: CalculatorConfig): ValidationIssue[] {
   if (!isFiniteNumber(config.monthlyOverheadEur) || config.monthlyOverheadEur < 0) {
     issues.push({ field: 'monthlyOverheadEur', code: 'config.overhead.invalid', message: 'Monthly overhead must be zero or more.' })
   }
-  // Fixed at 30 by validated business decision (PRD §2.1). Any other value is a config error.
-  if (config.monthDays !== 30) {
-    issues.push({ field: 'monthDays', code: 'config.monthDays.notThirty', message: 'Month denominator is fixed at 30 days.' })
+  // Finance-editable since 2026-07 (business sign-off; overrides the original
+  // PRD §2.1 fixed-30 decision). Must be a whole number of days in 1..31.
+  if (!Number.isInteger(config.monthDays) || config.monthDays < 1 || config.monthDays > 31) {
+    issues.push({ field: 'monthDays', code: 'config.monthDays.invalid', message: 'Month denominator must be a whole number between 1 and 31.' })
   }
   return issues
 }

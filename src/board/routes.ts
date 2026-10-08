@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { NoteKind } from '../db/schema.js'
 import type { HereGeocodingClient } from '../here/hereGeocodingClient.js'
 import { BoardError, type BoardService } from './boardService.js'
@@ -38,7 +38,9 @@ async function handle(reply: FastifyReply, fn: () => Promise<unknown>) {
 }
 
 export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps): void {
-  const { board } = deps
+  // Every write is signed by the logged-in user (auth hook sets request.user).
+  const as = (request: FastifyRequest): BoardService => (request.user ? deps.board.withActor(request.user.displayName) : deps.board)
+  const board = deps.board
 
   app.get<{ Querystring: { date?: string } }>(
     '/api/board/week',
@@ -58,11 +60,11 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
         body: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 2000 } }, required: ['text'], additionalProperties: false },
       },
     },
-    async (request, reply) => handle(reply, () => board.addOrderNote(request.params.orderNo, request.body.text)),
+    async (request, reply) => handle(reply, () => as(request).addOrderNote(request.params.orderNo, request.body.text)),
   )
 
   app.delete<{ Params: { id: string } }>('/api/board/notes/:id', { schema: { params: ID_PARAMS } }, async (request, reply) =>
-    handle(reply, () => board.deleteNote(Number(request.params.id))),
+    handle(reply, () => as(request).deleteNote(Number(request.params.id))),
   )
 
   app.post<{ Params: { orderNo: string }; Body: { field: string; value: string } }>(
@@ -78,7 +80,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
         },
       },
     },
-    async (request, reply) => handle(reply, () => board.setOverride(request.params.orderNo, request.body.field, request.body.value)),
+    async (request, reply) => handle(reply, () => as(request).setOverride(request.params.orderNo, request.body.field, request.body.value)),
   )
 
   app.delete<{ Params: { orderNo: string; field: string } }>(
@@ -92,7 +94,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
         },
       },
     },
-    async (request, reply) => handle(reply, () => board.clearOverride(request.params.orderNo, request.params.field)),
+    async (request, reply) => handle(reply, () => as(request).clearOverride(request.params.orderNo, request.params.field)),
   )
 
   app.post<{ Body: { truckId: number; day: string; kind: NoteKind; text: string; place?: string } }>(
@@ -115,7 +117,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     },
     async (request, reply) =>
       handle(reply, () =>
-        board.addTruckEvent({
+        as(request).addTruckEvent({
           truckId: request.body.truckId,
           day: request.body.day,
           kind: request.body.kind,
@@ -144,7 +146,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     },
     async (request, reply) =>
       handle(reply, async () => ({
-        summary: await board.importFile(Buffer.from(request.body.dataBase64, 'base64'), request.body.filename, request.body.mode),
+        summary: await as(request).importFile(Buffer.from(request.body.dataBase64, 'base64'), request.body.filename, request.body.mode),
       })),
   )
 
@@ -169,7 +171,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
         },
       },
     },
-    async (request, reply) => handle(reply, () => board.resolveIssue(Number(request.params.id), request.body.action, request.body.payload ?? {})),
+    async (request, reply) => handle(reply, () => as(request).resolveIssue(Number(request.params.id), request.body.action, request.body.payload ?? {})),
   )
 
   // Fleet registry
@@ -196,7 +198,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     },
     async (request, reply) =>
       handle(reply, async () => {
-        const id = await board.createTruck(request.body)
+        const id = await as(request).createTruck(request.body)
         await board.refreshIssues()
         return { id }
       }),
@@ -224,7 +226,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     },
     async (request, reply) =>
       handle(reply, async () => {
-        await board.updateTruck(Number(request.params.id), request.body)
+        await as(request).updateTruck(Number(request.params.id), request.body)
         if (request.body.active !== undefined) await board.refreshIssues()
       }),
   )
@@ -242,7 +244,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
         },
       },
     },
-    async (request, reply) => handle(reply, () => board.addTruckPlate(Number(request.params.id), request.body.plate, request.body.validFrom)),
+    async (request, reply) => handle(reply, () => as(request).addTruckPlate(Number(request.params.id), request.body.plate, request.body.validFrom)),
   )
 
   // Trailers
@@ -267,7 +269,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     },
     async (request, reply) =>
       handle(reply, async () => {
-        await board.upsertTrailer(request.body)
+        await as(request).upsertTrailer(request.body)
         await board.refreshIssues()
       }),
   )
@@ -286,7 +288,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     },
     async (request, reply) =>
       handle(reply, async () => {
-        await board.addTrailerAlias(request.body.alias, request.body.trailer.toUpperCase())
+        await as(request).addTrailerAlias(request.body.alias, request.body.trailer.toUpperCase())
         await board.refreshIssues()
       }),
   )
@@ -314,7 +316,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     },
     async (request, reply) =>
       handle(reply, async () => {
-        const code = await board.createPlace(request.body)
+        const code = await as(request).createPlace(request.body)
         await board.refreshIssues()
         return { code }
       }),
@@ -334,7 +336,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     },
     async (request, reply) =>
       handle(reply, async () => {
-        await board.addPlaceAlias(request.body.alias, request.body.code.toUpperCase())
+        await as(request).addPlaceAlias(request.body.alias, request.body.code.toUpperCase())
         await board.refreshIssues()
       }),
   )
@@ -358,7 +360,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     },
     async (request, reply) =>
       handle(reply, async () => {
-        await board.setDistance(request.body.from, request.body.to, request.body.km, request.body.note ?? null)
+        await as(request).setDistance(request.body.from, request.body.to, request.body.km, request.body.note ?? null)
         await board.refreshIssues()
       }),
   )
@@ -382,7 +384,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     },
     async (request, reply) =>
       handle(reply, async () => {
-        await board.setThresholds(request.body)
+        await as(request).setThresholds(request.body)
         return { thresholds: await board.thresholds() }
       }),
   )

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { parseDecimalInput } from '@domain'
 import { api, ApiError } from '../lib/api.js'
-import type { RouteDetailsDto, RouteSummaryDto } from '../lib/types.js'
+import { useAuth } from '../lib/auth.js'
+import type { RouteDetailsDto, RouteSummaryDto, RouteWaypointDto } from '../lib/types.js'
 import { formatEur, formatKm } from '../lib/format.js'
+import { FillFromHerePanel } from '../components/FillFromHere.js'
 
 /**
  * Route database screen (PRD §5.3): all routes, "tolls pending verification"
@@ -142,9 +144,199 @@ export function RouteDbPage() {
       )}
 
       {selected !== null && (
-        <RouteDetailPanel route={selected} onUpdated={onRouteUpdated} onError={setDetailError} />
+        // Keyed by route: per-route form state must never carry over to another route.
+        <RouteDetailPanel key={selected.routeCode} route={selected} onUpdated={onRouteUpdated} onError={setDetailError} />
       )}
+
+      <WaypointsSection />
     </div>
+  )
+}
+
+/** Common border crossings the fleet prefers (PRD §3.3). Coordinates sit on
+ *  the crossing's road so the pass-through via snaps to the right corridor. */
+const CROSSING_PRESETS: ReadonlyArray<{ name: string; lat: number; lon: number }> = [
+  { name: 'Chyżne (PL/SK)', lat: 49.4053, lon: 19.7204 },
+  { name: 'Šahy (SK/HU)', lat: 48.0742, lon: 18.949 },
+  { name: 'Kudowa-Zdrój (PL/CZ)', lat: 50.4437, lon: 16.2262 },
+  { name: 'Cieszyn (PL/CZ)', lat: 49.7484, lon: 18.633 },
+  { name: 'Świecko (PL/DE)', lat: 52.3117, lon: 14.562 },
+  { name: 'Jędrzychowice (PL/DE)', lat: 51.174, lon: 15.007 },
+  { name: 'Barwinek (PL/SK)', lat: 49.4269, lon: 21.698 },
+  { name: 'Hegyeshalom (HU/AT)', lat: 47.9107, lon: 17.156 },
+]
+
+function WaypointsSection() {
+  const [routeCode, setRouteCode] = useState('')
+  const [loadedCode, setLoadedCode] = useState<string | null>(null)
+  const [waypoints, setWaypoints] = useState<RouteWaypointDto[]>([])
+  const [presetIdx, setPresetIdx] = useState(0)
+  const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = async () => {
+    const code = routeCode.trim().toUpperCase()
+    if (!/^[A-Z]{3}(-[A-Z]{3})+$/.test(code)) {
+      setMessage({ kind: 'error', text: 'Podaj kod trasy w formacie WAW-BUD.' })
+      return
+    }
+    setMessage(null)
+    try {
+      setWaypoints(await api.getRouteWaypoints(code))
+      setLoadedCode(code)
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof ApiError ? error.message : 'Nie udało się wczytać punktów.' })
+    }
+  }
+
+  const addPreset = () => {
+    const preset = CROSSING_PRESETS[presetIdx]
+    if (!preset || loadedCode === null) return
+    const nextSeq = waypoints.length > 0 ? Math.max(...waypoints.map(w => w.seq)) + 1 : 1
+    setWaypoints([...waypoints, { id: -nextSeq, routeCode: loadedCode, seq: nextSeq, name: preset.name, lat: preset.lat, lon: preset.lon }])
+  }
+
+  const save = async () => {
+    if (loadedCode === null) return
+    setBusy(true)
+    setMessage(null)
+    try {
+      const saved = await api.saveRouteWaypoints(
+        loadedCode,
+        waypoints.map(({ seq, name, lat, lon }) => ({ seq, name, lat, lon })),
+      )
+      setWaypoints(saved)
+      setMessage({
+        kind: 'ok',
+        text: 'Punkty zapisane. Zostaną użyte przy pobraniu trasy z HERE oraz przy odświeżaniu przebiegu drogi.',
+      })
+    } catch (error) {
+      setMessage({ kind: 'error', text: error instanceof ApiError ? error.message : 'Nie udało się zapisać punktów.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section aria-label="Preferowane punkty trasy" className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <h2 className="mb-1 text-base font-semibold text-slate-800">Preferowane punkty trasy (przejścia graniczne)</h2>
+      <p className="mb-3 text-xs text-slate-500">
+        Punkty via wymuszają na HERE przebieg przez preferowane przejścia (np. WAW-BUD przez Chyżne i Šahy). Działają
+        przy pierwszym pobraniu nowej trasy oraz przy „Pobierz przebieg drogi" — zapisane km i opłaty istniejących tras
+        pozostają bez zmian.
+      </p>
+
+      <div className="mb-3 flex items-end gap-2">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="wp-route-code" className="text-xs font-medium text-slate-600">
+            Kod trasy
+          </label>
+          <input
+            id="wp-route-code"
+            type="text"
+            value={routeCode}
+            onChange={e => setRouteCode(e.target.value)}
+            placeholder="np. WAW-BUD"
+            className="rounded border border-slate-300 px-2 py-1.5 text-sm uppercase"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => void load()}
+          className="rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-700"
+        >
+          Wczytaj punkty
+        </button>
+      </div>
+
+      {message !== null && (
+        <p
+          role={message.kind === 'error' ? 'alert' : 'status'}
+          className={`mb-3 rounded px-3 py-2 text-sm ${message.kind === 'error' ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-800'}`}
+        >
+          {message.text}
+        </p>
+      )}
+
+      {loadedCode !== null && (
+        <>
+          <h3 className="mb-2 text-sm font-semibold text-slate-700">{loadedCode}</h3>
+          {waypoints.length === 0 ? (
+            <p className="mb-3 text-sm text-slate-500">Brak punktów — trasa pojedzie domyślną drogą HERE.</p>
+          ) : (
+            <table className="mb-3 w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
+                  <th className="py-1.5 pr-2 font-medium">Kolejność</th>
+                  <th className="py-1.5 pr-2 font-medium">Nazwa</th>
+                  <th className="py-1.5 pr-2 font-medium">Szer. (lat)</th>
+                  <th className="py-1.5 pr-2 font-medium">Dł. (lon)</th>
+                  <th className="py-1.5 font-medium">Akcja</th>
+                </tr>
+              </thead>
+              <tbody>
+                {waypoints.map((wp, i) => (
+                  <tr key={wp.id} className="border-b border-slate-100">
+                    <td className="py-1.5 pr-2 tabular-nums">{wp.seq}</td>
+                    <td className="py-1.5 pr-2 font-medium text-slate-700">{wp.name}</td>
+                    <td className="py-1.5 pr-2 tabular-nums text-xs">{wp.lat}</td>
+                    <td className="py-1.5 pr-2 tabular-nums text-xs">{wp.lon}</td>
+                    <td className="py-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setWaypoints(waypoints.filter((_, j) => j !== i))}
+                        className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                      >
+                        Usuń
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex flex-col gap-1">
+              <label htmlFor="wp-preset" className="text-xs font-medium text-slate-600">
+                Dodaj przejście graniczne
+              </label>
+              <select
+                id="wp-preset"
+                value={presetIdx}
+                onChange={e => setPresetIdx(Number(e.target.value))}
+                className="rounded border border-slate-300 px-2 py-1.5 text-sm"
+              >
+                {CROSSING_PRESETS.map((preset, i) => (
+                  <option key={preset.name} value={i}>
+                    {preset.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="button"
+              onClick={addPreset}
+              className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Dodaj
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void save()}
+              className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+            >
+              {busy ? 'Zapisuję…' : 'Zapisz punkty'}
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            Kolejność punktów = kolejność przejazdu. Dla tras z lotniskami pośrednimi (np. WAW-BER-FRA) lotniska mają
+            pozycje 1000, 2000… — punkt z kolejnością 500 wypada przed pierwszym lotniskiem pośrednim.
+          </p>
+        </>
+      )}
+    </section>
   )
 }
 
@@ -184,13 +376,31 @@ function RouteDetailPanel({
           </tr>
         </thead>
         <tbody>
-          {countries.map(country => (
-            <TollRow key={country} route={route} country={country} onUpdated={onUpdated} onError={onError} />
-          ))}
+          {countries.map(country => {
+            const toll = route.tolls.find(t => t.country === country)
+            // Re-mount when the stored toll changes so the input shows the current value.
+            return (
+              <TollRow
+                key={`${country}|${toll?.status ?? 'pending'}|${toll?.tollEur ?? ''}`}
+                route={route}
+                country={country}
+                onUpdated={onUpdated}
+                onError={onError}
+              />
+            )
+          })}
         </tbody>
       </table>
 
-      <KmOverrideForm route={route} onUpdated={onUpdated} onError={onError} />
+      <FillFromHerePanel route={route} onFilled={onUpdated} className="mb-4" />
+
+      {/* Re-mount on km changes (e.g. after a HERE fill) so the form never submits a stale country split. */}
+      <KmOverrideForm
+        key={`${route.totalKm}|${JSON.stringify(route.countryKm)}`}
+        route={route}
+        onUpdated={onUpdated}
+        onError={onError}
+      />
     </section>
   )
 }
@@ -206,9 +416,14 @@ function TollRow({
   onUpdated: (route: RouteDetailsDto) => Promise<void>
   onError: (message: string) => void
 }) {
+  const { user } = useAuth()
   const toll = route.tolls.find(t => t.country === country)
   const [value, setValue] = useState(toll === undefined ? '' : String(toll.tollEur).replace('.', ','))
   const [busy, setBusy] = useState(false)
+  // Toll values are trust-tier data verified against invoices (PRD §4.3) —
+  // entry and verification are finance/admin actions; the backend enforces
+  // the same rule with a 403.
+  const canEditTolls = user?.role === 'finance' || user?.role === 'admin'
 
   const submit = async () => {
     const parsed = parseDecimalInput(value)
@@ -249,6 +464,8 @@ function TollRow({
       <td className="py-1.5">
         {toll?.status === 'verified' ? (
           <span className="text-xs text-slate-400">—</span>
+        ) : !canEditTolls ? (
+          <span className="text-xs text-slate-400">tylko finanse/administrator</span>
         ) : (
           <span className="flex items-center gap-1">
             <label className="sr-only" htmlFor={`toll-input-${country}`}>

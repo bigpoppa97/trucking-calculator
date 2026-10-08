@@ -1,49 +1,33 @@
-# Tablica floty — etap 1 (wersja lokalna)
+# Tablica floty — etap 1
 
 Tablica zastępuje roboczy grafik w Excelu: po imporcie eksportu z aplikacji sama układa zlecenia
 8 ciągników działu na tygodniu, liczy marżę i kilometry, a wszystko, co wymaga decyzji człowieka,
-trafia na listę „Do sprawdzenia”. Kalkulator zostaje osobną zakładką i dzieli z tablicą bazę tras.
+trafia na listę „Do sprawdzenia”. Działa w tym samym programie co kalkulator (ten sam serwer, ta sama
+baza, to samo logowanie) — kalkulator jest osobną zakładką.
 
-## Pierwsze uruchomienie
+## Pierwsze uruchomienie (Windows)
 
-Wymagany Node.js 22 (`node -v`).
+1. Zamknij okno „Kalkulator kosztow - serwer” (na pasku zadań).
+2. W folderze projektu otwórz `cmd` (pasek adresu Eksploratora → wpisz `cmd` → Enter) i wpisz:
+   ```
+   git fetch origin
+   git checkout feature/tablica-floty
+   ```
+3. Kliknij dwukrotnie `scripts\aktualizuj.cmd`. Skrypt:
+   - pobiera nową wersję, instaluje zależności i buduje interfejs,
+   - robi kopię bazy do `data\kopie\` i dodaje tabele tablicy (migracja 0009),
+   - pyta, czy wczytać auta z grafiku — odpowiedz **T**, przeciągnij do okna plik grafiku (.xlsm),
+     potem świeży eksport z aplikacji (.xlsx), a jako naczepy-plandeki wpisz np. `KN560PP`,
+   - uruchamia serwer i otwiera przeglądarkę.
+4. Zaloguj się swoim kontem kalkulatora. Notatki i poprawki na tablicy podpisują się imieniem
+   z konta; nowe konta dla zespołu zakładasz w zakładce „Użytkownicy”.
 
-```bash
-git fetch origin
-git checkout feature/tablica-floty
-npm install
-cd web && npm install && cd ..
-```
+Kolejne aktualizacje: zamknij okno serwera i kliknij `scripts\aktualizuj.cmd` (na pytanie o grafik — **N**).
 
-Plik `.env` w głównym katalogu (jeśli go nie ma: skopiuj `.env.example` jako `.env`) — serwer i skrypty
-czytają go same:
-
-```
-HERE_API_KEY=twój-klucz-here
-DATABASE_PATH=data/calculator.sqlite
-PORT=3001
-BOARD_USER=Twoje imię
-```
-
-`PORT` zostaw 3001 — na ten port interfejs przekierowuje zapytania. Przed pierwszym seedem zrób kopię
-`data/calculator.sqlite` (jeśli istnieje). Na zupełnie nowej bazie najpierw `npm run import:v1`
-(konfiguracja i trasy kalkulatora z v1).
-
-```bash
-# jednorazowo: auta, kierowcy i naczepy z obecnego grafiku (+ przewoźnicy z eksportu)
-npm run board:seed -- --grafik "ŚCIEŻKA/Grafik podwykonawców.xlsm" --export "ŚCIEŻKA/export.xlsx" --curtain KN560PP
-```
-
-Seed zapisuje dane do tej samej bazy co kalkulator, więc trasy policzone w kalkulatorze od razu służą
-tablicy i odwrotnie. Dane osobowe (kierowcy, telefony, stawki) zostają w lokalnym pliku bazy — nic nie
-trafia do repozytorium. Seed można uruchomić ponownie, nie nadpisuje istniejących wpisów.
+Dane osobowe (kierowcy, telefony, stawki) zostają w lokalnej bazie — nic nie trafia do repozytorium.
+Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
 
 ## Codzienna praca
-
-```bash
-npm run serve          # okno 1: serwer (czyta .env)
-cd web && npm run dev  # okno 2: interfejs, potem http://localhost:5173
-```
 
 1. W aplikacji: zapisany widok AG Grid (wszyscy klienci, data załadunku od 7 dni wstecz + przyszłe) → eksport .xlsx.
 2. Tablica → „Do sprawdzenia” → upuść plik. Import 2–3 razy dziennie.
@@ -57,8 +41,10 @@ wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
 
 ## Dwa tygodnie równolegle z Excelem
 
-```bash
-npm run board:compare -- --grafik "ŚCIEŻKA/Grafik podwykonawców.xlsm" --from 2026-10-05 --to 2026-10-18
+W `cmd` w folderze projektu (Node z fnm: najpierw `set PATH=%USERPROFILE%\.fnm\aliases\default;%PATH%`):
+
+```
+npm run board:compare -- --grafik "ŚCIEŻKA\Grafik podwykonawców.xlsm" --from 2026-10-05 --to 2026-10-18
 ```
 
 Porównuje przychód, koszt, marżę i km per auto i tydzień z grafikiem. Różnice, których się spodziewamy:
@@ -67,9 +53,9 @@ jak w aplikacji), km szacunkowe (≈) zanim HERE policzy dokładne w tle.
 
 ## Ustawienia (`.env`)
 
-- `BOARD_USER` — nazwa zapisywana przy notatkach i poprawkach (do czasu wprowadzenia logowania).
 - `BOARD_HERE=off` — tablica nie odpyta HERE o kilometry (zostają szacunki); domyślnie włączone.
 
 ## Poza etapem 1
 
-Logowanie i serwer (dostęp dla zespołu), dashboard finansowy, import historii, historia stawek na trasach w kalkulatorze.
+Dashboard finansowy, import historii, historia stawek na trasach w kalkulatorze, uprawnienia ról na tablicy
+(na razie każdy zalogowany widzi i edytuje tablicę).

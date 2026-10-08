@@ -1,11 +1,15 @@
-import Fastify, { type FastifyError, type FastifyInstance } from 'fastify'
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest } from 'fastify'
+import fastifyCookie from '@fastify/cookie'
 import type { Kysely } from 'kysely'
 import type { DB } from '../db/schema.js'
+import { buildAuthDeps, registerAuthHook, registerAuthRoutes, requireRole } from './auth.js'
 import { AirportRepository } from '../repositories/airportRepository.js'
 import { ConfigRepository } from '../repositories/configRepository.js'
 import { FleetVariantRepository } from '../repositories/fleetVariantRepository.js'
 import { CalculationRepository } from '../repositories/calculationRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
+import { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
+import { RouteWaypointRepository } from '../repositories/routeWaypointRepository.js'
 import { RouteFetchError, type FetchedRoute, type RouteFetchService } from '../here/routeFetchService.js'
 import { CalculationSaveError, CalculationService } from './calculationService.js'
 import type { DriverCount } from '../domain/index.js'
@@ -31,6 +35,8 @@ export interface AppDeps {
   /** Fleet board (tablica). Defaults to an offline instance (estimated km). */
   board?: BoardService
   geocoder?: Pick<HereGeocodingClient, 'geocode'>
+  /** Mark the session cookie Secure — enable when served over HTTPS. */
+  secureCookies?: boolean
 }
 
 const ROUTE_CODE_PARAM_SCHEMA = {
@@ -63,6 +69,29 @@ const SAVE_BODY_SCHEMA = {
     totalKm: { type: 'number', exclusiveMinimum: 0 },
     countryKm: { type: 'object', additionalProperties: { type: 'number', minimum: 0 } },
     tollEstimates: { type: 'object', additionalProperties: { type: 'number', minimum: 0 } },
+    sections: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          polyline: { type: 'string', minLength: 1 },
+          spans: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                offset: { type: 'integer', minimum: 0 },
+                country: { type: 'string', minLength: 2, maxLength: 3 },
+              },
+              required: ['offset', 'country'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['polyline', 'spans'],
+        additionalProperties: false,
+      },
+    },
     vehicleProfile: {
       type: 'object',
       properties: {
@@ -92,9 +121,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     config: configRepo,
     calculations: calculationRepo,
   })
-  // Placeholder identity until auth lands (kickoff stack mentions roles, but
-  // no phase covers auth yet) — recorded in every audit field.
-  const ACTOR = 'portal-user'
+  const authDeps = buildAuthDeps(deps.db)
+  app.register(fastifyCookie)
+  registerAuthHook(app, authDeps)
+  registerAuthRoutes(app, authDeps, { secureCookies: deps.secureCookies === true })
+
+  // The authenticated user's email — written into every audit field. The
+  // auth hook guarantees request.user is set on all non-public routes.
+  const actor = (request: FastifyRequest): string => request.user?.email ?? 'unknown'
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     // Validation errors carry safe, schema-derived messages.
@@ -152,16 +186,18 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       }
       await routeRepo.overrideKm(code, request.body.totalKm, request.body.countryKm, {
         ...(request.body.note !== undefined ? { note: request.body.note } : {}),
-        updatedBy: ACTOR,
+        updatedBy: actor(request),
       })
       return reply.send({ route: await routeRepo.findByCode(code) })
     },
   )
 
-  // Fill in a pending toll manually — human value, stored as verified.
+  // Fill in a pending toll manually — human value, stored as verified, so
+  // like estimate→verified promotion this is finance/admin work (PRD §4.3).
   app.put<{ Params: { routeCode: string; country: string }; Body: { tollEur: number } }>(
     '/api/routes/:routeCode/tolls/:country',
     {
+      preHandler: requireRole('finance', 'admin'),
       schema: {
         params: TOLL_PARAMS_SCHEMA,
         body: {
@@ -178,7 +214,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       if (!route) {
         return reply.status(404).send({ error: { code: 'ROUTE_NOT_FOUND', message: 'Route not in database.' } })
       }
-      await routeRepo.setManualToll(route.id, request.params.country.toUpperCase(), request.body.tollEur, ACTOR)
+      await routeRepo.setManualToll(route.id, request.params.country.toUpperCase(), request.body.tollEur, actor(request))
       return reply.send({ route: await routeRepo.findByCode(code) })
     },
   )
@@ -187,6 +223,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.post<{ Params: { routeCode: string; country: string }; Body: { correctedTollEur?: number } }>(
     '/api/routes/:routeCode/tolls/:country/verify',
     {
+      preHandler: requireRole('finance', 'admin'),
       schema: {
         params: TOLL_PARAMS_SCHEMA,
         body: {
@@ -203,7 +240,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         return reply.status(404).send({ error: { code: 'ROUTE_NOT_FOUND', message: 'Route not in database.' } })
       }
       try {
-        await routeRepo.verifyToll(route.id, request.params.country.toUpperCase(), ACTOR, request.body.correctedTollEur)
+        await routeRepo.verifyToll(route.id, request.params.country.toUpperCase(), actor(request), request.body.correctedTollEur)
       } catch {
         return reply
           .status(404)
@@ -213,17 +250,20 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     },
   )
 
-  // Finance-editable config (PRD §5.3). month_days is fixed at 30 — not editable.
+  // Finance-editable config (PRD §5.3). month_days editable since 2026-07
+  // (business sign-off, overrides the original PRD §2.1 fixed-30 decision).
   app.put<{
     Body: {
       fuelPriceEurPerLitre: number
       fuelConsumptionLPer100Km: number
       driverDayRateEur: number
       monthlyOverheadEur: number
+      monthDays: number
     }
   }>(
     '/api/config',
     {
+      preHandler: requireRole('finance', 'admin'),
       schema: {
         body: {
           type: 'object',
@@ -232,8 +272,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
             fuelConsumptionLPer100Km: { type: 'number', exclusiveMinimum: 0 },
             driverDayRateEur: { type: 'number', minimum: 0 },
             monthlyOverheadEur: { type: 'number', minimum: 0 },
+            monthDays: { type: 'integer', minimum: 1, maximum: 31 },
           },
-          required: ['fuelPriceEurPerLitre', 'fuelConsumptionLPer100Km', 'driverDayRateEur', 'monthlyOverheadEur'],
+          required: ['fuelPriceEurPerLitre', 'fuelConsumptionLPer100Km', 'driverDayRateEur', 'monthlyOverheadEur', 'monthDays'],
           additionalProperties: false,
         },
       },
@@ -244,15 +285,18 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         consumption: String(request.body.fuelConsumptionLPer100Km),
         driver_day_rate: String(request.body.driverDayRateEur),
         monthly_overhead: String(request.body.monthlyOverheadEur),
+        month_days: String(request.body.monthDays),
       })
       return reply.send({ config: await configRepo.getCalculatorConfig() })
     },
   )
 
-  // Fleet variants CRUD (PRD §2.2: a table, not an enum).
+  // Fleet variants CRUD (PRD §2.2: a table, not an enum) — config screen, so
+  // finance/admin only.
   app.post<{ Body: { name: string; monthlyCostEur: number } }>(
     '/api/fleet-variants',
     {
+      preHandler: requireRole('finance', 'admin'),
       schema: {
         body: {
           type: 'object',
@@ -274,6 +318,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.patch<{ Params: { id: string }; Body: { monthlyCostEur?: number; active?: boolean } }>(
     '/api/fleet-variants/:id',
     {
+      preHandler: requireRole('finance', 'admin'),
       schema: {
         params: {
           type: 'object',
@@ -296,6 +341,59 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         return reply.status(404).send({ error: { code: 'VARIANT_NOT_FOUND', message: 'Fleet variant not found.' } })
       }
       return reply.send({ variants: await variantRepo.listAll() })
+    },
+  )
+
+  // Toll-system correction rules (config screen): fix HERE fares returned at
+  // the wrong tariff. Finance/admin only, like the rest of the config.
+  const tollRuleRepo = new TollSystemRuleRepository(deps.db)
+
+  app.get('/api/toll-rules', async (_request, reply) => {
+    return reply.send({ rules: await tollRuleRepo.listAll() })
+  })
+
+  app.put<{ Body: { tollSystem: string; ruleType: 'replace_per_gate' | 'scale'; value: number; note?: string } }>(
+    '/api/toll-rules',
+    {
+      preHandler: requireRole('finance', 'admin'),
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            tollSystem: { type: 'string', minLength: 1, maxLength: 200 },
+            ruleType: { type: 'string', enum: ['replace_per_gate', 'scale'] },
+            value: { type: 'number', exclusiveMinimum: 0 },
+            note: { type: 'string', maxLength: 500 },
+          },
+          required: ['tollSystem', 'ruleType', 'value'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const rule = await tollRuleRepo.upsertBySystem(request.body, actor(request))
+      return reply.send({ rule, rules: await tollRuleRepo.listAll() })
+    },
+  )
+
+  app.delete<{ Params: { id: string } }>(
+    '/api/toll-rules/:id',
+    {
+      preHandler: requireRole('finance', 'admin'),
+      schema: {
+        params: {
+          type: 'object',
+          properties: { id: { type: 'string', pattern: '^\\d+$' } },
+          required: ['id'],
+        },
+      },
+    },
+    async (request, reply) => {
+      const deleted = await tollRuleRepo.deleteById(Number(request.params.id))
+      if (!deleted) {
+        return reply.status(404).send({ error: { code: 'RULE_NOT_FOUND', message: 'Toll rule not found.' } })
+      }
+      return reply.send({ rules: await tollRuleRepo.listAll() })
     },
   )
 
@@ -332,7 +430,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     },
     async (request, reply) => {
       try {
-        const calculation = await calculationService.saveCalculation({ ...request.body, createdBy: ACTOR })
+        const calculation = await calculationService.saveCalculation({ ...request.body, createdBy: actor(request) })
         return await reply.status(201).send({ calculation })
       } catch (error) {
         if (error instanceof CalculationSaveError) {
@@ -382,6 +480,96 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     },
   )
 
+  // Company-preferred via waypoints per route code (PRD §3.3). Editable by
+  // any authenticated user (dispatchers own routing knowledge); applied on
+  // fetch and shape refresh as HERE pass-through vias.
+  const waypointRepo = new RouteWaypointRepository(deps.db)
+
+  app.get<{ Params: { routeCode: string } }>(
+    '/api/route-waypoints/:routeCode',
+    { schema: { params: ROUTE_CODE_PARAM_SCHEMA } },
+    async (request, reply) => {
+      return reply.send({ waypoints: await waypointRepo.listByRoute(request.params.routeCode) })
+    },
+  )
+
+  app.put<{
+    Params: { routeCode: string }
+    Body: { waypoints: Array<{ seq: number; name: string; lat: number; lon: number }> }
+  }>(
+    '/api/route-waypoints/:routeCode',
+    {
+      schema: {
+        params: ROUTE_CODE_PARAM_SCHEMA,
+        body: {
+          type: 'object',
+          properties: {
+            waypoints: {
+              type: 'array',
+              maxItems: 10,
+              items: {
+                type: 'object',
+                properties: {
+                  seq: { type: 'integer', minimum: 1, maximum: 99999 },
+                  name: { type: 'string', minLength: 1, maxLength: 100 },
+                  lat: { type: 'number', minimum: -90, maximum: 90 },
+                  lon: { type: 'number', minimum: -180, maximum: 180 },
+                },
+                required: ['seq', 'name', 'lat', 'lon'],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ['waypoints'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      const seqs = request.body.waypoints.map(w => w.seq)
+      if (new Set(seqs).size !== seqs.length) {
+        return reply
+          .status(400)
+          .send({ error: { code: 'DUPLICATE_SEQ', message: 'Each waypoint needs a unique seq value.' } })
+      }
+      const waypoints = await waypointRepo.replaceForRoute(request.params.routeCode, request.body.waypoints)
+      return reply.send({ waypoints })
+    },
+  )
+
+  // Backfill the map shape for an existing route (1 HERE request). Shape
+  // only — stored km/tolls stay authoritative.
+  app.post<{ Params: { routeCode: string } }>(
+    '/api/routes/:routeCode/shape',
+    { schema: { params: ROUTE_CODE_PARAM_SCHEMA } },
+    async (request, reply) => {
+      try {
+        const route = await deps.fetchService.refreshRouteShape(request.params.routeCode)
+        return await reply.send({ route })
+      } catch (error) {
+        return sendRouteFetchError(reply, error)
+      }
+    },
+  )
+
+  // Fill the gaps of an existing route from HERE (1 request): toll estimates
+  // for countries without any toll value + km for countries missing from the
+  // stored split. Verified tolls, existing estimates, stored country km and
+  // the binding total km stay untouched (PRD §3.3). Estimates still go
+  // through the finance verification workflow.
+  app.post<{ Params: { routeCode: string } }>(
+    '/api/routes/:routeCode/fill-from-here',
+    { schema: { params: ROUTE_CODE_PARAM_SCHEMA } },
+    async (request, reply) => {
+      try {
+        const result = await deps.fetchService.fillRouteGaps(request.params.routeCode, actor(request))
+        return await reply.send(result)
+      } catch (error) {
+        return sendRouteFetchError(reply, error)
+      }
+    },
+  )
+
   app.post<{ Body: { routeCode: string } }>(
     '/api/here/route-fetch',
     { schema: { body: FETCH_BODY_SCHEMA } },
@@ -400,7 +588,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     { schema: { body: SAVE_BODY_SCHEMA } },
     async (request, reply) => {
       try {
-        const saved = await deps.fetchService.saveFetchedRoute(request.body, 'portal-user')
+        const saved = await deps.fetchService.saveFetchedRoute(request.body, actor(request))
         return await reply.status(201).send({ route: saved })
       } catch (error) {
         return sendRouteFetchError(reply, error)
@@ -424,6 +612,7 @@ function sendRouteFetchError(
     const status =
       error.code === 'INVALID_ROUTE_CODE' ? 400
       : error.code === 'AIRPORT_NOT_FOUND' ? 404
+      : error.code === 'ROUTE_NOT_FOUND' ? 404
       : error.code === 'ROUTE_ALREADY_EXISTS' ? 409
       : 502
     return reply.status(status).send({ error: { code: error.code, message: error.message } })
