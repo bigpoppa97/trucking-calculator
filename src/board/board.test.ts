@@ -3,7 +3,9 @@ import type { Kysely } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createTestDatabase, migrateToLatest } from '../db/database.js'
 import type { DB } from '../db/schema.js'
-import { BoardService } from './boardService.js'
+import { Migrator } from 'kysely/migration'
+import { migrations } from '../db/migrations/index.js'
+import { BoardService, type ServiceInput as ServiceInputT } from './boardService.js'
 import { DistanceService } from './distances.js'
 import { ExportFormatError, readExport } from './exportReader.js'
 import { ensurePlaceSeed } from './placeSeed.js'
@@ -373,9 +375,15 @@ describe('kilometres', () => {
     expect(d.legs[0]?.kmEstimated).toBe(true) // no HERE in tests
 
     const truck = (await board.fleet()).find(t => t.currentPlate === 'AA1001A')!
-    await board.addTruckEvent({ truckId: truck.id, day: '2026-09-22', kind: 'service', text: 'Serwis', place: 'Bratislava' })
+    // A service never moves the start of the empty run (08.10.2026: km corrections are manual)…
+    await board.createService({ truckId: truck.id, target: 'truck', status: 'planned', allDay: true, startDay: '2026-09-22', endDay: '2026-09-22', place: 'Bratislava' })
+    d = await board.orderDetails('79-61-26')
+    expect(d.legs[0]?.kmEmptyFrom).toBe('Budapeszt (Vecsés)')
+    // …a position event with a place does.
+    await board.addTruckEvent({ truckId: truck.id, day: '2026-09-22', kind: 'position', text: 'Pozycja', place: 'Bratislava' })
     d = await board.orderDetails('79-61-26')
     expect(d.legs[0]?.kmEmptyFrom).toBe('Bratysława')
+    await expect(board.addTruckEvent({ truckId: truck.id, day: '2026-09-22', kind: 'service', text: 'Serwis' })).rejects.toThrow(/formularzem serwisu/)
 
     await board.setDistance('BTS', 'VIE', 80, 'sprawdzone')
     d = await board.orderDetails('79-61-26')
@@ -504,5 +512,174 @@ Naczepa: TR960PE
     await board.resolveIssue(retired!.id, 'new', {})
     expect((await issuesOf('UNKNOWN_TRAILER')).map(i => i.ref)).toEqual(['TRX9'])
     expect((await board.trailers()).find(t => t.plate === 'OLD1')?.activeTo).toBeNull()
+  })
+})
+
+describe('services (serwis)', () => {
+  // now = Sunday 27.09.2026, 20:00 in Poland
+  const rows: Row[] = [
+    { no: '79-90-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-23', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100' },
+    { no: '79-91-26', from: 'Budapest', ld: '2026-09-24', to: 'Warszawa', ud: '2026-09-25', rev: 1200, cost: 1000, sub: 'AA1002A', trailer: 'TR200' },
+  ]
+  const truckId = async (plate: string) => (await board.fleet()).find(t => t.currentPlate === plate)!.id
+  const row = async (plate: string, date = '2026-09-21') => (await board.weekView(date)).trucks.find(t => t.plate === plate)!
+
+  it('a required service waits at the truck, then is planned, moved, postponed and cancelled with a history', async () => {
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
+    const t1 = await truckId('AA1001A')
+    await expect(board.createService({ truckId: t1, target: 'truck', status: 'required' })).rejects.toThrow(/co trzeba zrobić/)
+    const id = await board.createService({ truckId: t1, target: 'truck', status: 'required', description: 'olej', place: 'Kraków' })
+    let r = await row('AA1001A')
+    expect(r.required.map(s => [s.description, s.place, s.phase])).toEqual([['olej', 'Kraków', 'required']])
+    expect(r.services).toEqual([])
+
+    // Zaplanuj: the same record gets hours; a short stop during an order is not a conflict.
+    await board.updateService(id, { status: 'planned', startDay: '2026-09-22', startTime: '10:00', endDay: '2026-09-22', endTime: '13:00' })
+    r = await row('AA1001A')
+    expect(r.required).toEqual([])
+    expect(r.services.map(s => [s.id, s.when, s.phase])).toEqual([[id, '22.09 10:00–13:00', 'done']])
+    expect(r.bars[0]?.serviceConflict).toBeNull()
+
+    await board.updateService(id, { startDay: '2026-09-28', endDay: '2026-09-28' })
+    await board.updateService(id, { status: 'required' })
+    expect((await row('AA1001A')).required.map(s => s.id)).toEqual([id])
+    await board.updateService(id, { status: 'cancelled' })
+    expect((await row('AA1001A')).required).toEqual([])
+
+    const svc = (await board.truckView(t1, '2026-09-21', '2026-09-27')).services.find(s => s.id === id)!
+    expect(svc.phase).toBe('cancelled')
+    expect(svc.history.map(h => h.text)).toEqual([
+      'Zgłoszono serwis wymagany (ciągnik: olej).',
+      'Zaplanowano: 22.09 10:00–13:00.',
+      'Przesunięto: 22.09 10:00–13:00 → 28.09 10:00–13:00.',
+      'Odłożono — wraca do wymaganych (było 28.09 10:00–13:00).',
+      'Odwołano.',
+    ])
+    expect(svc.history[0]?.by).toBe('test')
+    await expect(board.updateService(id, { description: 'x' })).rejects.toThrow(/najpierw przywróć/)
+
+    await board.deleteService(id)
+    expect((await board.truckView(t1, '2026-09-21', '2026-09-27')).services.find(s => s.id === id)).toBeUndefined()
+    await expect(board.updateService(id, { description: 'x' })).rejects.toThrow(/Nie ma takiego serwisu/)
+  })
+
+  it('outlines an order only on a day the truck spends wholly in service', async () => {
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
+    const t1 = await truckId('AA1001A')
+    const t2 = await truckId('AA1002A')
+    await board.createService({ truckId: t1, target: 'truck', status: 'planned', startDay: '2026-09-21', startTime: '08:00', endDay: '2026-09-21', endTime: '18:00' })
+    expect((await row('AA1001A')).bars[0]?.serviceConflict).toBeNull()
+
+    // Tue 14:00 → Thu 10:00: Wednesday (an order day) is covered from midnight to midnight.
+    await board.createService({ truckId: t1, target: 'truck', status: 'planned', startDay: '2026-09-22', startTime: '14:00', endDay: '2026-09-24', endTime: '10:00' })
+    const bar = (await row('AA1001A')).bars[0]!
+    expect(bar.serviceConflict).toBe('Auto w serwisie cały dzień 23.09.')
+    expect(bar.noteLines[0]).toBe('Auto w serwisie cały dzień 23.09.')
+
+    await board.createService({ truckId: t2, target: 'truck', status: 'planned', allDay: true, startDay: '2026-09-25', endDay: '2026-09-26' })
+    const r2 = await row('AA1002A')
+    expect(r2.bars[0]?.serviceConflict).toBe('Auto w serwisie cały dzień 25.09.')
+    expect(r2.services[0]?.when).toBe('25.09–26.09, całe dni')
+  })
+
+  it('a trailer service follows the trailer, not the tractor it was entered at', async () => {
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
+    const t1 = await truckId('AA1001A')
+    await expect(board.createService({ truckId: t1, target: 'trailer', status: 'required', description: 'agregat', trailerPlate: 'XX999' })).rejects.toThrow(
+      /Nie znam naczepy XX999/,
+    )
+    // Entered at AA1001A, but TR200 is behind AA1002A → the badge shows there.
+    await board.createService({ truckId: t1, target: 'trailer', status: 'required', description: 'agregat', trailerPlate: 'tr 200' })
+    expect((await row('AA1001A')).required).toEqual([])
+    expect((await row('AA1002A')).required.map(s => [s.trailerPlate, s.description])).toEqual([['TR200', 'agregat']])
+    expect((await board.requiredServices()).map(s => s.trailerPlate)).toEqual(['TR200'])
+    expect((await board.truckView(t1, '2026-09-21', '2026-09-27')).services.filter(s => s.trailerPlate === 'TR200')).toEqual([])
+    expect((await board.truckView(await truckId('AA1002A'), '2026-09-21', '2026-09-27')).services.map(s => s.description)).toEqual(['agregat'])
+
+    // A fixed trailer on another tractor does not duplicate the badge: the latest order with the trailer wins.
+    await board.updateTruck(await truckId('BB2001B'), { trailerPlate: 'TR100' })
+    await board.createService({ truckId: t1, target: 'trailer', status: 'required', description: 'przegląd naczepy', trailerPlate: 'TR100' })
+    expect((await row('AA1001A')).required.map(s => s.trailerPlate)).toEqual(['TR100'])
+    expect((await row('BB2001B')).required).toEqual([])
+    await board.updateTruck(await truckId('BB2001B'), { trailerPlate: null })
+
+    // Planned on Saturday: TR100 is behind AA1001A by then (its last order) — shown in its strip, never a conflict.
+    await board.createService({ truckId: await truckId('BB2001B'), target: 'trailer', trailerPlate: 'TR100', status: 'planned', allDay: true, startDay: '2026-09-21', endDay: '2026-09-21' })
+    const r1 = await row('AA1001A')
+    expect(r1.services.map(s => [s.target, s.trailerPlate])).toEqual([['trailer', 'TR100']])
+    expect(r1.bars[0]?.serviceConflict).toBeNull()
+    expect((await row('BB2001B')).services).toEqual([])
+  })
+
+  it('checks the dates', async () => {
+    const t1 = await truckId('AA1001A')
+    const planned = (w: Partial<ServiceInputT>) => board.createService({ truckId: t1, target: 'truck', status: 'planned', ...w })
+    await expect(planned({ startDay: '2026-09-22', endDay: '2026-09-22' })).rejects.toThrow(/Podaj godziny/)
+    await expect(planned({ startDay: '2026-09-22', startTime: '12:00', endDay: '2026-09-22', endTime: '10:00' })).rejects.toThrow(/po początku/)
+    await expect(planned({ allDay: true, startDay: '2026-09-22', endDay: '2026-09-21' })).rejects.toThrow(/przed pierwszym/)
+    await expect(planned({ allDay: true, startDay: '2026-09-22', endDay: '2027-09-22' })).rejects.toThrow(/dłuższy niż 60 dni/)
+    await expect(planned({ allDay: true })).rejects.toThrow(/Podaj daty/)
+    await expect(planned({ allDay: true, startDay: '2026-02-30', endDay: '2026-03-01' })).rejects.toThrow(/Podaj daty/)
+    await expect(board.truckView(t1, '2026-13-01', '2026-13-01')).rejects.toThrow(/poprawną datę/)
+  })
+
+  it('the set page covers whole weeks with totals, orders, services and the active order', async () => {
+    now = '2026-09-28T09:00:00Z'
+    await board.importFile(
+      await xlsx([...rows, { no: '79-92-26', from: 'Warszawa', ld: '2026-09-30', to: 'Wien', ud: '2026-10-01', rev: 900, cost: 800, sub: 'AA1001A', trailer: 'TR100' }]),
+      'a.xlsx',
+      'daily',
+    )
+    const t1 = await truckId('AA1001A')
+    await board.createService({ truckId: t1, target: 'truck', status: 'planned', startDay: '2026-09-22', startTime: '10:00', endDay: '2026-09-22', endTime: '12:00' })
+    await board.createService({ truckId: t1, target: 'truck', status: 'required', description: 'opony' })
+
+    const month = await board.truckView(t1, '2026-09-01', '2026-09-30')
+    expect(month.weeks.map(w => w.weekStart)).toEqual(['2026-08-31', '2026-09-07', '2026-09-14', '2026-09-21', '2026-09-28'])
+    expect(month.from).toBe('2026-08-31')
+    expect(month.to).toBe('2026-10-04')
+    expect(month.orders.map(o => o.orderNo)).toEqual(['79-90-26', '79-92-26'])
+    expect(month.totals).toMatchObject({ revenue: 2350, cost: 2050, margin: 300, legs: 2, services: 1 })
+    expect(month.truck).toMatchObject({ plate: 'AA1001A', carrier: 'Przewoźnik Alfa', trailer: 'TR100' })
+    expect(month.truck.required.map(s => s.description)).toEqual(['opony'])
+    expect(month.services.map(s => s.phase)).toEqual(['required', 'done'])
+    expect(month.activeOrder).toMatchObject({ orderNo: '79-92-26', upcoming: true })
+
+    const week = await board.truckView(t1, '2026-09-23', '2026-09-23')
+    expect(week.weeks).toHaveLength(1)
+    expect(week.totals.revenue).toBe(1450)
+    await expect(board.truckView(999, '2026-09-23', '2026-09-23')).rejects.toThrow(/Nie ma takiego auta/)
+  })
+})
+
+describe('migration 0011', () => {
+  it('turns old single-day "Serwis" events into all-day planned services', async () => {
+    const raw = createTestDatabase()
+    try {
+      const migrator = new Migrator({ db: raw, provider: { getMigrations: async () => migrations } })
+      await migrator.migrateTo('0010_trailer_carrier')
+      const truck = await raw.insertInto('board_trucks').values({ carrier: 'Alfa' }).returning('id').executeTakeFirstOrThrow()
+      await raw.insertInto('board_places').values({ code: 'KRK', name: 'Kraków', lat: 50.07, lon: 19.8, kind: 'airport' }).execute()
+      await raw
+        .insertInto('board_notes')
+        .values({ scope: 'truck_day', truck_id: truck.id, day: '2026-10-01', kind: 'service', text: 'olej', place_code: 'KRK', created_by: 'Dyspozytor', created_at: '2026-09-30T10:00:00Z' })
+        .execute()
+      await raw
+        .insertInto('board_notes')
+        .values({ scope: 'truck_day', truck_id: truck.id, day: '2026-10-01', kind: 'pause', text: 'pauza', created_by: 'Dyspozytor', created_at: '2026-09-30T10:00:00Z' })
+        .execute()
+      await migrateToLatest(raw)
+      const services = await raw.selectFrom('board_services').selectAll().execute()
+      expect(services.map(s => [s.status, s.all_day, s.start_day, s.end_day, s.description, s.place, s.created_by])).toEqual([
+        ['planned', 1, '2026-10-01', '2026-10-01', 'olej', 'Kraków', 'Dyspozytor'],
+      ])
+      const notes = await raw.selectFrom('board_notes').select(['kind', 'deleted']).orderBy('id').execute()
+      expect(notes).toEqual([
+        { kind: 'service', deleted: 1 },
+        { kind: 'pause', deleted: 0 },
+      ])
+    } finally {
+      await raw.destroy()
+    }
   })
 })

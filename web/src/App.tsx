@@ -10,6 +10,7 @@ import type { UserRole } from './lib/types.js'
 import { WeekPage, type WeekFocus } from './board/WeekPage.js'
 import { ReviewPage } from './board/ReviewPage.js'
 import { FleetPage } from './board/FleetPage.js'
+import { TruckPage, parseTruckHash, truckHash, type TruckRoute } from './board/TruckPage.js'
 import { boardApi } from './board/boardApi.js'
 import { todayIso } from './board/format.js'
 
@@ -37,6 +38,10 @@ const ROLE_LABELS: Record<UserRole, string> = {
   admin: 'administrator',
 }
 
+function clearHash(): void {
+  if (window.location.hash) window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search)
+}
+
 const allowed = (role: UserRole) => (item: { roles?: UserRole[] }) => item.roles === undefined || item.roles.includes(role)
 
 export function App() {
@@ -46,7 +51,16 @@ export function App() {
   const [focus, setFocus] = useState<WeekFocus | null>(null)
   const [boardDate, setBoardDate] = useState<string>(todayIso())
   const [openIssues, setOpenIssues] = useState<number | null>(null)
+  const [truckRoute, setTruckRoute] = useState<TruckRoute | null>(() => parseTruckHash(window.location.hash))
+  /** Where the set page was opened from; `pushed` = it added a history entry ("Back" pops it). */
+  const [truckFrom, setTruckFrom] = useState<{ screen: Screen; pushed: boolean } | null>(null)
   const signedIn = user !== null && user !== undefined
+
+  useEffect(() => {
+    const onHash = () => setTruckRoute(parseTruckHash(window.location.hash))
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
 
   const refreshCount = useCallback(async () => {
     try {
@@ -74,10 +88,32 @@ export function App() {
 
   const go = (next: Screen) => {
     setFocus(null)
+    clearHash()
+    setTruckRoute(null)
     setScreen(next)
   }
 
+  const openTruck = (id: number, date: string) => {
+    const route: TruckRoute = { id, date, mode: 'week' }
+    setFocus(null) // back on the board = the week that was open, without an old order panel
+    setTruckFrom({ screen: activeScreen, pushed: true })
+    setTruckRoute(route)
+    window.location.hash = truckHash(route)
+  }
+
+  const closeTruck = () => {
+    if (truckFrom?.pushed) {
+      window.history.back()
+    } else {
+      clearHash()
+    }
+    setTruckRoute(null)
+    setTruckFrom(null)
+  }
+
   const openOrder = async (orderNo: string) => {
+    clearHash()
+    setTruckRoute(null)
     let date = boardDate
     try {
       date = (await boardApi.order(orderNo)).order.loadDate || boardDate
@@ -132,15 +168,33 @@ export function App() {
       </header>
 
       <main>
-        {activeScreen === 'board' && <WeekPage focus={focus} initialDate={boardDate} onDateChange={setBoardDate} onReview={() => go('review')} />}
-        {activeScreen === 'review' && <ReviewPage onOpenOrder={orderNo => void openOrder(orderNo)} onIssuesChanged={() => void refreshCount()} />}
-        {activeScreen === 'fleet' && <FleetPage onChanged={() => void refreshCount()} />}
-        {activeScreen === 'users' && (
+        {truckRoute && (
+          <TruckPage
+            key={truckRoute.id}
+            truckId={truckRoute.id}
+            date={truckRoute.date}
+            mode={truckRoute.mode}
+            backLabel={truckFrom?.screen === 'fleet' ? 'Flota' : 'Tablica'}
+            onBack={closeTruck}
+            onNavigate={(date, mode) => {
+              const route: TruckRoute = { id: truckRoute.id, date, mode }
+              window.history.replaceState(window.history.state, '', truckHash(route))
+              setTruckRoute(route)
+            }}
+            onShowOnBoard={orderNo => void openOrder(orderNo)}
+          />
+        )}
+        {!truckRoute && activeScreen === 'board' && (
+          <WeekPage focus={focus} initialDate={boardDate} onDateChange={setBoardDate} onReview={() => go('review')} onOpenTruck={openTruck} />
+        )}
+        {!truckRoute && activeScreen === 'review' && <ReviewPage onOpenOrder={orderNo => void openOrder(orderNo)} onIssuesChanged={() => void refreshCount()} />}
+        {!truckRoute && activeScreen === 'fleet' && <FleetPage onChanged={() => void refreshCount()} onOpenTruck={id => openTruck(id, boardDate)} />}
+        {!truckRoute && activeScreen === 'users' && (
           <div className="min-h-[calc(100vh-48px)] bg-slate-100">
             <UsersPage />
           </div>
         )}
-        {activeScreen === 'calculator' && (
+        {!truckRoute && activeScreen === 'calculator' && (
           <div className="min-h-[calc(100vh-48px)] bg-slate-100">
             <nav aria-label="Kalkulator" className="border-b border-slate-200 bg-white">
               <ul className="mx-auto flex max-w-5xl gap-1 px-4 pt-3">

@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { boardApi, errorMessage, type NoteKind, type WeekBar, type WeekTruck, type WeekView } from './boardApi.js'
+import { boardApi, errorMessage, type NoteKind, type Service, type WeekTruck, type WeekView } from './boardApi.js'
 import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
-import { EVENT_ICON, Icon } from './Icon.js'
+import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
+import { RequiredBadges, SERVICE_COLORS, ServiceDialog } from './serviceUi.js'
+import { TruckTimeline, nowFractionFor } from './TruckTimeline.js'
 
 /**
  * Week view of the fleet board: trucks in rows, days in columns, orders as
- * bars from loading to unloading, events under the bars, week totals per
- * truck and for the department.
+ * bars from loading to unloading, services in a strip under them, events
+ * under the bars, week totals per truck and for the department.
  */
 
-const MONEY_KEY = 'tablica.showMoney'
+export const MONEY_KEY = 'tablica.showMoney'
 
-function readShowMoney(): boolean {
+export function readShowMoney(): boolean {
   try {
     return localStorage.getItem(MONEY_KEY) !== '0'
   } catch {
@@ -20,45 +22,12 @@ function readShowMoney(): boolean {
   }
 }
 
-interface PlacedBar extends WeekBar {
-  colStart: number
-  colEnd: number
-  lane: number
-}
-
-function placeBars(bars: WeekBar[]): PlacedBar[] {
-  const laneEnds: number[] = []
-  return [...bars]
-    .sort((a, b) => a.startDay - b.startDay || a.endDay - b.endDay)
-    .map(b => {
-      const s = Math.max(0, b.startDay)
-      const e = Math.min(6, b.endDay)
-      let lane = laneEnds.findIndex(end => end < s)
-      if (lane === -1) {
-        lane = laneEnds.length
-        laneEnds.push(e)
-      } else laneEnds[lane] = e
-      return { ...b, colStart: s + 1, colEnd: e + 2, lane: lane + 1 }
-    })
-}
-
-function barColors(b: WeekBar, selected: boolean): { bg: string; fg: string; outline: string } {
-  if (selected) return { bg: '#1E4E9C', fg: '#FFFFFF', outline: b.prz ? '2px dashed #FFFFFF' : 'none' }
-  let bg = '#DCE5F2'
-  let fg = '#15181C'
-  if (!b.inWeek) {
-    bg = '#ECEEF0'
-    fg = '#545B63'
+export function writeShowMoney(show: boolean): void {
+  try {
+    localStorage.setItem(MONEY_KEY, show ? '1' : '0')
+  } catch {
+    // per-viewer convenience only
   }
-  if (b.excluded || b.noCarrier || b.missing) {
-    bg = '#F1F2F0'
-    fg = '#6B7178'
-  }
-  if (b.issue) {
-    bg = '#F4C77A'
-    fg = '#3A2400'
-  }
-  return { bg, fg, outline: b.prz ? '2px dashed #1E4E9C' : 'none' }
 }
 
 export interface WeekFocus {
@@ -71,11 +40,14 @@ export function WeekPage({
   initialDate,
   onReview,
   onDateChange,
+  onOpenTruck,
 }: {
   focus: WeekFocus | null
   initialDate?: string
   onReview: () => void
   onDateChange?: (date: string) => void
+  /** Set page of a truck (double click on the truck cell or click on its plate). */
+  onOpenTruck?: (truckId: number, date: string) => void
 }) {
   const [date, setDate] = useState(focus?.date ?? initialDate ?? todayIso())
   const [view, setView] = useState<WeekView | null>(null)
@@ -86,6 +58,7 @@ export function WeekPage({
   const [tip, setTip] = useState<string | null>(null)
   const [copied, setCopied] = useState<number | null>(null)
   const [eventTarget, setEventTarget] = useState<{ truck: WeekTruck; day: string } | null>(null)
+  const [serviceTarget, setServiceTarget] = useState<{ truck: WeekTruck; service: Service } | null>(null)
 
   useEffect(() => {
     if (focus) {
@@ -116,21 +89,12 @@ export function WeekPage({
 
   const toggleMoney = () => {
     setShowMoney(v => {
-      try {
-        localStorage.setItem(MONEY_KEY, v ? '0' : '1')
-      } catch {
-        // per-viewer convenience only
-      }
+      writeShowMoney(!v)
       return !v
     })
   }
 
-  const nowFraction = useMemo(() => {
-    if (!view || view.today < view.weekStart || view.today > view.weekEnd) return null
-    const dayIndex = view.days.indexOf(view.today)
-    const now = new Date()
-    return (dayIndex + (now.getHours() + now.getMinutes() / 60) / 24) / 7
-  }, [view])
+  const nowFraction = useMemo(() => (view ? nowFractionFor(view.days, view.today) : null), [view])
 
   const copy = async (truck: WeekTruck) => {
     try {
@@ -190,6 +154,8 @@ export function WeekPage({
           <Legend color="#DCE5F2" label="Przepinka" dashed />
           <Legend color="#F4C77A" label="Do sprawdzenia" />
           <Legend color="#ECEEF0" label="Załadunek w poprzednim tygodniu" border />
+          <Legend color={SERVICE_COLORS.light} label="Serwis" />
+          <Legend color="#DCE5F2" label="Kolizja z serwisem" conflict />
           <label className="flex min-h-11 cursor-pointer items-center gap-2 pl-1.5 text-[13.5px] font-semibold text-[#15181C]">
             <input type="checkbox" checked={showMoney} onChange={toggleMoney} className="h-[18px] w-[18px] accent-[#1E4E9C]" />
             Pokaż kwoty
@@ -255,6 +221,7 @@ export function WeekPage({
                 <TruckRow
                   key={truck.id}
                   truck={truck}
+                  weekStart={view.weekStart}
                   days={view.days}
                   showMoney={showMoney}
                   selected={selected}
@@ -265,6 +232,8 @@ export function WeekPage({
                   onTip={setTip}
                   onCopy={() => void copy(truck)}
                   onAddEvent={day => setEventTarget({ truck, day })}
+                  onOpenService={service => setServiceTarget({ truck, service })}
+                  {...(onOpenTruck ? { onOpenTruck: () => onOpenTruck(truck.id, view.weekStart) } : {})}
                 />
               ))}
             </div>
@@ -293,6 +262,18 @@ export function WeekPage({
         />
       )}
 
+      {serviceTarget && (
+        <ServiceDialog
+          truck={serviceTarget.truck}
+          service={serviceTarget.service}
+          onClose={() => setServiceTarget(null)}
+          onSaved={() => {
+            setServiceTarget(null)
+            void load()
+          }}
+        />
+      )}
+
       {view.lastImport && (
         <p className="px-6 pt-3 text-xs text-[#545B63]">
           Dane z importu {stamp(view.lastImport.importedAt)} ({view.lastImport.filename}).
@@ -303,15 +284,15 @@ export function WeekPage({
   )
 }
 
-function Legend({ color, label, dashed, border }: { color: string; label: string; dashed?: boolean; border?: boolean }) {
+function Legend({ color, label, dashed, border, conflict }: { color: string; label: string; dashed?: boolean; border?: boolean; conflict?: boolean }) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <span
         className="inline-block h-3 w-[18px] rounded-[3px]"
         style={{
           background: color,
-          outline: dashed ? '2px dashed #1E4E9C' : undefined,
-          outlineOffset: dashed ? -2 : undefined,
+          outline: conflict ? `2px solid ${SERVICE_COLORS.conflict}` : dashed ? '2px dashed #1E4E9C' : undefined,
+          outlineOffset: dashed || conflict ? -2 : undefined,
           boxShadow: border ? 'inset 0 0 0 1px #C9CEC6' : undefined,
         }}
       />
@@ -320,7 +301,7 @@ function Legend({ color, label, dashed, border }: { color: string; label: string
   )
 }
 
-function Kpi({ label, value, sub }: { label: string; value: string; sub: string }) {
+export function Kpi({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
     <div className="flex flex-col gap-1 rounded-[10px] border border-[#D5D9D3] bg-white px-3.5 py-3">
       <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">{label}</span>
@@ -332,6 +313,7 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub: string 
 
 interface TruckRowProps {
   truck: WeekTruck
+  weekStart: string
   days: string[]
   showMoney: boolean
   selected: string | null
@@ -342,19 +324,36 @@ interface TruckRowProps {
   onTip: (key: string | null) => void
   onCopy: () => void
   onAddEvent: (day: string) => void
+  onOpenService: (s: Service) => void
+  onOpenTruck?: () => void
 }
 
-function TruckRow({ truck, days, showMoney, selected, tip, nowFraction, copied, onSelect, onTip, onCopy, onAddEvent }: TruckRowProps) {
-  const bars = placeBars(truck.bars)
+function TruckRow({ truck, weekStart, days, showMoney, selected, tip, nowFraction, copied, onSelect, onTip, onCopy, onAddEvent, onOpenService, onOpenTruck }: TruckRowProps) {
   const t = truck.totals
   return (
     <div className="grid grid-cols-[236px_minmax(0,1fr)_156px] border-b border-[#E3E6E1]">
-      <div className="flex min-w-0 flex-col gap-1 border-r border-[#E3E6E1] px-3.5 py-3">
+      <div
+        className="flex min-w-0 flex-col gap-1 border-r border-[#E3E6E1] px-3.5 py-3"
+        onDoubleClick={onOpenTruck}
+        title={onOpenTruck ? 'Kliknij dwukrotnie, żeby otworzyć stronę zestawu' : undefined}
+      >
         <div className="flex items-center justify-between gap-2">
-          <span className="font-mono text-base font-semibold">{truck.plate}</span>
+          {onOpenTruck ? (
+            <button
+              type="button"
+              onClick={onOpenTruck}
+              aria-label={`Strona zestawu ${truck.plate}`}
+              className="rounded font-mono text-base font-semibold text-[#1E4E9C] underline decoration-[#9AB3DA] underline-offset-[3px] hover:decoration-[#1E4E9C]"
+            >
+              {truck.plate}
+            </button>
+          ) : (
+            <span className="font-mono text-base font-semibold">{truck.plate}</span>
+          )}
           <button
             type="button"
             onClick={onCopy}
+            onDoubleClick={e => e.stopPropagation()}
             aria-label={`Kopiuj dane auta ${truck.plate}, naczepy i kierowcy`}
             className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-[#C9CEC6] bg-white px-2.5 text-xs font-semibold hover:bg-[#F7F8F6]"
           >
@@ -368,113 +367,26 @@ function TruckRow({ truck, days, showMoney, selected, tip, nowFraction, copied, 
         <span className="text-[13px]">
           {truck.driver || 'kierowca?'} {truck.phone && <span className="text-[#545B63]">· {truck.phone}</span>}
         </span>
+        <RequiredBadges services={truck.required.filter(s => s.target === 'truck')} onOpen={onOpenService} />
         <span className="mt-0.5 self-start rounded bg-[#EEF0EC] px-1.5 py-0.5 text-xs">
           <span className="font-mono font-semibold">{truck.trailer ?? '—'}</span> · {truck.trailerTypePl}
         </span>
+        <RequiredBadges services={truck.required.filter(s => s.target === 'trailer')} onOpen={onOpenService} />
       </div>
 
-      <div className="relative min-w-0 p-2">
-        <div className="grid grid-cols-7 gap-x-1 gap-y-1.5" style={{ gridAutoRows: '50px' }}>
-          {bars.map(b => {
-            const isSel = selected === b.orderNo
-            const c = barColors(b, isSel)
-            const sub = [
-              b.prz ? 'PRZ' : null,
-              b.issue ? 'Sprawdź' : null,
-              b.excluded === 'cancelled' ? 'anulowane' : b.excluded === 'unconfirmed' ? 'niezatwierdzone' : b.excluded === 'manual' ? 'wyłączone' : null,
-              b.noCarrier ? 'brak przewoźnika' : null,
-              b.missing ? 'zniknęło' : null,
-              showMoney && !b.excluded ? signedEur(b.margin) : null,
-              km(b.kmLoaded === null && b.kmEmpty === null ? null : (b.kmLoaded ?? 0) + (b.kmEmpty ?? 0), b.kmEstimated),
-            ]
-              .filter(Boolean)
-              .join(' · ')
-            return (
-              <div
-                key={b.key}
-                className="relative flex min-w-0 items-stretch rounded-[7px]"
-                style={{
-                  gridColumn: `${b.colStart} / ${b.colEnd}`,
-                  gridRow: b.lane,
-                  background: c.bg,
-                  color: c.fg,
-                  outline: c.outline,
-                  outlineOffset: -2,
-                  textDecoration: b.excluded === 'cancelled' ? 'line-through' : undefined,
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => onSelect(b.orderNo)}
-                  aria-label={`${b.orderNo}, ${b.title}, ${dm(b.startDate)}–${dm(b.endDate)}`}
-                  className="flex min-w-0 flex-1 cursor-pointer flex-col justify-center gap-0.5 px-2 py-1 text-left text-[13px]"
-                >
-                  <span className="block w-full truncate font-semibold">
-                    {b.startDay < 0 ? '‹ ' : ''}
-                    {b.title}
-                    {b.endDay > 6 ? ' ›' : ''}
-                  </span>
-                  <span className="block w-full truncate font-mono text-[11.5px]">{sub}</span>
-                </button>
-                {b.noteLines.length > 0 && (
-                  <button
-                    type="button"
-                    aria-label="Pokaż notatkę do zlecenia"
-                    onMouseEnter={() => onTip(b.key)}
-                    onMouseLeave={() => onTip(null)}
-                    onFocus={() => onTip(b.key)}
-                    onBlur={() => onTip(null)}
-                    className="flex w-6 flex-none cursor-help items-start justify-center pt-[7px]"
-                  >
-                    <Icon name="note" size={14} />
-                  </button>
-                )}
-                {tip === b.key && (
-                  <div
-                    role="tooltip"
-                    className="absolute right-0 top-[calc(100%+6px)] z-30 w-[300px] whitespace-pre-line rounded-lg bg-[#15181C] px-3 py-2.5 text-[12.5px] leading-normal text-[#F3F4F1] shadow-xl"
-                  >
-                    {b.noteLines.join('\n')}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-        <div className="mt-1.5 grid grid-cols-7 gap-1">
-          {days.map(day => (
-            <div key={day} className="flex min-w-0 flex-col items-start gap-1">
-              {truck.events
-                .filter(e => e.day === day)
-                .map((e, i) => (
-                  <span
-                    key={`${e.id ?? 'auto'}-${i}`}
-                    title={e.auto ? 'Wykryte automatycznie z naczep w zleceniach' : EVENT_LABELS[e.kind]}
-                    className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] ${e.auto ? 'border-dashed border-[#9AA3AC] bg-[#F7F8F6]' : 'border-[#D5D9D3] bg-white'} text-[#3D444C]`}
-                  >
-                    <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
-                    <span className="truncate">{e.text}</span>
-                  </span>
-                ))}
-              <button
-                type="button"
-                onClick={() => onAddEvent(day)}
-                aria-label={`Dodaj zdarzenie: ${truck.plate}, ${dm(day)}`}
-                className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[#9AA3AC] hover:bg-[#EEF0EC] hover:text-[#15181C] focus:text-[#15181C]"
-              >
-                <Icon name="plus" size={13} />
-              </button>
-            </div>
-          ))}
-        </div>
-        {nowFraction !== null && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-[#C2410C]"
-            style={{ left: `calc(8px + (100% - 16px) * ${nowFraction})` }}
-          />
-        )}
-      </div>
+      <TruckTimeline
+        row={truck}
+        weekStart={weekStart}
+        days={days}
+        showMoney={showMoney}
+        selected={selected}
+        tip={tip}
+        nowFraction={nowFraction}
+        onSelect={onSelect}
+        onTip={onTip}
+        onAddEvent={onAddEvent}
+        onOpenService={onOpenService}
+      />
 
       <div className="flex flex-col gap-1.5 border-l border-[#E3E6E1] px-3.5 py-3 text-[13px]">
         {showMoney && (
@@ -490,7 +402,7 @@ function TruckRow({ truck, days, showMoney, selected, tip, nowFraction, copied, 
   )
 }
 
-function Total({ label, value, strong, small }: { label: string; value: string; strong?: boolean; small?: boolean }) {
+export function Total({ label, value, strong, small }: { label: string; value: string; strong?: boolean; small?: boolean }) {
   return (
     <div className="flex flex-col">
       <span className="text-[11px] font-semibold uppercase tracking-wider text-[#545B63]">{label}</span>
@@ -499,15 +411,15 @@ function Total({ label, value, strong, small }: { label: string; value: string; 
   )
 }
 
-const EVENT_KINDS: NoteKind[] = ['note', 'pause', 'service', 'driver', 'trailer', 'position']
+const EVENT_KINDS: NoteKind[] = ['note', 'service', 'pause', 'driver', 'trailer', 'position']
 
-function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck; day: string; onClose: () => void; onSaved: () => void }) {
+export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck; day: string; onClose: () => void; onSaved: () => void }) {
   const [kind, setKind] = useState<NoteKind>('note')
   const [text, setText] = useState('')
   const [place, setPlace] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const needsPlace = kind === 'service' || kind === 'position'
+  const needsPlace = kind === 'position'
 
   const save = async () => {
     setSaving(true)
@@ -524,6 +436,10 @@ function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck; day: 
       setError(errorMessage(e, 'Nie udało się zapisać zdarzenia.'))
       setSaving(false)
     }
+  }
+
+  if (kind === 'service') {
+    return <ServiceDialog truck={truck} day={day} candidates={truck.required} onClose={onClose} onSaved={onSaved} />
   }
 
   return (

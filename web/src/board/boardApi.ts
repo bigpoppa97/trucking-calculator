@@ -27,6 +27,61 @@ export interface WeekBar {
   noCarrier: boolean
   inWeek: boolean
   noteLines: string[]
+  /** Set when the truck is in service all day on a day of this leg. */
+  serviceConflict: string | null
+}
+
+export type ServiceTarget = 'truck' | 'trailer'
+export type ServicePhase = 'required' | 'upcoming' | 'ongoing' | 'done' | 'cancelled'
+
+export interface Service {
+  id: number
+  truckId: number | null
+  target: ServiceTarget
+  trailerPlate: string | null
+  status: 'required' | 'planned' | 'cancelled'
+  phase: ServicePhase
+  allDay: boolean
+  startDay: string | null
+  startTime: string | null
+  endDay: string | null
+  endTime: string | null
+  /** e.g. "14.10 08:00–10:00"; '' while required. */
+  when: string
+  description: string
+  place: string
+  reportedAt: string
+  createdBy: string
+  updatedBy: string
+  updatedAt: string
+  history: Array<{ at: string; by: string; text: string }>
+}
+
+export interface ServiceInput {
+  truckId: number
+  target: ServiceTarget
+  trailerPlate?: string
+  status: 'required' | 'planned'
+  description?: string
+  place?: string
+  allDay?: boolean
+  startDay?: string
+  startTime?: string
+  endDay?: string
+  endTime?: string
+}
+
+export interface ServicePatch {
+  status?: 'required' | 'planned' | 'cancelled'
+  target?: ServiceTarget
+  trailerPlate?: string
+  description?: string
+  place?: string
+  allDay?: boolean
+  startDay?: string
+  startTime?: string | null
+  endDay?: string
+  endTime?: string | null
 }
 
 export interface WeekEvent {
@@ -49,7 +104,53 @@ export interface WeekTruck {
   copyText: string
   bars: WeekBar[]
   events: WeekEvent[]
+  /** Planned services in this week (service strip). */
+  services: Service[]
+  /** Required services (no date yet) of the tractor and of the trailer behind it. */
+  required: Service[]
   totals: { revenue: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean }
+}
+
+export interface TruckOrderRow {
+  orderNo: string
+  legIndex: number
+  legCount: number
+  title: string
+  startDate: string
+  endDate: string
+  revAlloc: number | null
+  amount: number | null
+  margin: number | null
+  km: number | null
+  kmEstimated: boolean
+  prz: boolean
+  excluded: string | null
+  noCarrier: boolean
+  missing: boolean
+}
+
+export interface TruckView {
+  truck: {
+    id: number
+    plate: string
+    plates: Array<{ plate: string; validFrom: string; validTo: string | null }>
+    carrier: string
+    driver: string
+    phone: string
+    trailer: string | null
+    trailerTypePl: string
+    active: boolean
+    copyText: string
+    required: Service[]
+  }
+  from: string
+  to: string
+  today: string
+  weeks: Array<{ weekStart: string; weekEnd: string; weekNumber: number; days: string[]; row: WeekTruck }>
+  totals: { revenue: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean; services: number }
+  orders: TruckOrderRow[]
+  services: Service[]
+  activeOrder: { orderNo: string; title: string; startDate: string; endDate: string; upcoming: boolean } | null
 }
 
 export interface WeekView {
@@ -254,6 +355,11 @@ export const boardApi = {
   clearOverride: (orderNo: string, field: string) =>
     call('DELETE', `/api/board/orders/${encodeURIComponent(orderNo)}/overrides/${encodeURIComponent(field)}`),
   addEvent: (input: { truckId: number; day: string; kind: NoteKind; text: string; place?: string }) => call('POST', '/api/board/events', input),
+  truckView: (id: number, from: string, to: string) => call<TruckView>('GET', `/api/board/trucks/${id}/view?from=${from}&to=${to}`),
+  requiredServices: async () => (await call<{ services: Service[] }>('GET', '/api/board/services/required')).services,
+  createService: async (input: ServiceInput) => (await call<{ id: number }>('POST', '/api/board/services', input)).id,
+  updateService: (id: number, patch: ServicePatch) => call('PATCH', `/api/board/services/${id}`, patch),
+  deleteService: (id: number) => call('DELETE', `/api/board/services/${id}`),
   async importFile(file: File, mode: 'daily' | 'history'): Promise<ImportSummary> {
     const dataBase64 = toBase64(await file.arrayBuffer())
     return (await call<{ summary: ImportSummary }>('POST', '/api/board/import', { filename: file.name, mode, dataBase64 })).summary

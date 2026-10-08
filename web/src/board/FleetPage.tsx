@@ -7,9 +7,10 @@ import {
   type Place,
   type Thresholds,
   type FleetSyncResult,
+  type Service,
   type Trailer,
 } from './boardApi.js'
-import { addDaysIso, todayIso } from './format.js'
+import { addDaysIso, dm, todayIso } from './format.js'
 import { Icon } from './Icon.js'
 
 /**
@@ -35,7 +36,7 @@ const SECTIONS: Array<{ id: Section; label: string }> = [
   { id: 'thresholds', label: 'Progi ostrzeżeń' },
 ]
 
-export function FleetPage({ onChanged }: { onChanged?: () => void }) {
+export function FleetPage({ onChanged, onOpenTruck }: { onChanged?: () => void; onOpenTruck?: (truckId: number) => void }) {
   const [section, setSection] = useState<Section>('trucks')
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-5 p-6">
@@ -58,7 +59,7 @@ export function FleetPage({ onChanged }: { onChanged?: () => void }) {
           </ul>
         </nav>
       </div>
-      {section === 'trucks' && <TrucksSection {...(onChanged ? { onChanged } : {})} />}
+      {section === 'trucks' && <TrucksSection {...(onChanged ? { onChanged } : {})} {...(onOpenTruck ? { onOpenTruck } : {})} />}
       {section === 'trailers' && <TrailersSection />}
       {section === 'list' && <FleetListSection {...(onChanged ? { onChanged } : {})} />}
       {section === 'places' && <PlacesSection />}
@@ -115,7 +116,7 @@ function fmtDay(iso: string | null): string {
 
 // ---------------------------------------------------------------- trucks
 
-function TrucksSection({ onChanged }: { onChanged?: () => void }) {
+function TrucksSection({ onChanged, onOpenTruck }: { onChanged?: () => void; onOpenTruck?: (truckId: number) => void }) {
   const [trucks, setTrucks] = useState<FleetTruck[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [editing, setEditing] = useState<number | null>(null)
@@ -230,6 +231,7 @@ function TrucksSection({ onChanged }: { onChanged?: () => void }) {
                         setEditing(null)
                         setReplating(replating === t.id ? null : t.id)
                       }}
+                      {...(onOpenTruck ? { onOpen: () => onOpenTruck(t.id) } : {})}
                       onSavePlate={async (plate, validFrom) => {
                         const ok = await action.run(
                           async () => {
@@ -270,6 +272,7 @@ function TruckRow(props: {
   onEdit: () => void
   onReplate: () => void
   onSavePlate: (plate: string, validFrom: string) => Promise<void>
+  onOpen?: () => void
 }) {
   const { truck: t } = props
   const history = [...t.plates].sort((a, b) => b.validFrom.localeCompare(a.validFrom)).filter(p => p.plate !== t.currentPlate || p.validTo)
@@ -310,6 +313,11 @@ function TruckRow(props: {
         </td>
         <td className={`${TD} whitespace-nowrap text-right`}>
           <span className="inline-flex gap-2">
+            {props.onOpen && (
+              <button type="button" onClick={props.onOpen} className={BTN} aria-label={`Szczegóły zestawu ${t.currentPlate}`}>
+                Szczegóły
+              </button>
+            )}
             <button type="button" onClick={props.onEdit} className={BTN}>
               <Icon name="pencil" size={14} /> Edytuj
             </button>
@@ -522,9 +530,16 @@ function TrailersSection() {
   const [typeEn, setTypeEn] = useState('')
   const [aliasFor, setAliasFor] = useState<string | null>(null)
   const [alias, setAlias] = useState('')
+  const [required, setRequired] = useState<Service[]>([])
   const action = useAction()
 
   const load = useCallback(async () => {
+    try {
+      // Required trailer services: a trailer that is not behind any fleet tractor shows its badge only here.
+      setRequired(((await boardApi.requiredServices()) ?? []).filter(sv => sv.target === 'trailer'))
+    } catch {
+      setRequired([])
+    }
     try {
       const [list, fleet] = await Promise.all([boardApi.trailers(), boardApi.fleet()])
       setTrailers(list)
@@ -675,7 +690,20 @@ function TrailersSection() {
               <tbody>
                 {inFleet.map(t => (
                   <tr key={t.plate} className="border-b border-[#ECEEEA]">
-                    <td className={`${TD} font-mono font-semibold`}>{t.plate}</td>
+                    <td className={TD}>
+                      <span className="block font-mono font-semibold">{t.plate}</span>
+                      {required
+                        .filter(sv => sv.trailerPlate === t.plate)
+                        .map(sv => (
+                          <span
+                            key={sv.id}
+                            title={`Serwis wymagany, zgłoszony ${dm(sv.reportedAt.slice(0, 10))}${sv.place ? ` · ${sv.place}` : ''} — zaplanujesz go na tablicy`}
+                            className="mt-1 inline-flex items-center gap-1 rounded-md border-[1.5px] border-dashed border-[#2E8576] px-1.5 py-0.5 text-[11.5px] font-semibold text-[#0E4A41]"
+                          >
+                            <Icon name="service" size={11} /> serwis: {sv.description || 'wymagany'} · od {dm(sv.reportedAt.slice(0, 10))}
+                          </span>
+                        ))}
+                    </td>
                     <td className={TD}>{t.carrier || <span className="text-[#B4690E]">nieprzypisana</span>}</td>
                     <td className={TD}>{t.typePl}</td>
                     <td className={TD}>{t.typeEn}</td>

@@ -65,6 +65,34 @@ describe('board API', () => {
     expect(res.json().issues.filter((i: { kind: string }) => i.kind === 'UNKNOWN_TRAILER')).toEqual([])
   })
 
+  it('adds, plans and lists a service signed by the user, and shows the set page', async () => {
+    let res = await call({ method: 'POST', url: '/api/board/fleet', payload: { plate: 'AA1001A', validFrom: '2026-01-01', carrier: 'Alfa' } })
+    const truckId = res.json().id as number
+    res = await call({ method: 'POST', url: '/api/board/services', payload: { truckId, target: 'truck', status: 'planned', startDay: '2026-09-22', startTime: '25:00', endDay: '2026-09-22', endTime: '10:00' } })
+    expect(res.statusCode).toBe(400)
+
+    res = await call({ method: 'POST', url: '/api/board/services', payload: { truckId, target: 'truck', status: 'required', description: 'olej' } })
+    expect(res.statusCode).toBe(200)
+    const id = res.json().id as number
+    res = await call({ method: 'GET', url: '/api/board/services/required' })
+    expect(res.json().services.map((s: { id: number }) => s.id)).toEqual([id])
+
+    res = await call({ method: 'PATCH', url: `/api/board/services/${id}`, payload: { status: 'planned', allDay: true, startDay: '2026-09-23', endDay: '2026-09-23' } })
+    expect(res.statusCode).toBe(200)
+    res = await call({ method: 'GET', url: '/api/board/week?date=2026-09-23' })
+    expect(res.json().trucks[0].services[0]).toMatchObject({ id, when: '23.09, cały dzień', createdBy: 'Test dispatcher' })
+
+    res = await call({ method: 'GET', url: `/api/board/trucks/${truckId}/view?from=2026-09-01&to=2026-09-30` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().weeks).toHaveLength(5)
+    expect(res.json().services[0].history.map((h: { text: string }) => h.text)).toEqual(['Zgłoszono serwis wymagany (ciągnik: olej).', 'Zaplanowano: 23.09, cały dzień.'])
+
+    res = await call({ method: 'DELETE', url: `/api/board/services/${id}` })
+    expect(res.statusCode).toBe(200)
+    res = await call({ method: 'POST', url: '/api/board/events', payload: { truckId, day: '2026-09-23', kind: 'service', text: 'Serwis' } })
+    expect(res.statusCode).toBe(400)
+  })
+
   it('rejects a file without required columns with a clear message', async () => {
     const wb = new ExcelJS.Workbook()
     wb.addWorksheet('x').addRow(['Numer zlecenia', 'Zleceniodawca'])

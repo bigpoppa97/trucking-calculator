@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { NoteKind } from '../db/schema.js'
 import type { HereGeocodingClient } from '../here/hereGeocodingClient.js'
-import { BoardError, type BoardService } from './boardService.js'
+import { BoardError, type BoardService, type ServiceInput, type ServicePatch } from './boardService.js'
 import { ExportFormatError } from './exportReader.js'
 
 /**
@@ -15,6 +15,7 @@ export interface BoardRouteDeps {
 }
 
 const DATE = { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' } as const
+const TIME = { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' } as const
 const ID_PARAMS = { type: 'object', properties: { id: { type: 'string', pattern: '^\\d+$' } }, required: ['id'] } as const
 const ORDER_PARAMS = {
   type: 'object',
@@ -106,7 +107,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
           properties: {
             truckId: { type: 'integer', minimum: 1 },
             day: DATE,
-            kind: { type: 'string', enum: ['note', 'pause', 'service', 'driver', 'trailer', 'position'] },
+            kind: { type: 'string', enum: ['note', 'pause', 'driver', 'trailer', 'position'] },
             text: { type: 'string', minLength: 1, maxLength: 500 },
             place: { type: 'string', maxLength: 100 },
           },
@@ -125,6 +126,69 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
           ...(request.body.place !== undefined ? { place: request.body.place } : {}),
         }),
       ),
+  )
+
+  // Set page (strona zestawu): one tractor over whole weeks covering [from, to].
+  app.get<{ Params: { id: string }; Querystring: { from: string; to?: string } }>(
+    '/api/board/trucks/:id/view',
+    { schema: { params: ID_PARAMS, querystring: { type: 'object', properties: { from: DATE, to: DATE }, required: ['from'] } } },
+    async (request, reply) =>
+      handle(reply, () => board.truckView(Number(request.params.id), request.query.from, request.query.to ?? request.query.from)),
+  )
+
+  // Services (serwis): required (no date yet) or planned (hours or whole days), tractor or trailer.
+  const SERVICE_WHEN = {
+    allDay: { type: 'boolean' },
+    startDay: DATE,
+    startTime: { anyOf: [TIME, { type: 'null' }] },
+    endDay: DATE,
+    endTime: { anyOf: [TIME, { type: 'null' }] },
+    description: { type: 'string', maxLength: 300 },
+    place: { type: 'string', maxLength: 150 },
+    target: { type: 'string', enum: ['truck', 'trailer'] },
+    trailerPlate: { type: 'string', maxLength: 20 },
+  } as const
+
+  app.get('/api/board/services/required', async (_request, reply) => handle(reply, async () => ({ services: await board.requiredServices() })))
+
+  app.post<{ Body: ServiceInput }>(
+    '/api/board/services',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            ...SERVICE_WHEN,
+            truckId: { type: 'integer', minimum: 1 },
+            status: { type: 'string', enum: ['required', 'planned'] },
+            startTime: TIME,
+            endTime: TIME,
+          },
+          required: ['truckId', 'target', 'status'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => handle(reply, async () => ({ id: await as(request).createService(request.body) })),
+  )
+
+  app.patch<{ Params: { id: string }; Body: ServicePatch }>(
+    '/api/board/services/:id',
+    {
+      schema: {
+        params: ID_PARAMS,
+        body: {
+          type: 'object',
+          properties: { ...SERVICE_WHEN, status: { type: 'string', enum: ['required', 'planned', 'cancelled'] } },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => handle(reply, () => as(request).updateService(Number(request.params.id), request.body)),
+  )
+
+  app.delete<{ Params: { id: string } }>('/api/board/services/:id', { schema: { params: ID_PARAMS } }, async (request, reply) =>
+    handle(reply, () => as(request).deleteService(Number(request.params.id))),
   )
 
   app.post<{ Body: { filename: string; mode: 'daily' | 'history'; dataBase64: string } }>(

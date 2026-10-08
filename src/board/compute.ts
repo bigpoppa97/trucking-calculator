@@ -16,7 +16,7 @@ import { normalizePlate, splitPlaces } from './normalize.js'
  *  - status A (client) = cancelled, N = unconfirmed → shown, not counted
  *  - status A on the forwarding order without PRZ = no carrier
  *  - km loaded = along the leg's stops; km empty = from the truck's previous
- *    unloading (or a position note, e.g. service) to this leg's first stop
+ *    unloading (or a day event with a place, e.g. "Pozycja auta") to this leg's first stop
  */
 
 export type LegKind = 'fleet' | 'own' | 'other'
@@ -322,12 +322,14 @@ async function attachKilometres(
   orders: ComputedOrder[],
   window: ComputeWindow,
 ): Promise<void> {
-  // Position notes (e.g. "Serwis Kraków") move the start of the next empty run.
+  // Day events with a place (e.g. "Pozycja auta: Kraków") move the start of the next empty run.
+  // Services never do (decision of 08.10.2026 — km corrections are manual).
   const positionNotes = await db
     .selectFrom('board_notes')
     .select(['truck_id', 'day', 'place_code'])
     .where('scope', '=', 'truck_day')
     .where('deleted', '=', 0)
+    .where('kind', '!=', 'service')
     .where('place_code', 'is not', null)
     .where('day', '>=', window.from)
     .where('day', '<=', window.to)

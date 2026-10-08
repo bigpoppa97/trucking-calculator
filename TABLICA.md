@@ -39,6 +39,20 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
 Ręczne poprawki (panel zlecenia → „Popraw ręcznie”) obowiązują, dopóki aplikacja nie zmieni tej samej wartości —
 wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
 
+## Serwis i strona zestawu
+
+- **Serwis** = okres, w którym auto (albo naczepa) jest niedostępne. Nie zmienia km ani kwot.
+  - *Wymagany* — przewoźnik zgłasza potrzebę bez terminu (np. „olej”); znacznik wisi przy aucie
+    (serwis naczepy — pod numerem naczepy, idzie za naczepą), dopóki go nie zaplanujesz albo nie odwołasz.
+  - *Zaplanowany* — od–do z godzinami albo „Cały dzień”. Na tablicy w pasie pod zleceniami: jasny blok = auto
+    tego dnia jedzie dalej, pełny = niedostępne, przerywana ramka = naczepa.
+  - Dodawanie: „+” pod dniem → Rodzaj „Serwis” albo na stronie zestawu → „Dodaj serwis”. Kliknięcie w blok
+    lub znacznik: Zaplanuj / Odłóż (wraca do wymaganych) / Odwołaj / Usuń (pomyłka). Każda zmiana ma historię.
+  - Zlecenie w dniu, w którym auto jest cały dzień w serwisie, dostaje czerwoną ramkę.
+- **Strona zestawu**: kliknij numer ciągnika na tablicy (albo dwuklik na kolumnę auta, albo Flota → Szczegóły).
+  Tydzień / miesiąc, wynik okresu, aktywne zlecenie, zakładki Serwis i Zlecenia. Strona ma własny adres —
+  „Wstecz” w przeglądarce wraca na tablicę.
+
 ## Dwa tygodnie równolegle z Excelem
 
 W `cmd` w folderze projektu (Node z fnm: najpierw `set PATH=%USERPROFILE%\.fnm\aliases\default;%PATH%`):
@@ -58,4 +72,4 @@ jak w aplikacji), km szacunkowe (≈) zanim HERE policzy dokładne w tle.
 ## Poza etapem 1
 
 Dashboard finansowy, import historii, historia stawek na trasach w kalkulatorze, uprawnienia ról na tablicy
-(na razie każdy zalogowany widzi i edytuje tablicę).
+(na razie każdy zalogowany widzi i edytuje tablicę), kierowcy z certyfikatami (paczka B).

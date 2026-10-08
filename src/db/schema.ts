@@ -132,6 +132,8 @@ export type ImportMode = 'daily' | 'history'
 export type NoteScope = 'order' | 'truck_day' | 'truck'
 export type NoteKind = 'note' | 'pause' | 'service' | 'driver' | 'trailer' | 'position'
 export type IssueStatus = 'open' | 'resolved' | 'ignored'
+export type ServiceTarget = 'truck' | 'trailer'
+export type ServiceStatus = 'required' | 'planned' | 'cancelled' | 'deleted'
 
 export interface BoardTrucksTable {
   id: Generated<number>
@@ -277,6 +279,35 @@ export interface BoardNotesTable {
   deleted: ColumnType<number, number | undefined, number>
 }
 
+// Migration 0011 — Serwis (unavailability periods of a tractor or a trailer).
+export interface BoardServicesTable {
+  id: Generated<number>
+  truck_id: Nullable<number> // tractor (target truck) or the tractor it was entered at (target trailer)
+  target: ServiceTarget
+  trailer_plate: Nullable<string>
+  status: ServiceStatus
+  all_day: ColumnType<number, number | undefined, number>
+  start_day: Nullable<string> // YYYY-MM-DD; null while required
+  start_time: Nullable<string> // HH:MM wall time (Poland); null when all day
+  end_day: Nullable<string>
+  end_time: Nullable<string>
+  description: ColumnType<string, string | undefined, string>
+  place: ColumnType<string, string | undefined, string>
+  reported_at: string
+  created_by: string
+  created_at: string
+  updated_by: string
+  updated_at: string
+}
+
+export interface BoardServiceChangesTable {
+  id: Generated<number>
+  service_id: number
+  text: string
+  created_by: string
+  created_at: string
+}
+
 export interface BoardIssuesTable {
   id: Generated<number>
   key: string
@@ -320,6 +351,8 @@ export interface DB {
   board_overrides: BoardOverridesTable
   board_notes: BoardNotesTable
   board_issues: BoardIssuesTable
+  board_services: BoardServicesTable
+  board_service_changes: BoardServiceChangesTable
 }
 
 export type AirportRow = Selectable<AirportsTable>

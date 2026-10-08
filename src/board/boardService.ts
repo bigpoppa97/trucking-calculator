@@ -1,12 +1,26 @@
 import type { Kysely } from 'kysely'
-import type { DB, ImportMode, NoteKind } from '../db/schema.js'
+import type { DB, ImportMode, NoteKind, ServiceTarget } from '../db/schema.js'
 import { computeOrders, placesLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
-import { loadBoardContext, type BoardContext } from './context.js'
+import { loadBoardContext, type BoardContext, type TruckRecord } from './context.js'
 import type { DistanceService } from './distances.js'
 import { importExportFile, FIELD_LABELS, type ImportSummary } from './importService.js'
 import { DEFAULT_THRESHOLDS, deriveIssues, fmtDate, syncDerivedIssues, type IssueThresholds } from './issues.js'
 import { planFleetSync, type FleetPlan } from './fleetList.js'
 import { addDays, aliasKey, isoWeekNumber, normalizePlate, weekStart } from './normalize.js'
+import {
+  dm as dmDay,
+  fullyCoveredDays,
+  isRealDay,
+  targetLabel,
+  toServiceDto,
+  validateWhen,
+  warsawNow,
+  whenLabel,
+  whenOf,
+  type ServiceDto,
+  type ServiceRecord,
+  type ServiceWhen,
+} from './services.js'
 
 /**
  * Application service for the board: week view, order details, notes,
@@ -28,7 +42,8 @@ export class BoardError extends Error {
 export const OVERRIDE_FIELDS = ['rev', 'cost', 'extra_cost', 'trailer', 'prz', 'exclude', 'km_loaded', 'km_empty', 'km_loaded:1', 'km_empty:1'] as const
 export type OverrideField = (typeof OVERRIDE_FIELDS)[number]
 
-const NOTE_KINDS: NoteKind[] = ['note', 'pause', 'service', 'driver', 'trailer', 'position']
+/** Free-form day events; a service has its own record (board_services). */
+const NOTE_KINDS: NoteKind[] = ['note', 'pause', 'driver', 'trailer', 'position']
 
 export interface WeekBar {
   key: string
@@ -54,6 +69,8 @@ export interface WeekBar {
   noCarrier: boolean
   inWeek: boolean
   noteLines: string[]
+  /** Set when the truck is in service all day on a day of this leg (red outline on the board). */
+  serviceConflict: string | null
 }
 
 export interface WeekEvent {
@@ -76,7 +93,80 @@ export interface WeekTruck {
   copyText: string
   bars: WeekBar[]
   events: WeekEvent[]
+  /** Planned services in this week shown in the service strip (tractor + trailer services of the trailer behind it). */
+  services: ServiceDto[]
+  /** Required services (no date yet) of the tractor and of the trailer currently behind it. */
+  required: ServiceDto[]
   totals: { revenue: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean }
+}
+
+export interface TruckOrderRow {
+  orderNo: string
+  legIndex: number
+  legCount: number
+  title: string
+  startDate: string
+  endDate: string
+  revAlloc: number | null
+  amount: number | null
+  margin: number | null
+  km: number | null
+  kmEstimated: boolean
+  prz: boolean
+  excluded: string | null
+  noCarrier: boolean
+  missing: boolean
+}
+
+export interface TruckView {
+  truck: {
+    id: number
+    plate: string
+    plates: Array<{ plate: string; validFrom: string; validTo: string | null }>
+    carrier: string
+    driver: string
+    phone: string
+    trailer: string | null
+    trailerTypePl: string
+    active: boolean
+    copyText: string
+    required: ServiceDto[]
+  }
+  from: string
+  to: string
+  today: string
+  weeks: Array<{ weekStart: string; weekEnd: string; weekNumber: number; days: string[]; row: WeekTruck }>
+  totals: { revenue: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean; services: number }
+  orders: TruckOrderRow[]
+  services: ServiceDto[]
+  activeOrder: { orderNo: string; title: string; startDate: string; endDate: string; upcoming: boolean } | null
+}
+
+export interface ServiceInput {
+  truckId: number
+  target: ServiceTarget
+  trailerPlate?: string | undefined
+  status: 'required' | 'planned'
+  description?: string | undefined
+  place?: string | undefined
+  allDay?: boolean | undefined
+  startDay?: string | undefined
+  startTime?: string | undefined
+  endDay?: string | undefined
+  endTime?: string | undefined
+}
+
+export interface ServicePatch {
+  status?: 'required' | 'planned' | 'cancelled' | undefined
+  target?: ServiceTarget | undefined
+  trailerPlate?: string | undefined
+  description?: string | undefined
+  place?: string | undefined
+  allDay?: boolean | undefined
+  startDay?: string | undefined
+  startTime?: string | null | undefined
+  endDay?: string | undefined
+  endTime?: string | null | undefined
 }
 
 export interface WeekView {
@@ -305,91 +395,9 @@ export class BoardService {
   async weekView(anyDayInWeek: string): Promise<WeekView> {
     const start = weekStart(anyDayInWeek)
     const end = addDays(start, 6)
-    const days = Array.from({ length: 7 }, (_, i) => addDays(start, i))
-    const today = this.now().slice(0, 10)
-    const ctx = await loadBoardContext(this.db)
-    const orders = await computeOrders(this.db, ctx, this.distances, { from: addDays(start, -21), to: addDays(end, 14) })
-
-    const openIssueRefs = new Set(
-      (await this.db.selectFrom('board_issues').select('ref').where('status', '=', 'open').execute()).map(r => r.ref),
-    )
-    const orderNotes = await this.boardNotesFor(orders.map(o => o.orderNo))
-    const dayNotes = await this.db
-      .selectFrom('board_notes')
-      .selectAll()
-      .where('scope', '=', 'truck_day')
-      .where('deleted', '=', 0)
-      .where('day', '>=', start)
-      .where('day', '<=', end)
-      .orderBy('id')
-      .execute()
-
-    const trucks: WeekTruck[] = []
-    for (const truck of ctx.fleet.trucks.filter(t => t.active)) {
-      const legs = orders
-        .flatMap(o => o.legs.map(l => ({ o, l })))
-        .filter(x => x.l.kind === 'fleet' && x.l.truckId === truck.id)
-        .sort((a, b) => a.l.startDate.localeCompare(b.l.startDate) || a.l.endDate.localeCompare(b.l.endDate) || a.l.orderNo.localeCompare(b.l.orderNo))
-
-      // Automatic trailer-change events between consecutive legs.
-      const events: WeekEvent[] = []
-      let prevTrailer: string | null = null
-      for (const { o, l } of legs) {
-        if (o.excluded || o.noCarrier) continue
-        if (l.trailer && prevTrailer && l.trailer !== prevTrailer && l.startDate >= start && l.startDate <= end) {
-          const where = l.stops[0]?.code ? `${l.stops[0].code}: ` : ''
-          events.push({
-            id: null,
-            day: l.startDate,
-            kind: 'trailer',
-            text: l.przRole === 'to' ? `${where}przepinka, bierze ${l.trailer}` : `${where}${prevTrailer} → ${l.trailer}`,
-            auto: true,
-          })
-        }
-        if (l.trailer) prevTrailer = l.trailer
-      }
-      for (const n of dayNotes.filter(n => n.truck_id === truck.id)) {
-        events.push({ id: n.id, day: n.day ?? start, kind: n.kind, text: n.text, auto: false })
-      }
-
-      const visible = legs.filter(x => x.l.endDate >= start && x.l.startDate <= end)
-      const bars: WeekBar[] = visible.map(({ o, l }) => this.toBar(o, l, start, ctx, openIssueRefs, orderNotes.get(o.orderNo) ?? []))
-
-      const counted = legs.filter(x => !x.o.excluded && !x.o.noCarrier && x.l.startDate >= start && x.l.startDate <= end)
-      const revenue = counted.reduce((s, x) => s + (x.l.revAlloc ?? 0), 0)
-      const cost = counted.reduce((s, x) => s + (x.l.amount ?? 0) + (x.l.index === 0 ? x.o.extraCost : 0), 0)
-      const km = counted.reduce((s, x) => s + (x.l.kmLoaded ?? 0) + (x.l.kmEmpty ?? 0), 0)
-      const kmEmpty = counted.reduce((s, x) => s + (x.l.kmEmpty ?? 0), 0)
-
-      const latest = [...legs].reverse().find(x => x.l.startDate <= (today < end ? today : end) && x.l.trailer)
-      const trailer = latest?.l.trailer ?? truck.trailerPlate
-      const trailerRec = trailer ? ctx.trailers.get(trailer) : undefined
-      const plate = ctx.fleet.plateOn(truck, today >= start && today <= end ? today : end)
-      const typePl = trailerRec?.typePl ?? 'chłodnia 2,61 m · rolki'
-      const typeEn = trailerRec?.typeEn ?? 'cooler 2.61m rollerbed'
-      trucks.push({
-        id: truck.id,
-        plate,
-        carrier: truck.carrier,
-        driver: truck.driver,
-        phone: truck.phone,
-        trailer,
-        trailerTypePl: typePl,
-        trailerTypeEn: typeEn,
-        copyText: `Truck ${plate}, Trailer ${trailer ?? '—'} (${typeEn}), Driver: ${truck.driver}${truck.phone ? ` ${formatPhone(truck.phone)}` : ''}`,
-        bars,
-        events: events.sort((a, b) => a.day.localeCompare(b.day)),
-        totals: {
-          revenue: round2(revenue),
-          cost: round2(cost),
-          margin: round2(revenue - cost),
-          km,
-          kmEmpty,
-          legs: counted.length,
-          kmEstimated: counted.some(x => x.l.kmEstimated),
-        },
-      })
-    }
+    const { orders, weeks, today } = await this.loadWeeks([start], t => t.active)
+    const week = weeks[0]!
+    const trucks = week.trucks
 
     // Department KPIs: whole-order margins for orders loaded this week; km from fleet legs.
     const weekOrders = orders.filter(o => o.hasFleetLeg && !o.excluded && !o.noCarrier && o.loadDate >= start && o.loadDate <= end)
@@ -409,7 +417,7 @@ export class BoardService {
       weekStart: start,
       weekEnd: end,
       weekNumber: isoWeekNumber(start),
-      days,
+      days: week.days,
       today,
       trucks,
       kpis: {
@@ -428,6 +436,194 @@ export class BoardService {
     }
   }
 
+  /**
+   * Truck rows for one or more consecutive weeks (board week view, set page).
+   * Orders are computed once for the whole range; services planned in the range
+   * and every required one come along.
+   */
+  private async loadWeeks(weekStarts: string[], include: (t: TruckRecord) => boolean) {
+    const first = weekStarts[0]!
+    const last = addDays(weekStarts[weekStarts.length - 1]!, 6)
+    const nowLocal = warsawNow(this.now())
+    const today = nowLocal.slice(0, 10) // the board's "today" is the Polish date
+    const ctx = await loadBoardContext(this.db)
+    const orders = await computeOrders(this.db, ctx, this.distances, { from: addDays(first, -21), to: addDays(last, 14) })
+
+    const openIssueRefs = new Set(
+      (await this.db.selectFrom('board_issues').select('ref').where('status', '=', 'open').execute()).map(r => r.ref),
+    )
+    const orderNotes = await this.boardNotesFor(orders.map(o => o.orderNo))
+    const dayNotes = await this.db
+      .selectFrom('board_notes')
+      .selectAll()
+      .where('scope', '=', 'truck_day')
+      .where('deleted', '=', 0)
+      .where('kind', '!=', 'service')
+      .where('day', '>=', first)
+      .where('day', '<=', last)
+      .orderBy('id')
+      .execute()
+
+    // Planned services around the range (wider, so bars reaching into the range see their conflicts) + every required one.
+    const serviceRows = (await this.db
+      .selectFrom('board_services')
+      .selectAll()
+      .where(eb =>
+        eb.or([
+          eb('status', '=', 'required'),
+          eb.and([eb('status', '=', 'planned'), eb('start_day', '<=', addDays(last, 14)), eb('end_day', '>=', addDays(first, -21))]),
+        ]),
+      )
+      .orderBy('id')
+      .execute()) as ServiceRecord[]
+    const history = await this.serviceHistory(serviceRows.map(r => r.id))
+    const dtos = new Map(serviceRows.map(r => [r.id, toServiceDto(r, nowLocal, history.get(r.id) ?? [])]))
+
+    const legsByTruck = new Map<number, Array<{ o: ComputedOrder; l: ComputedLeg }>>()
+    for (const o of orders) {
+      for (const l of o.legs) {
+        if (l.kind !== 'fleet' || l.truckId === null) continue
+        const list = legsByTruck.get(l.truckId) ?? []
+        list.push({ o, l })
+        legsByTruck.set(l.truckId, list)
+      }
+    }
+    for (const list of legsByTruck.values()) {
+      list.sort((a, b) => a.l.startDate.localeCompare(b.l.startDate) || a.l.endDate.localeCompare(b.l.endDate) || a.l.orderNo.localeCompare(b.l.orderNo))
+    }
+
+    /** Trailer behind the truck on a day: the latest order loaded by then, else the fixed trailer. */
+    const trailerOn = (truck: TruckRecord, day: string): { trailer: string; since: string } | null => {
+      const latest = [...(legsByTruck.get(truck.id) ?? [])].reverse().find(x => x.l.startDate <= day && x.l.trailer)
+      if (latest?.l.trailer) return { trailer: latest.l.trailer, since: latest.l.startDate }
+      return truck.trailerPlate ? { trailer: truck.trailerPlate, since: '' } : null
+    }
+
+    /** The truck the trailer is behind on a day (most recent order with it), or null. */
+    const trailerHolder = (plate: string | null, day: string): number | null => {
+      if (!plate) return null
+      let best: { truckId: number; since: string } | null = null
+      for (const t of ctx.fleet.trucks) {
+        const on = trailerOn(t, day)
+        if (on && on.trailer === plate && (!best || on.since > best.since)) best = { truckId: t.id, since: on.since }
+      }
+      return best?.truckId ?? null
+    }
+
+    // A planned trailer service shows on the truck that has the trailer on the first service day
+    // (else on the truck it was entered at).
+    const holderOf = new Map<number, number | null>()
+    for (const r of serviceRows) {
+      if (r.status === 'planned' && r.target === 'trailer' && r.start_day) holderOf.set(r.id, trailerHolder(r.trailer_plate, r.start_day) ?? r.truck_id)
+    }
+    const coveredDays = new Map<number, string[]>()
+    for (const r of serviceRows) {
+      const w = whenOf(r)
+      if (r.status === 'planned' && r.target === 'truck' && w) coveredDays.set(r.id, fullyCoveredDays(w))
+    }
+
+    const weeks = weekStarts.map(start => {
+      const end = addDays(start, 6)
+      const days = Array.from({ length: 7 }, (_, i) => addDays(start, i))
+      const refDay = today < end ? today : end
+      const requiredTrailerHolder = new Map(
+        serviceRows.filter(r => r.status === 'required' && r.target === 'trailer').map(r => [r.id, trailerHolder(r.trailer_plate, refDay)]),
+      )
+      const trucks: WeekTruck[] = []
+      for (const truck of ctx.fleet.trucks.filter(include)) {
+        const legs = legsByTruck.get(truck.id) ?? []
+
+        // Automatic trailer-change events between consecutive legs.
+        const events: WeekEvent[] = []
+        let prevTrailer: string | null = null
+        for (const { o, l } of legs) {
+          if (o.excluded || o.noCarrier) continue
+          if (l.trailer && prevTrailer && l.trailer !== prevTrailer && l.startDate >= start && l.startDate <= end) {
+            const where = l.stops[0]?.code ? `${l.stops[0].code}: ` : ''
+            events.push({
+              id: null,
+              day: l.startDate,
+              kind: 'trailer',
+              text: l.przRole === 'to' ? `${where}przepinka, bierze ${l.trailer}` : `${where}${prevTrailer} → ${l.trailer}`,
+              auto: true,
+            })
+          }
+          if (l.trailer) prevTrailer = l.trailer
+        }
+        for (const n of dayNotes.filter(n => n.truck_id === truck.id && n.day !== null && n.day >= start && n.day <= end)) {
+          events.push({ id: n.id, day: n.day ?? start, kind: n.kind, text: n.text, auto: false })
+        }
+
+        const truckServiceDays = serviceRows
+          .filter(r => r.status === 'planned' && r.target === 'truck' && r.truck_id === truck.id)
+          .flatMap(r => coveredDays.get(r.id) ?? [])
+        const visible = legs.filter(x => x.l.endDate >= start && x.l.startDate <= end)
+        const bars: WeekBar[] = visible.map(({ o, l }) => {
+          const conflict =
+            o.excluded || o.noCarrier ? [] : [...new Set(truckServiceDays.filter(d => d >= l.startDate && d <= l.endDate))].sort()
+          return this.toBar(o, l, start, ctx, openIssueRefs, orderNotes.get(o.orderNo) ?? [], conflict)
+        })
+
+        const counted = legs.filter(x => !x.o.excluded && !x.o.noCarrier && x.l.startDate >= start && x.l.startDate <= end)
+        const revenue = counted.reduce((s, x) => s + (x.l.revAlloc ?? 0), 0)
+        const cost = counted.reduce((s, x) => s + (x.l.amount ?? 0) + (x.l.index === 0 ? x.o.extraCost : 0), 0)
+        const km = counted.reduce((s, x) => s + (x.l.kmLoaded ?? 0) + (x.l.kmEmpty ?? 0), 0)
+        const kmEmpty = counted.reduce((s, x) => s + (x.l.kmEmpty ?? 0), 0)
+
+        const trailer = trailerOn(truck, today < end ? today : end)?.trailer ?? null
+        const trailerRec = trailer ? ctx.trailers.get(trailer) : undefined
+        const plate = ctx.fleet.plateOn(truck, today >= start && today <= end ? today : end)
+        const typePl = trailerRec?.typePl ?? 'chłodnia 2,61 m · rolki'
+        const typeEn = trailerRec?.typeEn ?? 'cooler 2.61m rollerbed'
+
+        const services = serviceRows
+          .filter(
+            r =>
+              r.status === 'planned' &&
+              r.start_day !== null &&
+              r.end_day !== null &&
+              r.start_day <= end &&
+              r.end_day >= start &&
+              (r.target === 'truck' ? r.truck_id === truck.id : holderOf.get(r.id) === truck.id),
+          )
+          .map(r => dtos.get(r.id)!)
+          .sort((a, b) => `${a.startDay}T${a.startTime ?? ''}`.localeCompare(`${b.startDay}T${b.startTime ?? ''}`))
+        const required = serviceRows
+          .filter(r => r.status === 'required' && (r.target === 'truck' ? r.truck_id === truck.id : requiredTrailerHolder.get(r.id) === truck.id))
+          .map(r => dtos.get(r.id)!)
+          .sort((a, b) => a.reportedAt.localeCompare(b.reportedAt))
+
+        trucks.push({
+          id: truck.id,
+          plate,
+          carrier: truck.carrier,
+          driver: truck.driver,
+          phone: truck.phone,
+          trailer,
+          trailerTypePl: typePl,
+          trailerTypeEn: typeEn,
+          copyText: `Truck ${plate}, Trailer ${trailer ?? '—'} (${typeEn}), Driver: ${truck.driver}${truck.phone ? ` ${formatPhone(truck.phone)}` : ''}`,
+          bars,
+          events: events.sort((a, b) => a.day.localeCompare(b.day)),
+          services,
+          required,
+          totals: {
+            revenue: round2(revenue),
+            cost: round2(cost),
+            margin: round2(revenue - cost),
+            km,
+            kmEmpty,
+            legs: counted.length,
+            kmEstimated: counted.some(x => x.l.kmEstimated),
+          },
+        })
+      }
+      return { start, end, days, weekNumber: isoWeekNumber(start), trucks }
+    })
+    const requiredAll = serviceRows.filter(r => r.status === 'required').map(r => dtos.get(r.id)!)
+    return { ctx, orders, weeks, today, nowLocal, legsByTruck, requiredAll }
+  }
+
   private toBar(
     o: ComputedOrder,
     l: ComputedLeg,
@@ -435,36 +631,33 @@ export class BoardService {
     ctx: BoardContext,
     openIssueRefs: Set<string>,
     notes: Array<{ text: string; created_by: string; created_at: string }>,
+    serviceDays: string[] = [],
   ): WeekBar {
     const dayIndex = (iso: string) => Math.round((Date.parse(`${iso}T00:00:00Z`) - Date.parse(`${weekStartIso}T00:00:00Z`)) / 86400000)
     const s = dayIndex(l.startDate)
     const e = dayIndex(l.endDate)
-    const from = l.stops[0] ? ctx.places.name(l.stops[0].code) === '?' ? l.stops[0].raw : ctx.places.name(l.stops[0].code) : '?'
-    const lastStop = l.stops[l.stops.length - 1]
-    const to = lastStop ? (lastStop.code ? ctx.places.name(lastStop.code) : lastStop.raw) : '?'
-    const middle = l.stops.slice(1, -1).map(st => (st.code ? ctx.places.name(st.code) : st.raw))
-    const via = middle.length > 0 ? ` (przez ${middle.join(', ')})` : ''
     const noteLines: string[] = []
+    const serviceConflict = serviceDays.length > 0 ? `Auto w serwisie cały dzień ${serviceDays.map(dmDay).join(', ')}.` : null
+    if (serviceConflict) noteLines.push(serviceConflict)
     if (o.missing) noteLines.push('Zniknęło z ostatniego eksportu.')
     if (o.excluded === 'cancelled') noteLines.push('Zlecenie anulowane (status A).')
     if (o.excluded === 'unconfirmed') noteLines.push('Zlecenie niezatwierdzone (status N).')
     if (o.noCarrier) noteLines.push('Brak przewoźnika (zlecenie spedycyjne anulowane).')
     if (o.notesApp) noteLines.push(`Z aplikacji: ${o.notesApp}`)
     for (const n of notes) noteLines.push(`Tablica · ${n.created_by}, ${fmtStamp(n.created_at)}: ${n.text}`)
-    const legMargin = l.revAlloc !== null && l.amount !== null ? round2(l.revAlloc - l.amount - (l.index === 0 ? o.extraCost : 0)) : null
     return {
       key: `${o.orderNo}|${l.index}`,
       orderNo: o.orderNo,
       legIndex: l.index,
       legCount: o.legs.length,
-      title: `${from} → ${to}${via}`,
+      title: legTitle(l, ctx),
       startDate: l.startDate,
       endDate: l.endDate,
       startDay: Math.max(-1, Math.min(7, s)),
       endDay: Math.max(-1, Math.min(7, e)),
       revAlloc: l.revAlloc,
       amount: l.amount,
-      margin: legMargin,
+      margin: legMargin(o, l),
       kmLoaded: l.kmLoaded,
       kmEmpty: l.kmEmpty,
       kmEstimated: l.kmEstimated,
@@ -475,7 +668,306 @@ export class BoardService {
       noCarrier: o.noCarrier,
       inWeek: l.startDate >= weekStartIso,
       noteLines,
+      serviceConflict,
     }
+  }
+
+  // ---------------------------------------------------------------- set page (strona zestawu)
+
+  /** One tractor over whole weeks covering [from, to] (week or month view). */
+  async truckView(truckId: number, from: string, to: string): Promise<TruckView> {
+    if (!isRealDay(from) || !isRealDay(to)) throw new BoardError('BAD_DATE', 'Podaj poprawną datę.')
+    const first = weekStart(from)
+    const lastStart = weekStart(to < from ? from : to)
+    const weekStarts: string[] = []
+    for (let s = first; s <= lastStart && weekStarts.length < 7; s = addDays(s, 7)) weekStarts.push(s)
+    const exists = await this.db.selectFrom('board_trucks').select('id').where('id', '=', truckId).executeTakeFirst()
+    if (!exists) throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
+
+    const { ctx, weeks, today, nowLocal, legsByTruck, requiredAll } = await this.loadWeeks(weekStarts, t => t.id === truckId)
+    const truck = ctx.fleet.byId(truckId)!
+    const rows = weeks.map(w => ({ weekStart: w.start, weekEnd: w.end, weekNumber: w.weekNumber, days: w.days, row: w.trucks[0]! }))
+    const periodFrom = first
+    const periodTo = addDays(weekStarts[weekStarts.length - 1]!, 6)
+
+    const sum = (f: (r: WeekTruck) => number) => rows.reduce((s, w) => s + f(w.row), 0)
+    const shownServices = new Set(rows.flatMap(w => w.row.services.map(sv => sv.id)))
+    const totals = {
+      revenue: round2(sum(r => r.totals.revenue)),
+      cost: round2(sum(r => r.totals.cost)),
+      margin: round2(sum(r => r.totals.margin)),
+      km: sum(r => r.totals.km),
+      kmEmpty: sum(r => r.totals.kmEmpty),
+      legs: sum(r => r.totals.legs),
+      kmEstimated: rows.some(w => w.row.totals.kmEstimated),
+      services: shownServices.size,
+    }
+
+    const legs = legsByTruck.get(truckId) ?? []
+    const orderRows: TruckOrderRow[] = legs
+      .filter(x => x.l.startDate >= periodFrom && x.l.startDate <= periodTo)
+      .map(({ o, l }) => ({
+        orderNo: o.orderNo,
+        legIndex: l.index,
+        legCount: o.legs.length,
+        title: legTitle(l, ctx),
+        startDate: l.startDate,
+        endDate: l.endDate,
+        revAlloc: l.revAlloc,
+        amount: l.amount === null ? null : round2(l.amount + (l.index === 0 ? o.extraCost : 0)),
+        margin: legMargin(o, l),
+        km: l.kmLoaded === null && l.kmEmpty === null ? null : (l.kmLoaded ?? 0) + (l.kmEmpty ?? 0),
+        kmEstimated: l.kmEstimated,
+        prz: l.przRole !== 'none',
+        excluded: o.excluded,
+        noCarrier: o.noCarrier,
+        missing: o.missing,
+      }))
+
+    // Active order and the header (trailer, badges) are about today; computed around today when the period is elsewhere.
+    const todayRow = rows.find(w => today >= w.weekStart && today <= w.weekEnd)?.row ?? null
+    let todayLegs = legs
+    const windowFrom = addDays(periodFrom, -21)
+    const windowTo = addDays(periodTo, 14)
+    if (today < windowFrom || today > windowTo) {
+      const around = await computeOrders(this.db, ctx, this.distances, { from: addDays(today, -21), to: addDays(today, 14) })
+      todayLegs = around
+        .flatMap(o => o.legs.filter(l => l.kind === 'fleet' && l.truckId === truckId).map(l => ({ o, l })))
+        .sort((a, b) => a.l.startDate.localeCompare(b.l.startDate) || a.l.endDate.localeCompare(b.l.endDate) || a.l.orderNo.localeCompare(b.l.orderNo))
+    }
+    const live = todayLegs.filter(x => !x.o.excluded && !x.o.noCarrier)
+    const current = [...live].reverse().find(x => x.l.startDate <= today && x.l.endDate >= today)
+    const next = live.filter(x => x.l.startDate > today && x.l.startDate <= addDays(today, 14)).sort((a, b) => a.l.startDate.localeCompare(b.l.startDate))[0]
+    const pick = current ?? next
+    const activeOrder = pick
+      ? { orderNo: pick.o.orderNo, title: legTitle(pick.l, ctx), startDate: pick.l.startDate, endDate: pick.l.endDate, upcoming: !current }
+      : null
+
+    const plateToday = ctx.fleet.plateOn(truck, today)
+    let header: { trailer: string | null; trailerTypePl: string; copyText: string; required: ServiceDto[] }
+    if (todayRow) {
+      header = { trailer: todayRow.trailer, trailerTypePl: todayRow.trailerTypePl, copyText: todayRow.copyText, required: todayRow.required }
+    } else {
+      const latest = [...todayLegs].reverse().find(x => x.l.startDate <= today && x.l.trailer)
+      const trailer = latest?.l.trailer ?? truck.trailerPlate
+      const rec = trailer ? ctx.trailers.get(trailer) : undefined
+      const typeEn = rec?.typeEn ?? 'cooler 2.61m rollerbed'
+      header = {
+        trailer,
+        trailerTypePl: rec?.typePl ?? 'chłodnia 2,61 m · rolki',
+        copyText: `Truck ${plateToday}, Trailer ${trailer ?? '—'} (${typeEn}), Driver: ${truck.driver}${truck.phone ? ` ${formatPhone(truck.phone)}` : ''}`,
+        required: requiredAll.filter(sv => (sv.target === 'truck' ? sv.truckId === truckId : trailer !== null && sv.trailerPlate === trailer)),
+      }
+    }
+    const headerRow = header
+
+    // Service list: the tractor's own services, those of its current trailer and trailer services shown on it in the period.
+    const listRows = (await this.db
+      .selectFrom('board_services')
+      .selectAll()
+      .where('status', '!=', 'deleted')
+      .where(eb => {
+        const ors = [eb.and([eb('target', '=', 'truck'), eb('truck_id', '=', truckId)])]
+        if (headerRow.trailer) ors.push(eb.and([eb('target', '=', 'trailer'), eb('trailer_plate', '=', headerRow.trailer)]))
+        if (shownServices.size > 0) ors.push(eb('id', 'in', [...shownServices]))
+        return eb.or(ors)
+      })
+      .execute()) as ServiceRecord[]
+    const listHistory = await this.serviceHistory(listRows.map(r => r.id))
+    const services = listRows.map(r => toServiceDto(r, nowLocal, listHistory.get(r.id) ?? [])).sort(serviceListOrder)
+
+    return {
+      truck: {
+        id: truck.id,
+        plate: plateToday,
+        plates: truck.plates.map(p => ({ plate: p.plate, validFrom: p.validFrom, validTo: p.validTo })),
+        carrier: truck.carrier,
+        driver: truck.driver,
+        phone: truck.phone,
+        trailer: headerRow.trailer,
+        trailerTypePl: headerRow.trailerTypePl,
+        active: truck.active,
+        copyText: headerRow.copyText,
+        required: headerRow.required,
+      },
+      from: periodFrom,
+      to: periodTo,
+      today,
+      weeks: rows,
+      totals,
+      orders: orderRows,
+      services,
+      activeOrder,
+    }
+  }
+
+  // ---------------------------------------------------------------- services (serwis)
+
+  private async serviceHistory(ids: number[]): Promise<Map<number, ServiceDto['history']>> {
+    const map = new Map<number, ServiceDto['history']>()
+    if (ids.length === 0) return map
+    const rows = await this.db.selectFrom('board_service_changes').selectAll().where('service_id', 'in', ids).orderBy('id').execute()
+    for (const r of rows) {
+      const list = map.get(r.service_id) ?? []
+      list.push({ at: r.created_at, by: r.created_by, text: r.text })
+      map.set(r.service_id, list)
+    }
+    return map
+  }
+
+  /** Required services of every tractor and trailer (Flota shows trailers that are not behind a fleet tractor). */
+  async requiredServices(): Promise<ServiceDto[]> {
+    const rows = (await this.db.selectFrom('board_services').selectAll().where('status', '=', 'required').orderBy('reported_at').execute()) as ServiceRecord[]
+    const history = await this.serviceHistory(rows.map(r => r.id))
+    const nowLocal = warsawNow(this.now())
+    return rows.map(r => toServiceDto(r, nowLocal, history.get(r.id) ?? []))
+  }
+
+  private async resolveServiceTarget(target: ServiceTarget, trailerRaw: string | undefined): Promise<string | null> {
+    if (target === 'truck') return null
+    const raw = (trailerRaw ?? '').trim()
+    if (!raw) throw new BoardError('TRAILER_REQUIRED', 'Podaj numer naczepy.')
+    const ctx = await loadBoardContext(this.db)
+    const plate = ctx.trailers.canonical(raw)
+    if (!plate) throw new BoardError('TRAILER_NOT_FOUND', `Nie znam naczepy ${normalizePlate(raw)} — dodaj ją we Flocie.`)
+    return plate
+  }
+
+  async createService(input: ServiceInput): Promise<number> {
+    const truck = await this.db.selectFrom('board_trucks').select('id').where('id', '=', input.truckId).executeTakeFirst()
+    if (!truck) throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
+    const trailerPlate = await this.resolveServiceTarget(input.target, input.trailerPlate)
+    const description = (input.description ?? '').trim()
+    const place = (input.place ?? '').trim()
+    let when: ServiceWhen | null = null
+    if (input.status === 'planned') {
+      when = whenFromInput(input)
+      const problem = validateWhen(when)
+      if (problem) throw new BoardError('BAD_SERVICE_DATES', problem)
+    } else if (!description) {
+      throw new BoardError('EMPTY_SERVICE', 'Wpisz, co trzeba zrobić (np. wymiana oleju).')
+    }
+    const now = this.now()
+    const actor = this.actor()
+    const row = await this.db
+      .insertInto('board_services')
+      .values({
+        truck_id: input.truckId,
+        target: input.target,
+        trailer_plate: trailerPlate,
+        status: input.status,
+        all_day: when?.allDay ? 1 : 0,
+        start_day: when?.startDay ?? null,
+        start_time: when && !when.allDay ? when.startTime : null,
+        end_day: when?.endDay ?? null,
+        end_time: when && !when.allDay ? when.endTime : null,
+        description,
+        place,
+        reported_at: now,
+        created_by: actor,
+        created_at: now,
+        updated_by: actor,
+        updated_at: now,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow()
+    const what = `${targetLabel(input.target, trailerPlate)}${description ? `: ${description}` : ''}`
+    await this.logService(
+      row.id,
+      input.status === 'required' ? `Zgłoszono serwis wymagany (${what}).` : `Dodano serwis (${what}): ${whenLabel(when)}${place ? `, ${place}` : ''}.`,
+    )
+    return row.id
+  }
+
+  /**
+   * Edit a service. `status` moves it: required → planned (Zaplanuj, needs dates),
+   * planned → required (Odłóż, dates cleared), → cancelled (Odwołaj); a cancelled
+   * one can come back. Every change goes to the service history.
+   */
+  async updateService(id: number, patch: ServicePatch): Promise<void> {
+    const row = (await this.db.selectFrom('board_services').selectAll().where('id', '=', id).executeTakeFirst()) as ServiceRecord | undefined
+    if (!row || row.status === 'deleted') throw new BoardError('SERVICE_NOT_FOUND', 'Nie ma takiego serwisu.', 404)
+    if (row.status === 'cancelled') {
+      const other = Object.entries(patch).filter(([k, v]) => k !== 'status' && v !== undefined)
+      if (other.length > 0 || patch.status === undefined) throw new BoardError('SERVICE_CANCELLED', 'Odwołany serwis najpierw przywróć, potem zmieniaj.')
+    }
+    const status = patch.status ?? (row.status as 'required' | 'planned' | 'cancelled')
+    const target = patch.target ?? row.target
+    const trailerPlate =
+      patch.target !== undefined || patch.trailerPlate !== undefined
+        ? await this.resolveServiceTarget(target, patch.trailerPlate ?? row.trailer_plate ?? undefined)
+        : row.trailer_plate
+    const description = patch.description !== undefined ? patch.description.trim() : row.description
+    const place = patch.place !== undefined ? patch.place.trim() : row.place
+    const oldWhen = whenOf(row)
+    let when: ServiceWhen | null = oldWhen
+    if (status === 'planned') {
+      when = {
+        allDay: patch.allDay ?? (oldWhen?.allDay ?? false),
+        startDay: patch.startDay ?? oldWhen?.startDay ?? '',
+        startTime: patch.startTime !== undefined ? patch.startTime : (oldWhen?.startTime ?? null),
+        endDay: patch.endDay ?? oldWhen?.endDay ?? '',
+        endTime: patch.endTime !== undefined ? patch.endTime : (oldWhen?.endTime ?? null),
+      }
+      if (when.allDay) when = { ...when, startTime: null, endTime: null }
+      const problem = validateWhen(when)
+      if (problem) throw new BoardError('BAD_SERVICE_DATES', problem)
+    } else if (status === 'required') {
+      when = null
+      if (!description) throw new BoardError('EMPTY_SERVICE', 'Wpisz, co trzeba zrobić (np. wymiana oleju).')
+    }
+
+    const lines: string[] = []
+    if (status !== row.status) {
+      if (row.status === 'cancelled') lines.push(`Przywrócono${status === 'planned' ? `: ${whenLabel(when)}` : ' do wymaganych'}.`)
+      else if (status === 'planned') lines.push(`Zaplanowano: ${whenLabel(when)}.`)
+      else if (status === 'required') lines.push(`Odłożono — wraca do wymaganych (było ${whenLabel(oldWhen)}).`)
+      else lines.push('Odwołano.')
+    } else if (status === 'planned' && whenLabel(oldWhen) !== whenLabel(when)) {
+      lines.push(`Przesunięto: ${whenLabel(oldWhen)} → ${whenLabel(when)}.`)
+    }
+    if (target !== row.target || trailerPlate !== row.trailer_plate) {
+      lines.push(`Dotyczy: ${targetLabel(row.target, row.trailer_plate)} → ${targetLabel(target, trailerPlate)}.`)
+    }
+    if (description !== row.description) lines.push(`Opis: „${row.description || '—'}” → „${description || '—'}”.`)
+    if (place !== row.place) lines.push(`Miejsce: ${row.place || '—'} → ${place || '—'}.`)
+    if (lines.length === 0) return
+
+    await this.db
+      .updateTable('board_services')
+      .set({
+        status,
+        target,
+        trailer_plate: trailerPlate,
+        all_day: when?.allDay ? 1 : 0,
+        start_day: when?.startDay ?? null,
+        start_time: when && !when.allDay ? when.startTime : null,
+        end_day: when?.endDay ?? null,
+        end_time: when && !when.allDay ? when.endTime : null,
+        description,
+        place,
+        updated_by: this.actor(),
+        updated_at: this.now(),
+      })
+      .where('id', '=', id)
+      .execute()
+    for (const line of lines) await this.logService(id, line)
+  }
+
+  /** "Usuń": entered by mistake — hidden everywhere, the change log keeps it. */
+  async deleteService(id: number): Promise<void> {
+    const res = await this.db
+      .updateTable('board_services')
+      .set({ status: 'deleted', updated_by: this.actor(), updated_at: this.now() })
+      .where('id', '=', id)
+      .where('status', '!=', 'deleted')
+      .executeTakeFirst()
+    if (Number(res.numUpdatedRows) === 0) throw new BoardError('SERVICE_NOT_FOUND', 'Nie ma takiego serwisu.', 404)
+    await this.logService(id, 'Usunięto (wpis przez pomyłkę).')
+  }
+
+  private async logService(id: number, text: string): Promise<void> {
+    await this.db.insertInto('board_service_changes').values({ service_id: id, text, created_by: this.actor(), created_at: this.now() }).execute()
   }
 
   private async boardNotesFor(orderNos: string[]) {
@@ -598,6 +1090,7 @@ export class BoardService {
   }
 
   async addTruckEvent(input: { truckId: number; day: string; kind: NoteKind; text: string; place?: string }) {
+    if (input.kind === 'service') throw new BoardError('USE_SERVICE_FORM', 'Serwis dodaje się formularzem serwisu.')
     if (!NOTE_KINDS.includes(input.kind)) throw new BoardError('BAD_KIND', 'Nieznany rodzaj zdarzenia.')
     const truck = await this.db.selectFrom('board_trucks').select('id').where('id', '=', input.truckId).executeTakeFirst()
     if (!truck) throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
@@ -896,6 +1389,44 @@ export class BoardService {
     }
     await this.refreshIssues()
   }
+}
+
+/** "Warszawa → Budapeszt (przez Kraków)" */
+function legTitle(l: ComputedLeg, ctx: BoardContext): string {
+  const from = l.stops[0] ? (ctx.places.name(l.stops[0].code) === '?' ? l.stops[0].raw : ctx.places.name(l.stops[0].code)) : '?'
+  const lastStop = l.stops[l.stops.length - 1]
+  const to = lastStop ? (lastStop.code ? ctx.places.name(lastStop.code) : lastStop.raw) : '?'
+  const middle = l.stops.slice(1, -1).map(st => (st.code ? ctx.places.name(st.code) : st.raw))
+  const via = middle.length > 0 ? ` (przez ${middle.join(', ')})` : ''
+  return `${from} → ${to}${via}`
+}
+
+function legMargin(o: ComputedOrder, l: ComputedLeg): number | null {
+  return l.revAlloc !== null && l.amount !== null ? round2(l.revAlloc - l.amount - (l.index === 0 ? o.extraCost : 0)) : null
+}
+
+function whenFromInput(input: { allDay?: boolean | undefined; startDay?: string | undefined; startTime?: string | undefined; endDay?: string | undefined; endTime?: string | undefined }): ServiceWhen {
+  const allDay = input.allDay === true
+  return {
+    allDay,
+    startDay: input.startDay ?? '',
+    startTime: allDay ? null : (input.startTime ?? null),
+    endDay: input.endDay ?? input.startDay ?? '',
+    endTime: allDay ? null : (input.endTime ?? null),
+  }
+}
+
+const PHASE_ORDER: Record<string, number> = { required: 0, ongoing: 1, upcoming: 2, done: 3, cancelled: 4 }
+
+/** Required first, then ongoing and upcoming (soonest first), then past ones (latest first). */
+function serviceListOrder(a: ServiceDto, b: ServiceDto): number {
+  const pa = PHASE_ORDER[a.phase] ?? 9
+  const pb = PHASE_ORDER[b.phase] ?? 9
+  if (pa !== pb) return pa - pb
+  if (a.phase === 'required') return a.reportedAt.localeCompare(b.reportedAt)
+  const ka = `${a.startDay ?? ''}T${a.startTime ?? ''}`
+  const kb = `${b.startDay ?? ''}T${b.startTime ?? ''}`
+  return pa <= 2 ? ka.localeCompare(kb) : kb.localeCompare(ka)
 }
 
 function round2(n: number): number {
