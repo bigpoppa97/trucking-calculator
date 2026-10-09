@@ -377,6 +377,25 @@ describe('cancelled forwarding order and ferries (09.10.2026)', () => {
     expect((await issuesOf('OVERRIDE_SUPERSEDED')).map(i => i.ref)).toEqual(['79-145-26'])
   })
 
+  it('a manual extra cost typed with a unit counts ("2350e"), and an unreadable one is refused', async () => {
+    const row: Row = { no: '79-147-26', from: 'Warszawa', ld: '2026-09-22', to: 'Budapest', ud: '2026-09-24', rev: 3720, cost: 1200, sub: 'AA1002A', trailer: 'TR200' }
+    await board.importFile(await xlsx([row]), 'a.xlsx', 'daily')
+
+    await board.setOverride('79-147-26', 'extra_cost', '2350e')
+    let d = await board.orderDetails('79-147-26')
+    expect(d.order).toMatchObject({ extraCost: 2350, margin: 170 })
+    expect(d.overrides.find(o => o.field === 'extra_cost')?.display).toBe('2350')
+
+    await expect(board.setOverride('79-147-26', 'extra_cost', '2350 zł')).rejects.toThrow(/kwotę w EUR liczbą/)
+    await expect(board.setOverride('79-147-26', 'km_loaded', 'dużo')).rejects.toThrow(/liczbę kilometrów/)
+
+    // Corrections saved before this check (stored as typed) are read too.
+    await db.updateTable('board_overrides').set({ value: '2350e' }).where('order_no', '=', '79-147-26').where('field', '=', 'extra_cost').execute()
+    d = await board.orderDetails('79-147-26')
+    expect(d.order.margin).toBe(170)
+    expect((await issuesOf('HIGH_MARGIN')).filter(i => i.ref === '79-147-26')).toEqual([])
+  })
+
   it('PRZ and PROM in the same notes: both apply', async () => {
     await board.importFile(
       await xlsx([

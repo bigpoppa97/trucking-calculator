@@ -4,6 +4,7 @@ import type { BoardContext } from './context.js'
 import { DistanceService, type DistanceResult } from './distances.js'
 import { parsePrz, resolveSwapDate, type PrzEntry } from './prz.js'
 import { parseFerries } from './ferry.js'
+import { parseNumberInput } from './amount.js'
 import { normalizePlate, splitPlaces } from './normalize.js'
 
 /**
@@ -155,10 +156,9 @@ export async function computeOrders(
 
 type OrderRow = Selectable<BoardOrdersTable>
 
+/** Stored manual corrections: also reads older entries typed with a unit ("2350e"). */
 function num(value: string | undefined): number | null {
-  if (value === undefined) return null
-  const n = Number(value.replace(',', '.'))
-  return Number.isFinite(n) ? n : null
+  return parseNumberInput(value)
 }
 
 export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo>, ctx: BoardContext): ComputedOrder {

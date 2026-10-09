@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import type { Kysely } from 'kysely'
 import type { DB, ImportMode, NoteKind, ServiceTarget } from '../db/schema.js'
 import { computeOrders, placesLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
+import { parseNumberInput } from './amount.js'
 import { loadBoardContext, type BoardContext, type TruckRecord } from './context.js'
 import type { DistanceService } from './distances.js'
 import { importExportFile, FIELD_LABELS, overrideAppValue, type ImportSummary } from './importService.js'
@@ -56,6 +57,7 @@ export class BoardError extends Error {
 
 export const OVERRIDE_FIELDS = ['rev', 'cost', 'extra_cost', 'trailer', 'prz', 'exclude', 'km_loaded', 'km_empty', 'km_loaded:1', 'km_empty:1', 'driver', 'driver:1'] as const
 export type OverrideField = (typeof OVERRIDE_FIELDS)[number]
+const NUMERIC_OVERRIDES = new Set(['rev', 'cost', 'extra_cost', 'km_loaded', 'km_empty'])
 
 /** Free-form day events; a service has its own record (board_services). */
 const NOTE_KINDS: NoteKind[] = ['note', 'pause', 'driver', 'trailer', 'position']
@@ -1238,6 +1240,17 @@ export class BoardService {
 
   async setOverride(orderNo: string, field: string, value: string) {
     if (!(OVERRIDE_FIELDS as readonly string[]).includes(field)) throw new BoardError('BAD_FIELD', 'Tego pola nie można poprawić.')
+    if (NUMERIC_OVERRIDES.has(field.split(':')[0]!)) {
+      // Never store a number the board cannot read — it would be silently ignored (09.10.2026: "2350e").
+      const n = parseNumberInput(value)
+      if (n === null) {
+        throw new BoardError(
+          'BAD_NUMBER',
+          field.startsWith('km') ? 'Wpisz liczbę kilometrów, np. 590.' : 'Wpisz kwotę w EUR liczbą, np. 2350 albo 2350,50.',
+        )
+      }
+      value = String(n)
+    }
     if (field.startsWith('driver')) {
       const driver = await this.db.selectFrom('board_drivers').select('id').where('id', '=', Number(value) || 0).executeTakeFirst()
       if (!driver) throw new BoardError('DRIVER_NOT_FOUND', 'Wybierz kierowcę z listy.')
