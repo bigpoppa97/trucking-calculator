@@ -207,7 +207,12 @@ export interface OrderDetails {
     rev: number | null
     costApp: number | null
     amountsTotal: number | null
+    /** Effective extra cost: manual correction if any, else the ferries (PROM) from the notes. */
     extraCost: number
+    extraCostManual: boolean
+    ferryCost: number
+    ferryEntries: string[]
+    ferryErrors: string[]
     margin: number | null
     marginPct: number | null
     excluded: string | null

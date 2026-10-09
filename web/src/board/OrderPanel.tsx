@@ -107,7 +107,7 @@ export function OrderPanel({
                 {o.excluded === 'cancelled' && 'Anulowane w aplikacji (status A) — poza wynikami. '}
                 {o.excluded === 'unconfirmed' && 'Niezatwierdzone (status N) — poza wynikami. '}
                 {o.excluded === 'manual' && 'Wyłączone ręcznie z wyników. '}
-                {o.noCarrier && 'Zlecenie spedycyjne anulowane — brak przewoźnika. '}
+                {o.noCarrier && 'Zlecenie spedycyjne anulowane — auto go nie wiezie; poza tablicą i wynikami. '}
                 {o.missing && 'Zniknęło z ostatniego eksportu.'}
               </span>
             )}
@@ -124,6 +124,29 @@ export function OrderPanel({
           {o.przErrors.map(raw => (
             <p key={raw} className="rounded-lg bg-[#F4C77A] px-3 py-2 text-[13px] text-[#3A2400]">
               Nie rozumiem wpisu: <span className="font-mono">{raw}</span>. Wzór: <span className="font-mono">PRZ MIEJSCE DD.MM AUTO&gt;AUTO KWOTA/KWOTA</span>
+            </p>
+          ))}
+          {o.ferryEntries.length > 0 && (
+            <div className="flex flex-col gap-1 rounded-lg bg-[#EEF2FA] px-3 py-2.5">
+              <span className="text-[11.5px] font-bold uppercase tracking-wider text-[#1E4E9C]">Prom z uwag</span>
+              {o.ferryEntries.map(raw => (
+                <span key={raw} className="font-mono text-[13px]">
+                  {raw}
+                </span>
+              ))}
+              {showMoney && (
+                <span className="text-[13px]">
+                  {o.extraCostManual
+                    ? `Ręczna poprawka „Koszt dodatkowy” (${eur(o.extraCost)}) zastępuje prom z uwag (${eur(o.ferryCost)}).`
+                    : `Koszt promu ${eur(o.ferryCost)} — pomniejsza marżę.`}
+                </span>
+              )}
+            </div>
+          )}
+          {o.ferryErrors.map(raw => (
+            <p key={raw} className="rounded-lg bg-[#F4C77A] px-3 py-2 text-[13px] text-[#3A2400]">
+              Nie rozumiem wpisu promu: <span className="font-mono">{raw}</span>. Wzór: <span className="font-mono">PROM KWOTA</span>, np.{' '}
+              <span className="font-mono">PROM 1180</span>
             </p>
           ))}
 
@@ -159,7 +182,11 @@ export function OrderPanel({
           {showMoney && (
             <div className="grid grid-cols-3 gap-2">
               <Money label="Stawka klienta" value={eur(o.rev)} />
-              <Money label="Kwoty dla aut" value={eur(o.amountsTotal)} sub={o.extraCost ? `w tym dodatkowe ${eur(o.extraCost)}` : undefined} />
+              <Money
+                label="Kwoty dla aut"
+                value={eur(o.amountsTotal)}
+                sub={o.extraCost ? `w tym ${o.extraCostManual ? 'dodatkowe' : 'prom'} ${eur(o.extraCost)}` : undefined}
+              />
               <Money label="Marża" value={signedEur(o.margin)} sub={o.marginPct !== null ? `${String(o.marginPct).replace('.', ',')}%` : undefined} />
             </div>
           )}

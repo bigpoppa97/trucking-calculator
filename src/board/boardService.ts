@@ -6,7 +6,7 @@ import type { DB, ImportMode, NoteKind, ServiceTarget } from '../db/schema.js'
 import { computeOrders, placesLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
 import { loadBoardContext, type BoardContext, type TruckRecord } from './context.js'
 import type { DistanceService } from './distances.js'
-import { importExportFile, FIELD_LABELS, type ImportSummary } from './importService.js'
+import { importExportFile, FIELD_LABELS, overrideAppValue, type ImportSummary } from './importService.js'
 import { DEFAULT_THRESHOLDS, deriveIssues, fmtDate, syncDerivedIssues, type IssueThresholds } from './issues.js'
 import { planFleetSync, type FleetPlan } from './fleetList.js'
 import {
@@ -637,7 +637,9 @@ export class BoardService {
         const truckServiceDays = serviceRows
           .filter(r => r.status === 'planned' && r.target === 'truck' && r.truck_id === truck.id)
           .flatMap(r => coveredDays.get(r.id) ?? [])
-        const visible = legs.filter(x => x.l.endDate >= start && x.l.startDate <= end)
+        // A cancelled forwarding order (no PRZ) is not this truck's job any more — off the board
+        // (still listed on the truck page). Decision of 09.10.2026.
+        const visible = legs.filter(x => !x.o.noCarrier && x.l.endDate >= start && x.l.startDate <= end)
         const bars: WeekBar[] = visible.map(({ o, l }) => {
           const conflict =
             o.excluded || o.noCarrier ? [] : [...new Set(truckServiceDays.filter(d => d >= l.startDate && d <= l.endDate))].sort()
@@ -725,7 +727,7 @@ export class BoardService {
     if (o.missing) noteLines.push('Zniknęło z ostatniego eksportu.')
     if (o.excluded === 'cancelled') noteLines.push('Zlecenie anulowane (status A).')
     if (o.excluded === 'unconfirmed') noteLines.push('Zlecenie niezatwierdzone (status N).')
-    if (o.noCarrier) noteLines.push('Brak przewoźnika (zlecenie spedycyjne anulowane).')
+    if (o.noCarrier) noteLines.push('Zlecenie spedycyjne anulowane — auto go nie wiezie.')
     if (o.notesApp) noteLines.push(`Z aplikacji: ${o.notesApp}`)
     for (const n of notes) noteLines.push(`Tablica · ${n.created_by}, ${fmtStamp(n.created_at)}: ${n.text}`)
     return {
@@ -1138,6 +1140,10 @@ export class BoardService {
         costApp: o.costApp,
         amountsTotal: o.amountsTotal,
         extraCost: o.extraCost,
+        extraCostManual: o.extraCostManual,
+        ferryCost: o.ferryCost,
+        ferryEntries: o.ferryEntries,
+        ferryErrors: o.ferryErrors,
         margin: o.margin,
         marginPct: o.marginPct,
         excluded: o.excluded,
@@ -1237,8 +1243,7 @@ export class BoardService {
       if (!driver) throw new BoardError('DRIVER_NOT_FOUND', 'Wybierz kierowcę z listy.')
     }
     const row = await this.requireOrder(orderNo)
-    const appValue =
-      field === 'rev' ? row.rev_eur : field === 'cost' ? row.cost_eur : field === 'trailer' ? row.trailer_raw : field === 'prz' ? row.notes_app : null
+    const appValue = overrideAppValue(field, row)
     const now = this.now()
     await this.db.transaction().execute(async trx => {
       await trx

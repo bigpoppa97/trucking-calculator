@@ -25,6 +25,7 @@ const KIND_TAG: Record<string, { label: string; bg: string; fg: string }> = {
   DISAPPEARED: { label: 'Zniknęło', bg: '#E6E9EE', fg: '#15181C' },
   OVERRIDE_SUPERSEDED: { label: 'Poprawka', bg: '#E6E9EE', fg: '#15181C' },
   NO_CARRIER: { label: 'Przewoźnik', bg: '#F4C77A', fg: '#3A2400' },
+  FERRY_PARSE: { label: 'Prom', bg: '#F4C77A', fg: '#3A2400' },
 }
 
 const ORDER_KINDS = new Set([
@@ -42,6 +43,7 @@ const ORDER_KINDS = new Set([
   'DISAPPEARED',
   'OVERRIDE_SUPERSEDED',
   'NO_CARRIER',
+  'FERRY_PARSE',
 ])
 
 export function ReviewPage({ onOpenOrder, onIssuesChanged }: { onOpenOrder: (orderNo: string) => void; onIssuesChanged: () => void }) {

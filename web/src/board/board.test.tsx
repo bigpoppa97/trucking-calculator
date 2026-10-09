@@ -88,6 +88,10 @@ const ORDER: OrderDetails = {
     costApp: 1300,
     amountsTotal: 1300,
     extraCost: 0,
+    extraCostManual: false,
+    ferryCost: 0,
+    ferryEntries: [],
+    ferryErrors: [],
     margin: 200,
     marginPct: 13.33,
     excluded: null,
@@ -191,6 +195,30 @@ describe('WeekPage', () => {
 
     await userEvent.keyboard('{Escape}')
     expect(screen.queryByRole('complementary', { name: 'Szczegóły zlecenia' })).not.toBeInTheDocument()
+  })
+
+  it('shows the ferry from the notes and what it does to the margin', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue({
+      ...ORDER,
+      order: {
+        ...ORDER.order,
+        rev: 3720,
+        amountsTotal: 2380,
+        extraCost: 1180,
+        ferryCost: 1180,
+        ferryEntries: ['PROM 1180 Finnlines'],
+        margin: 1340,
+        marginPct: 36.02,
+        notesApp: 'LH7411B-2026-10-10 PROM 1180 Finnlines',
+      },
+    })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText('Prom z uwag')).toBeInTheDocument()
+    expect(within(panel).getByText(/Koszt promu 1\D?180 € — pomniejsza marżę/)).toBeInTheDocument()
+    expect(within(panel).getByText(/w tym prom 1\D?180 €/)).toBeInTheDocument()
   })
 
   it('jumps to the focused order week', async () => {

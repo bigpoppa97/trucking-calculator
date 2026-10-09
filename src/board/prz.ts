@@ -1,3 +1,4 @@
+import { NOTE_MARKERS } from './ferry.js'
 import { normalizePlate } from './normalize.js'
 
 /**
@@ -13,8 +14,9 @@ import { normalizePlate } from './normalize.js'
  *
  * The notes field also carries flight numbers and ULD references
  * ("LH7459S-2026-09-23", "772R"), so only text starting at a PRZ marker is
- * read, up to the next ";" or line break. A marker that does not match the
- * format is reported as an error — never silently ignored.
+ * read, up to the next ";", line break or PRZ/PROM marker (ferry costs, see
+ * ferry.ts, share the field). A marker that does not match the format is
+ * reported as an error — never silently ignored.
  */
 
 export interface PrzEntry {
@@ -48,9 +50,10 @@ export function parsePrz(notes: string | null | undefined): PrzParseResult {
   const result: PrzParseResult = { entries: [], errors: [] }
   const starts: number[] = []
   for (const m of text.matchAll(MARKER)) starts.push(m.index)
+  const markers = [...text.matchAll(NOTE_MARKERS)].map(m => m.index)
   for (let i = 0; i < starts.length; i++) {
     const start = starts[i]!
-    const nextMarker = starts[i + 1] ?? text.length
+    const nextMarker = markers.find(at => at > start) ?? text.length
     let segment = text.slice(start, nextMarker)
     const cut = segment.search(/[;\n]/)
     if (cut >= 0) segment = segment.slice(0, cut)

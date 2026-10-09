@@ -3,6 +3,7 @@ import type { BoardOrdersTable, DB } from '../db/schema.js'
 import type { BoardContext } from './context.js'
 import { DistanceService, type DistanceResult } from './distances.js'
 import { parsePrz, resolveSwapDate, type PrzEntry } from './prz.js'
+import { parseFerries } from './ferry.js'
 import { normalizePlate, splitPlaces } from './normalize.js'
 
 /**
@@ -14,7 +15,10 @@ import { normalizePlate, splitPlaces } from './normalize.js'
  *  - a PRZ entry splits the order into two legs at the swap place/date; the
  *    amounts in the entry are what each truck gets
  *  - status A (client) = cancelled, N = unconfirmed → shown, not counted
- *  - status A on the forwarding order without PRZ = no carrier
+ *  - status A on the forwarding order without PRZ = the truck does not carry it
+ *    (noCarrier): off the week board, out of results, no review item
+ *  - PROM <amount> in the notes = ferry paid by the department → extra cost
+ *    (lowers the margin); a manual "Koszt dodatkowy" correction replaces it
  *  - km loaded = along the leg's stops; km empty = from the truck's previous
  *    unloading (or a day event with a place, e.g. "Pozycja auta") to this leg's first stop
  */
@@ -82,7 +86,14 @@ export interface ComputedOrder {
   rev: number | null
   costApp: number | null
   cost: number | null
+  /** Effective extra cost: the manual correction if any, else the ferries from the notes. */
   extraCost: number
+  /** True when extraCost comes from a manual correction. */
+  extraCostManual: boolean
+  /** Ferry costs read from the notes (PROM entries), whatever the manual correction says. */
+  ferryCost: number
+  ferryEntries: string[]
+  ferryErrors: string[]
   amountsTotal: number | null
   margin: number | null
   marginPct: number | null
@@ -153,9 +164,11 @@ function num(value: string | undefined): number | null {
 export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo>, ctx: BoardContext): ComputedOrder {
   const rev = overrides['rev'] ? num(overrides['rev'].value) : row.rev_eur
   const cost = overrides['cost'] ? num(overrides['cost'].value) : row.cost_eur
-  const extraCost = overrides['extra_cost'] ? (num(overrides['extra_cost'].value) ?? 0) : 0
   const trailerRaw = overrides['trailer'] ? overrides['trailer'].value : row.trailer_raw
   const przText = overrides['prz'] ? overrides['prz'].value : row.notes_app
+  const ferries = parseFerries(przText)
+  const extraCostManual = overrides['extra_cost'] !== undefined
+  const extraCost = extraCostManual ? (num(overrides['extra_cost']!.value) ?? 0) : ferries.total
 
   let excluded: Exclusion = null
   if (overrides['exclude']?.value === '1') excluded = 'manual'
@@ -284,6 +297,10 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     costApp: row.cost_eur,
     cost,
     extraCost,
+    extraCostManual,
+    ferryCost: ferries.total,
+    ferryEntries: ferries.entries.map(e => e.raw),
+    ferryErrors: ferries.errors,
     amountsTotal,
     margin,
     marginPct,

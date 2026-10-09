@@ -31,7 +31,10 @@ export const DERIVED_KINDS = [
   'UNKNOWN_PLACE',
   'UNKNOWN_TRAILER',
   'MISSING_TRAILER',
+  // No longer raised (09.10.2026: a cancelled forwarding order just leaves the board);
+  // kept so open items from before resolve themselves.
   'NO_CARRIER',
+  'FERRY_PARSE',
 ] as const
 
 export type DerivedKind = (typeof DERIVED_KINDS)[number]
@@ -64,7 +67,8 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
   const unknownTrailers = new Map<string, { raw: string; orders: Set<string>; carriers: Set<string> }>()
 
   for (const o of orders) {
-    if (o.history || !o.hasFleetLeg) continue
+    // A cancelled forwarding order without PRZ: the truck does not carry it — nothing to review.
+    if (o.history || !o.hasFleetLeg || o.noCarrier) continue
     const ref = o.orderNo
     const counted = o.excluded === null
 
@@ -74,6 +78,16 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
         kind: 'PRZ_PARSE',
         ref,
         message: `Nie rozumiem wpisu przepinki: „${raw}”. Wzór: PRZ MIEJSCE DD.MM AUTO>AUTO KWOTA/KWOTA.`,
+        details: { raw },
+        fingerprint: raw,
+      })
+    }
+    for (const raw of o.ferryErrors) {
+      out.push({
+        key: `FERRY_PARSE:${ref}:${raw}`,
+        kind: 'FERRY_PARSE',
+        ref,
+        message: `Nie rozumiem wpisu promu: „${raw}”. Wzór: PROM KWOTA (w EUR, np. PROM 1180 albo PROM 1180,50).`,
         details: { raw },
         fingerprint: raw,
       })
@@ -237,16 +251,6 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
       }
     }
 
-    if (o.noCarrier && o.excluded === null) {
-      out.push({
-        key: `NO_CARRIER:${ref}`,
-        kind: 'NO_CARRIER',
-        ref,
-        message: 'Zlecenie spedycyjne jest anulowane, a zlecenie klienta nie — brak przewoźnika.',
-        details: {},
-        fingerprint: o.statusSped,
-      })
-    }
   }
 
   for (const [k, v] of unknownPlaces) {

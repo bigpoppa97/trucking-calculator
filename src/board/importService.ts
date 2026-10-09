@@ -3,6 +3,7 @@ import type { DB, ImportMode } from '../db/schema.js'
 import { carrierKey, loadBoardContext, sameCarrier, type BoardContext } from './context.js'
 import { readExport, type ExportRow } from './exportReader.js'
 import { parsePrz, resolveSwapDate } from './prz.js'
+import { parseFerries } from './ferry.js'
 import { raiseEventIssue } from './issues.js'
 
 /**
@@ -63,12 +64,32 @@ export const FIELD_LABELS: Record<string, string> = {
   client: 'klient',
 }
 
-/** Which app value a manual correction shadows (override field → order column). */
-const OVERRIDE_SOURCE: Record<string, keyof typeof FIELD_LABELS> = {
-  rev: 'rev_eur',
-  cost: 'cost_eur',
-  trailer: 'trailer_raw',
-  prz: 'notes_app',
+/** Fields whose manual correction shadows an application value. */
+const TRACKED_OVERRIDES = new Set(['rev', 'cost', 'trailer', 'prz', 'extra_cost'])
+
+/**
+ * The application value a manual correction of `field` shadows. "Koszt dodatkowy"
+ * shadows the ferries typed into the notes (PROM entries) — so adding or changing
+ * a PROM entry in the application wins over an older manual correction.
+ */
+export function overrideAppValue(
+  field: string,
+  v: { rev_eur: number | null; cost_eur: number | null; trailer_raw: string; notes_app: string },
+): string | number | null {
+  switch (field) {
+    case 'rev':
+      return v.rev_eur
+    case 'cost':
+      return v.cost_eur
+    case 'trailer':
+      return v.trailer_raw
+    case 'prz':
+      return v.notes_app
+    case 'extra_cost':
+      return parseFerries(v.notes_app).total
+    default:
+      return null
+  }
 }
 
 export async function importExportFile(
@@ -282,16 +303,18 @@ export async function importRows(
         .where('active', '=', 1)
         .execute()
       for (const o of overrides) {
-        const source = OVERRIDE_SOURCE[o.field]
-        if (!source) continue
-        const appNow = values[source as keyof typeof values]
+        if (!TRACKED_OVERRIDES.has(o.field)) continue
+        const appNow = overrideAppValue(o.field, values)
         if (o.app_value !== null && String(appNow ?? '') !== o.app_value) {
           await trx
             .updateTable('board_overrides')
             .set({
               active: 0,
               superseded_at: now,
-              superseded_note: `Aplikacja zmieniła wartość z „${o.app_value}” na „${String(appNow ?? '')}”.`,
+              superseded_note:
+                o.field === 'extra_cost'
+                  ? `Prom w uwagach w aplikacji zmienił się z ${o.app_value} € na ${String(appNow ?? '')} €.`
+                  : `Aplikacja zmieniła wartość z „${o.app_value}” na „${String(appNow ?? '')}”.`,
             })
             .where('id', '=', o.id)
             .execute()

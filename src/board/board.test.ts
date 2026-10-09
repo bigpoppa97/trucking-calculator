@@ -303,6 +303,95 @@ describe('trailer swaps (PRZ)', () => {
   })
 })
 
+describe('cancelled forwarding order and ferries (09.10.2026)', () => {
+  it('a cancelled forwarding order without PRZ leaves the board: no bar, no review item, not counted', async () => {
+    const rows: Row[] = [
+      { no: '79-140-26', from: 'Warszawa', ld: '2026-09-22', to: 'Budapest', ud: '2026-09-23', rev: 2000, cost: 1576, sub: 'AA1001A', trailer: 'TR100' },
+      { no: '79-141-26', from: 'Budapest', ld: '2026-09-24', to: 'Warszawa', ud: '2026-09-25', rev: 2000, cost: 1576, sub: 'AA1001A', trailer: 'TR100' },
+    ]
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
+    // The carrier's order for 79-140-26 is cancelled (loaded by the own fleet instead).
+    now = '2026-09-28T08:00:00Z'
+    await board.importFile(await xlsx([{ ...rows[0]!, statusSped: 'A' }, rows[1]!]), 'b.xlsx', 'daily')
+
+    const row = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!
+    expect(row.bars.map(b => b.orderNo)).toEqual(['79-141-26'])
+    expect(row.totals.revenue).toBe(2000)
+    expect((await board.listIssues('open')).filter(i => i.ref === '79-140-26')).toEqual([])
+    // The next order's empty run does not start at the cancelled order's unloading.
+    expect((await board.orderDetails('79-141-26')).legs[0]?.kmEmptyFrom).toBeNull()
+
+    // Still traceable on the truck page and in the order panel.
+    const truckId = row.id
+    const listed = (await board.truckView(truckId, '2026-09-21', '2026-09-27')).orders.find(o => o.orderNo === '79-140-26')
+    expect(listed).toMatchObject({ noCarrier: true })
+    expect((await board.orderDetails('79-140-26')).order.noCarrier).toBe(true)
+  })
+
+  it('PROM <amount> in the notes is a ferry cost: it lowers the margin and the truck result', async () => {
+    const row: Row = { no: '79-143-26', from: 'Warszawa', ld: '2026-09-22', to: 'Budapest', ud: '2026-09-24', rev: 2000, cost: 1000, sub: 'AA1002A', trailer: 'TR200' }
+    await board.importFile(await xlsx([row]), 'a.xlsx', 'daily')
+    expect((await issuesOf('HIGH_MARGIN')).map(i => i.ref)).toEqual(['79-143-26']) // 50 % without the ferry
+
+    now = '2026-09-28T08:00:00Z'
+    await board.importFile(await xlsx([{ ...row, notes: 'LH7411B-2026-09-22 PROM 300 Finnlines' }]), 'b.xlsx', 'daily')
+    const d = await board.orderDetails('79-143-26')
+    expect(d.order).toMatchObject({
+      extraCost: 300,
+      extraCostManual: false,
+      ferryCost: 300,
+      ferryEntries: ['PROM 300 Finnlines'],
+      ferryErrors: [],
+      amountsTotal: 1300,
+      margin: 700,
+    })
+    expect(await issuesOf('HIGH_MARGIN')).toEqual([])
+    const truck = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1002A')!
+    expect(truck.totals.cost).toBe(1300)
+    expect(truck.totals.margin).toBe(700)
+    expect(truck.bars[0]?.margin).toBe(700)
+  })
+
+  it('an unreadable PROM entry goes to review and adds no cost', async () => {
+    await board.importFile(
+      await xlsx([{ no: '79-144-26', from: 'Warszawa', ld: '2026-09-22', to: 'Budapest', ud: '2026-09-23', rev: 1500, cost: 1300, sub: 'AA1001A', trailer: 'TR100', notes: 'PROM 22.09' }]),
+      'a.xlsx',
+      'daily',
+    )
+    expect((await issuesOf('FERRY_PARSE')).map(i => i.ref)).toEqual(['79-144-26'])
+    expect((await board.orderDetails('79-144-26')).order.margin).toBe(200)
+  })
+
+  it('a manual "Koszt dodatkowy" replaces the ferry until the application changes the PROM entry', async () => {
+    const row: Row = { no: '79-145-26', from: 'Warszawa', ld: '2026-09-22', to: 'Budapest', ud: '2026-09-24', rev: 2000, cost: 1000, sub: 'AA1002A', trailer: 'TR200', notes: 'PROM 300' }
+    await board.importFile(await xlsx([row]), 'a.xlsx', 'daily')
+    await board.setOverride('79-145-26', 'extra_cost', '350')
+    expect((await board.orderDetails('79-145-26')).order).toMatchObject({ extraCost: 350, extraCostManual: true, ferryCost: 300, margin: 650 })
+
+    now = '2026-09-28T08:00:00Z'
+    await board.importFile(await xlsx([row]), 'b.xlsx', 'daily') // same PROM → correction stays
+    expect((await board.orderDetails('79-145-26')).order.margin).toBe(650)
+
+    await board.importFile(await xlsx([{ ...row, notes: 'PROM 320' }]), 'c.xlsx', 'daily') // PROM changed → application wins
+    expect((await board.orderDetails('79-145-26')).order).toMatchObject({ extraCost: 320, extraCostManual: false, margin: 680 })
+    expect((await issuesOf('OVERRIDE_SUPERSEDED')).map(i => i.ref)).toEqual(['79-145-26'])
+  })
+
+  it('PRZ and PROM in the same notes: both apply', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-146-26', from: 'Wien', ld: '2026-09-21', to: 'Wilno', ud: '2026-09-22', rev: 3620, cost: 2300, sub: 'AA1001A', trailer: 'TR100', notes: 'PRZ WAW 22.09 AA1001A>AA1002A 1400/900 PROM 120' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const d = await board.orderDetails('79-146-26')
+    expect(d.order.prz).toMatchObject({ from: 'AA1001A', to: 'AA1002A' })
+    expect(d.order.margin).toBe(1200)
+    expect(await issuesOf('PRZ_PARSE')).toEqual([])
+  })
+})
+
 describe('checks and corrections', () => {
   it('flags a suspicious margin and a per-km rate that looks like PLN', async () => {
     await board.importFile(

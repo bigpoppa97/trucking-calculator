@@ -486,7 +486,7 @@ export function TruckPage({
                 <tbody>
                   {view.orders.map(o => {
                     const off = Boolean(o.excluded || o.noCarrier)
-                    const status = o.excluded === 'cancelled' ? 'anulowane' : o.excluded === 'unconfirmed' ? 'niezatwierdzone' : o.excluded === 'manual' ? 'wyłączone' : o.noCarrier ? 'brak przewoźnika' : o.missing ? 'zniknęło' : null
+                    const status = o.excluded === 'cancelled' ? 'anulowane' : o.excluded === 'unconfirmed' ? 'niezatwierdzone' : o.excluded === 'manual' ? 'wyłączone' : o.noCarrier ? 'anulowane u przewoźnika' : o.missing ? 'zniknęło' : null
                     return (
                       <tr key={`${o.orderNo}|${o.legIndex}`} className={`border-b border-[#ECEEEA] ${off ? 'text-[#8A939C]' : ''}`}>
                         <td className="px-2 py-2">
