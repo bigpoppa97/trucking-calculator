@@ -90,14 +90,27 @@ export interface WeekEvent {
   kind: NoteKind
   text: string
   auto: boolean
+  /** Set for a driver change — opens its edit dialog. */
+  driverChangeId?: number
+  driverId?: number | null
+}
+
+export type CertStatus = 'ok' | 'expiring' | 'expired' | 'none'
+
+export interface CertWarning {
+  kind: string
+  validTo: string
+  status: 'expiring' | 'expired'
 }
 
 export interface WeekTruck {
   id: number
   plate: string
   carrier: string
+  driverId: number | null
   driver: string
   phone: string
+  driverWarnings: CertWarning[]
   trailer: string | null
   trailerTypePl: string
   trailerTypeEn: string
@@ -127,6 +140,8 @@ export interface TruckOrderRow {
   excluded: string | null
   noCarrier: boolean
   missing: boolean
+  driver: string
+  driverManual: boolean
 }
 
 export interface TruckView {
@@ -135,13 +150,16 @@ export interface TruckView {
     plate: string
     plates: Array<{ plate: string; validFrom: string; validTo: string | null }>
     carrier: string
+    driverId: number | null
     driver: string
     phone: string
+    driverWarnings: CertWarning[]
     trailer: string | null
     trailerTypePl: string
     active: boolean
     copyText: string
     required: Service[]
+    driverChanges: Array<{ id: number; day: string; driverId: number | null; driver: string; createdBy: string; createdAt: string }>
   }
   from: string
   to: string
@@ -216,9 +234,12 @@ export interface OrderDetails {
     kmEmpty: number | null
     kmEmptyFrom: string | null
     kmEstimated: boolean
+    driver: string
+    driverManual: boolean
+    drivers: Array<{ id: number | null; name: string }>
   }>
   notes: Array<{ id: number; text: string; createdBy: string; createdAt: string }>
-  overrides: Array<{ field: string; value: string; createdAt: string }>
+  overrides: Array<{ field: string; value: string; display: string; createdAt: string }>
   issues: Array<{ id: number; kind: string; message: string }>
   history: Array<{ at: string; text: string }>
 }
@@ -259,8 +280,9 @@ export interface Issue {
 export interface FleetTruck {
   id: number
   carrier: string
+  /** Driver today (derived from driver changes). */
+  driverId: number | null
   driver: string
-  phone: string
   trailerPlate: string | null
   notes: string
   active: boolean
@@ -279,6 +301,53 @@ export interface Trailer {
   /** Last day in the fleet; null = in the fleet. */
   activeTo: string | null
   aliases: string[]
+  /** "Stały ciągnik" — only for a carrier with one set; null = the trailer rotates. */
+  fixedTruckId: number | null
+  fixedTruckPlate: string | null
+}
+
+export interface Driver {
+  id: number
+  name: string
+  phone: string
+  carrier: string
+  notes: string
+  active: boolean
+  trucks: Array<{ id: number; plate: string }>
+  avsec: { validTo: string | null; number: string; files: number; status: CertStatus; daysLeft: number | null } | null
+  certCount: number
+  warnings: CertWarning[]
+}
+
+export interface CertFile {
+  id: number
+  filename: string
+  mime: string
+  size: number
+  uploadedBy: string
+  uploadedAt: string
+}
+
+export interface Cert {
+  id: number
+  kind: string
+  number: string
+  validTo: string | null
+  notes: string
+  status: CertStatus
+  daysLeft: number | null
+  createdBy: string
+  updatedBy: string
+  updatedAt: string
+  files: CertFile[]
+}
+
+export interface DriverDetails {
+  driver: { id: number; name: string; phone: string; carrier: string; notes: string; active: boolean }
+  trucks: Array<{ id: number; plate: string }>
+  history: Array<{ truckId: number; plate: string; from: string; to: string | null }>
+  certs: Cert[]
+  warnings: CertWarning[]
 }
 
 export interface FleetSyncResult {
@@ -369,10 +438,26 @@ export const boardApi = {
   resolveIssue: (id: number, action: string, payload: Record<string, unknown> = {}) =>
     call('POST', `/api/board/issues/${id}/resolve`, { action, payload }),
   fleet: async () => (await call<{ trucks: FleetTruck[] }>('GET', '/api/board/fleet')).trucks,
-  createTruck: (input: { plate: string; validFrom: string; carrier?: string; driver?: string; phone?: string; trailerPlate?: string }) =>
-    call('POST', '/api/board/fleet', input),
-  updateTruck: (id: number, patch: Partial<{ carrier: string; driver: string; phone: string; trailerPlate: string | null; notes: string; active: boolean; sortOrder: number }>) =>
-    call('PATCH', `/api/board/fleet/${id}`, patch),
+  createTruck: (input: { plate: string; validFrom: string; carrier?: string }) => call('POST', '/api/board/fleet', input),
+  updateTruck: (id: number, patch: Partial<{ carrier: string; notes: string; active: boolean; sortOrder: number }>) => call('PATCH', `/api/board/fleet/${id}`, patch),
+  setFixedTruck: (plate: string, truckId: number | null) => call('POST', '/api/board/trailers/fixed-truck', { plate, truckId }),
+  drivers: async () => (await call<{ drivers: Driver[] }>('GET', '/api/board/drivers')).drivers,
+  driver: (id: number) => call<DriverDetails>('GET', `/api/board/drivers/${id}`),
+  createDriver: async (input: { name: string; phone?: string; carrier?: string; notes?: string }) => (await call<{ id: number }>('POST', '/api/board/drivers', input)).id,
+  updateDriver: (id: number, patch: Partial<{ name: string; phone: string; carrier: string; notes: string; active: boolean }>) => call('PATCH', `/api/board/drivers/${id}`, patch),
+  setDriverChange: (input: { truckId: number; day: string; driverId: number | null; releaseOther?: boolean }) =>
+    call<{ released: string[] }>('POST', '/api/board/driver-changes', input),
+  updateDriverChange: (id: number, patch: { day?: string; driverId?: number | null }) => call('PATCH', `/api/board/driver-changes/${id}`, patch),
+  deleteDriverChange: (id: number) => call('DELETE', `/api/board/driver-changes/${id}`),
+  createCert: async (driverId: number, input: { kind: string; number?: string; validTo?: string | null; notes?: string }) =>
+    (await call<{ id: number }>('POST', `/api/board/drivers/${driverId}/certs`, input)).id,
+  updateCert: (id: number, patch: { kind?: string; number?: string; validTo?: string | null; notes?: string }) => call('PATCH', `/api/board/certs/${id}`, patch),
+  deleteCert: (id: number) => call('DELETE', `/api/board/certs/${id}`),
+  async uploadCertFile(certId: number, file: File): Promise<number> {
+    const dataBase64 = toBase64(await file.arrayBuffer())
+    return (await call<{ id: number }>('POST', `/api/board/certs/${certId}/files`, { filename: file.name, dataBase64 })).id
+  },
+  deleteCertFile: (id: number) => call('DELETE', `/api/board/cert-files/${id}`),
   addPlate: (id: number, plate: string, validFrom: string) => call('POST', `/api/board/fleet/${id}/plates`, { plate, validFrom }),
   trailers: async () => (await call<{ trailers: Trailer[] }>('GET', '/api/board/trailers')).trailers,
   saveTrailer: (input: { plate: string; typePl?: string; typeEn?: string; carrier?: string; activeTo?: string | null }) => call('POST', '/api/board/trailers', input),

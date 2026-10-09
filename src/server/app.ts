@@ -131,9 +131,23 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const actor = (request: FastifyRequest): string => request.user?.email ?? 'unknown'
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
-    // Validation errors carry safe, schema-derived messages.
+    // Validation errors carry safe, schema-derived messages. The board (tablica) speaks Polish.
+    const board = (request.raw.url ?? '').startsWith('/api/board')
     if (error.validation) {
-      return reply.status(400).send({ error: { code: 'VALIDATION', message: 'Invalid request payload.' } })
+      return reply
+        .status(400)
+        .send({ error: { code: 'VALIDATION', message: board ? 'Nieprawidłowe dane w formularzu — sprawdź pola i spróbuj ponownie.' : 'Invalid request payload.' } })
+    }
+    if (error.statusCode === 413) {
+      const url = request.raw.url ?? ''
+      const message = !board
+        ? 'Request too large.'
+        : /\/certs\/\d+\/files/.test(url)
+          ? 'Plik jest za duży — najwyżej 15 MB.'
+          : url.startsWith('/api/board/import')
+            ? 'Plik eksportu jest za duży — najwyżej 40 MB.'
+            : 'Za dużo danych w jednym zapisie.'
+      return reply.status(413).send({ error: { code: 'TOO_LARGE', message } })
     }
     request.log?.error?.(error)
     // Static generic message only — never raw exception text (kickoff rule).

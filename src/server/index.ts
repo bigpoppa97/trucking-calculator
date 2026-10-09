@@ -55,7 +55,11 @@ const distances = new DistanceService({
   allowHere: process.env['BOARD_HERE'] !== 'off',
   actor: 'tablica',
 })
-const board = new BoardService(db, distances, { actor: process.env['BOARD_USER'] ?? 'tablica' })
+// Certificate scans live next to the database (data/pliki) — never in the repository.
+const board = new BoardService(db, distances, {
+  actor: process.env['BOARD_USER'] ?? 'tablica',
+  filesDir: process.env['FILES_DIR'] ?? resolve(dirname(env.databasePath), 'pliki'),
+})
 
 const app = buildApp({
   db,

@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { FleetTruck, Issue, OrderDetails, Service, TruckView, WeekView } from './boardApi.js'
+import type { Driver, DriverDetails, FleetTruck, Issue, OrderDetails, Service, TruckView, WeekView } from './boardApi.js'
 import { WeekPage } from './WeekPage.js'
 import { TruckPage, parseTruckHash, truckHash } from './TruckPage.js'
+import { DriverPage, parseDriverHash } from './DriverPage.js'
 import { ReviewPage } from './ReviewPage.js'
 import { FleetPage } from './FleetPage.js'
 
@@ -27,8 +28,10 @@ const WEEK: WeekView = {
       id: 1,
       plate: 'AA1050H',
       carrier: 'Przewoźnik A',
+      driverId: 5,
       driver: 'Kierowca A',
       phone: '600000000',
+      driverWarnings: [],
       trailer: 'TR1111P',
       trailerTypePl: 'chłodnia 2,61 m · rolki',
       trailerTypeEn: 'cooler 2.61m rollerbed',
@@ -112,6 +115,12 @@ const ORDER: OrderDetails = {
       kmEmpty: 0,
       kmEmptyFrom: 'Warszawa',
       kmEstimated: true,
+      driver: 'Kierowca A → Kierowca B (zmiana 23.09)',
+      driverManual: false,
+      drivers: [
+        { id: 5, name: 'Kierowca A' },
+        { id: 6, name: 'Kierowca B' },
+      ],
     },
   ],
   notes: [],
@@ -124,8 +133,8 @@ const FLEET: FleetTruck[] = [
   {
     id: 1,
     carrier: 'Przewoźnik A',
+    driverId: 5,
     driver: 'Kierowca A',
-    phone: '600000000',
     trailerPlate: 'TR1111P',
     notes: '',
     active: true,
@@ -221,7 +230,9 @@ describe('FleetPage', () => {
   it('records a new plate from a date for an existing truck', async () => {
     api.fleet.mockResolvedValue(FLEET)
     api.addPlate.mockResolvedValue({ ok: true })
+    api.drivers.mockResolvedValue([])
     render(<FleetPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Ciągniki' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Nowy numer' }))
     await userEvent.type(screen.getByLabelText('Nowy numer'), 'aa2222h')
     await userEvent.clear(screen.getByLabelText('Obowiązuje od'))
@@ -234,6 +245,7 @@ describe('FleetPage', () => {
   it('blocks thresholds where min per km is not below max', async () => {
     api.fleet.mockResolvedValue(FLEET)
     api.thresholds.mockResolvedValue({ marginWarnPct: 40, revPerKmMin: 0.5, revPerKmMax: 4.5 })
+    api.drivers.mockResolvedValue([])
     render(<FleetPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Progi ostrzeżeń' }))
     const min = await screen.findByLabelText('Stawka klienta / km — min (€)')
@@ -249,6 +261,7 @@ describe('FleetPage — wklej stan floty', () => {
     api.syncFleet
       .mockResolvedValueOnce({ changes: ['TR1111P: przewoźnik Przewoźnik A.'], warnings: ['KN9999X jest na tablicy, ale nie ma go na liście.'], errors: [], applied: false })
       .mockResolvedValueOnce({ changes: ['TR1111P: przewoźnik Przewoźnik A.'], warnings: [], errors: [], applied: true })
+    api.drivers.mockResolvedValue([])
     render(<FleetPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Wklej stan floty' }))
     const apply = screen.getByRole('button', { name: /Zastosuj/ })
@@ -393,13 +406,19 @@ const TRUCK_VIEW = (): TruckView => {
         { plate: 'AA0001H', validFrom: '2020-01-01', validTo: '2023-12-31' },
       ],
       carrier: 'Przewoźnik A',
+      driverId: 5,
       driver: 'Kierowca A',
       phone: '600000000',
+      driverWarnings: [{ kind: 'AVSEC', validTo: '2026-10-01', status: 'expiring' }],
       trailer: 'TR1111P',
       trailerTypePl: 'chłodnia 2,61 m · rolki',
       active: true,
       copyText: 'Truck AA1050H',
       required: [REQUIRED_TRUCK],
+      driverChanges: [
+        { id: 31, day: '2026-09-23', driverId: 5, driver: 'Kierowca A', createdBy: 'Dyspozytor', createdAt: '2026-09-20T08:00:00Z' },
+        { id: 30, day: '2000-01-01', driverId: 6, driver: 'Kierowca B', createdBy: 'migracja', createdAt: '2026-09-01T08:00:00Z' },
+      ],
     },
     from: '2026-09-21',
     to: '2026-09-27',
@@ -423,6 +442,8 @@ const TRUCK_VIEW = (): TruckView => {
         excluded: null,
         noCarrier: false,
         missing: false,
+        driver: 'Kierowca A',
+        driverManual: false,
       },
     ],
     services: [REQUIRED_TRUCK, service({})],
@@ -471,5 +492,173 @@ describe('TruckPage (strona zestawu)', () => {
     expect(parseTruckHash('#/auto/3?d=2026-10-05')).toEqual({ id: 3, date: '2026-10-05', mode: 'week' })
     expect(parseTruckHash('#/flota')).toBeNull()
     expect(truckHash({ id: 12, date: '2026-10-05', mode: 'month' })).toBe('#/auto/12?d=2026-10-05&widok=miesiac')
+  })
+})
+
+const DRIVERS: Driver[] = [
+  {
+    id: 5,
+    name: 'Kierowca A',
+    phone: '600000000',
+    carrier: 'Przewoźnik A',
+    notes: '',
+    active: true,
+    trucks: [{ id: 1, plate: 'AA1050H' }],
+    avsec: { validTo: '2026-10-10', number: 'X1', files: 1, status: 'expiring', daysLeft: 17 },
+    certCount: 1,
+    warnings: [{ kind: 'AVSEC', validTo: '2026-10-10', status: 'expiring' }],
+  },
+  {
+    id: 6,
+    name: 'Kierowca B',
+    phone: '',
+    carrier: 'Przewoźnik A',
+    notes: '',
+    active: true,
+    trucks: [{ id: 2, plate: 'AA2050H' }],
+    avsec: null,
+    certCount: 0,
+    warnings: [],
+  },
+  { id: 7, name: 'Kierowca C', phone: '', carrier: 'Inna Firma', notes: '', active: true, trucks: [], avsec: null, certCount: 0, warnings: [] },
+]
+
+describe('Kierowcy', () => {
+  it('Flota opens on drivers with their AVSEC, and "Certyfikaty" opens the driver page', async () => {
+    api.drivers.mockResolvedValue(DRIVERS)
+    const open = vi.fn()
+    render(<FleetPage onOpenDriver={open} />)
+    expect(await screen.findByText('Kierowca A')).toBeInTheDocument()
+    expect(screen.getByText(/ważny do 10\.10\.2026 — zostało 17 dni/)).toBeInTheDocument()
+    expect(screen.getAllByText('brak')).toHaveLength(2)
+    await userEvent.click(screen.getByRole('button', { name: 'Certyfikaty: Kierowca A' }))
+    expect(open).toHaveBeenCalledWith(5)
+  })
+
+  it('a driver change from "+" on the board: carrier drivers first, frees the other tractor', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.drivers.mockResolvedValue(DRIVERS)
+    api.setDriverChange.mockResolvedValue({ released: ['AA2050H'] })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Dodaj zdarzenie: AA1050H, 24.09' }))
+    await userEvent.selectOptions(screen.getByLabelText('Rodzaj'), 'driver')
+    const dialog = screen.getByRole('dialog')
+    const select = await within(dialog).findByLabelText('Kierowca')
+    await waitFor(() => expect(within(select).getByRole('option', { name: /Kierowca B \(teraz AA2050H\)/ })).toBeInTheDocument())
+    expect(within(select).getByRole('group', { name: 'Przewoźnik A' })).toBeInTheDocument()
+    await userEvent.selectOptions(select, '6')
+    expect(within(dialog).getByRole('checkbox', { name: /Kierowca B jeździ teraz na AA2050H/ })).toBeChecked()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Zapisz zmianę' }))
+    expect(api.setDriverChange).toHaveBeenCalledWith({ truckId: 1, day: '2026-09-24', driverId: 6, releaseOther: true })
+    expect(await screen.findByRole('status')).toHaveTextContent('AA2050H: od 24.09 bez kierowcy.')
+  })
+
+  it('a driver change chip on the board can be corrected or deleted', async () => {
+    const week = structuredClone(WEEK)
+    week.trucks[0]!.events = [{ id: null, day: '2026-09-23', kind: 'driver', text: 'Kierowca: Kierowca B → Kierowca A', auto: false, driverChangeId: 31, driverId: 5 }]
+    week.trucks[0]!.driverWarnings = [{ kind: 'AVSEC', validTo: '2026-09-20', status: 'expired' }]
+    api.week.mockResolvedValue(week)
+    api.drivers.mockResolvedValue(DRIVERS)
+    api.deleteDriverChange.mockResolvedValue({ ok: true })
+    const openDriver = vi.fn()
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} onOpenDriver={openDriver} />)
+    await userEvent.click(await screen.findByRole('button', { name: /AVSEC wygasł 20\.09/ }))
+    expect(openDriver).toHaveBeenCalledWith(5)
+    await userEvent.click(screen.getByRole('button', { name: 'Kierowca: Kierowca B → Kierowca A' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Usuń zmianę' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Tak, usuń' }))
+    expect(api.deleteDriverChange).toHaveBeenCalledWith(31)
+  })
+
+  it('the order panel names the driver(s) and corrects with a driver from the list', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue(ORDER)
+    api.drivers.mockResolvedValue(DRIVERS)
+    api.setOverride.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText('Kierowca A → Kierowca B (zmiana 23.09)')).toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Popraw ręcznie' }))
+    await userEvent.selectOptions(within(panel).getByLabelText('Co poprawić'), 'driver')
+    const who = await within(panel).findByLabelText('Kto jechał')
+    await waitFor(() => expect(within(who).getByRole('option', { name: /Kierowca B/ })).toBeInTheDocument())
+    await userEvent.selectOptions(who, '6')
+    await userEvent.click(within(panel).getByRole('button', { name: 'Zapisz poprawkę' }))
+    expect(api.setOverride).toHaveBeenCalledWith('79-1000-26', 'driver', '6')
+  })
+})
+
+const DRIVER_DETAILS: DriverDetails = {
+  driver: { id: 5, name: 'Kierowca A', phone: '600000000', carrier: 'Przewoźnik A', notes: '', active: true },
+  trucks: [{ id: 1, plate: 'AA1050H' }],
+  history: [{ truckId: 1, plate: 'AA1050H', from: '2000-01-01', to: null }],
+  certs: [
+    {
+      id: 11,
+      kind: 'AVSEC',
+      number: 'X1',
+      validTo: '2026-10-10',
+      notes: '',
+      status: 'expiring',
+      daysLeft: 17,
+      createdBy: 'Dyspozytor',
+      updatedBy: 'Dyspozytor',
+      updatedAt: '2026-09-20T08:00:00Z',
+      files: [{ id: 21, filename: 'AVSEC.pdf', mime: 'application/pdf', size: 120000, uploadedBy: 'Dyspozytor', uploadedAt: '2026-09-20T08:00:00Z' }],
+    },
+  ],
+  warnings: [{ kind: 'AVSEC', validTo: '2026-10-10', status: 'expiring' }],
+}
+
+describe('DriverPage (certyfikaty)', () => {
+  it('shows certificates with scans to preview and download, and uploads a new scan', async () => {
+    api.driver.mockResolvedValue(DRIVER_DETAILS)
+    api.drivers.mockResolvedValue(DRIVERS)
+    api.uploadCertFile.mockResolvedValue(22)
+    render(<DriverPage driverId={5} onBack={() => {}} />)
+    expect(await screen.findByRole('heading', { name: 'Kierowca A' })).toBeInTheDocument()
+    expect(screen.getByText('ważny do 10.10.2026 — zostało 17 dni')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Podgląd' })).toHaveAttribute('href', '/api/board/cert-files/21')
+    expect(screen.getByRole('link', { name: 'Pobierz' })).toHaveAttribute('href', '/api/board/cert-files/21?download=1')
+    expect(screen.getByText(/od początku tablicy/)).toBeInTheDocument()
+
+    const bad = new File(['hello'], 'notatka.txt', { type: 'text/plain' })
+    await userEvent.upload(screen.getByLabelText('Dodaj skan do AVSEC'), bad, { applyAccept: false })
+    expect(await screen.findByRole('alert')).toHaveTextContent('wgraj skan jako PDF, JPG albo PNG')
+    expect(api.uploadCertFile).not.toHaveBeenCalled()
+
+    const pdf = new File(['%PDF-1.4'], 'skan.pdf', { type: 'application/pdf' })
+    await userEvent.upload(screen.getByLabelText('Dodaj skan do AVSEC'), pdf)
+    expect(api.uploadCertFile).toHaveBeenCalledWith(11, pdf)
+    expect(await screen.findByRole('status')).toHaveTextContent('Dodano skan skan.pdf.')
+  })
+
+  it('adds a certificate (AVSEC by default) and keeps the page in the address', async () => {
+    api.driver.mockResolvedValue({ ...DRIVER_DETAILS, certs: [] })
+    api.drivers.mockResolvedValue(DRIVERS)
+    api.createCert.mockResolvedValue(12)
+    render(<DriverPage driverId={5} onBack={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Dodaj certyfikat' }))
+    await userEvent.type(screen.getByLabelText('Numer'), 'AV-123')
+    fireEvent.change(screen.getByLabelText('Ważny do'), { target: { value: '2027-03-31' } })
+    const buttons = screen.getAllByRole('button', { name: 'Dodaj certyfikat' })
+    await userEvent.click(buttons[buttons.length - 1]!)
+    expect(api.createCert).toHaveBeenCalledWith(5, { kind: 'AVSEC', number: 'AV-123', validTo: '2027-03-31', notes: '' })
+    expect(parseDriverHash('#/kierowca/5')).toEqual({ id: 5 })
+    expect(parseDriverHash('#/auto/5')).toBeNull()
+  })
+
+  it('the set page links the driver and lists his changes', async () => {
+    api.truckView.mockResolvedValue(TRUCK_VIEW())
+    const openDriver = vi.fn()
+    render(<TruckPage truckId={1} date="2026-09-23" mode="week" onBack={() => {}} onNavigate={() => {}} onOpenDriver={openDriver} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Kierowca A' }))
+    expect(openDriver).toHaveBeenCalledWith(5)
+    expect(screen.getByText('Historia kierowców (2)')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /AVSEC wygasa 01\.10/ })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'Zlecenia (1)' }))
+    expect(within(screen.getByRole('tabpanel')).getByRole('columnheader', { name: 'Kierowca' })).toBeInTheDocument()
   })
 })

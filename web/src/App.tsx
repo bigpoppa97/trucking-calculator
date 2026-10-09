@@ -11,6 +11,7 @@ import { WeekPage, type WeekFocus } from './board/WeekPage.js'
 import { ReviewPage } from './board/ReviewPage.js'
 import { FleetPage } from './board/FleetPage.js'
 import { TruckPage, parseTruckHash, truckHash, type TruckRoute } from './board/TruckPage.js'
+import { DriverPage, driverHash, parseDriverHash } from './board/DriverPage.js'
 import { boardApi } from './board/boardApi.js'
 import { todayIso } from './board/format.js'
 
@@ -38,9 +39,31 @@ const ROLE_LABELS: Record<UserRole, string> = {
   admin: 'administrator',
 }
 
-function clearHash(): void {
-  if (window.location.hash) window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search)
+/** Pages with their own address: the set page (#/auto/…) and the driver page (#/kierowca/…). */
+type Page = { kind: 'truck'; route: TruckRoute } | { kind: 'driver'; id: number }
+
+function parsePage(hash: string): Page | null {
+  const truck = parseTruckHash(hash)
+  if (truck) return { kind: 'truck', route: truck }
+  const driver = parseDriverHash(hash)
+  return driver ? { kind: 'driver', id: driver.id } : null
 }
+
+function pageHash(p: Page): string {
+  return p.kind === 'truck' ? truckHash(p.route) : driverHash({ id: p.id })
+}
+
+/** History entries we push carry the label of the page to go back to. */
+function backLabelOfHistory(): string | null {
+  const state = window.history.state as { tablicaBack?: unknown } | null
+  return typeof state?.tablicaBack === 'string' ? state.tablicaBack : null
+}
+
+function clearHash(): void {
+  if (window.location.hash) window.history.replaceState(null, '', window.location.pathname + window.location.search)
+}
+
+const BACK_LABELS: Record<string, string> = { board: 'Tablica', review: 'Do sprawdzenia', fleet: 'Flota' }
 
 const allowed = (role: UserRole) => (item: { roles?: UserRole[] }) => item.roles === undefined || item.roles.includes(role)
 
@@ -51,15 +74,21 @@ export function App() {
   const [focus, setFocus] = useState<WeekFocus | null>(null)
   const [boardDate, setBoardDate] = useState<string>(todayIso())
   const [openIssues, setOpenIssues] = useState<number | null>(null)
-  const [truckRoute, setTruckRoute] = useState<TruckRoute | null>(() => parseTruckHash(window.location.hash))
-  /** Where the set page was opened from; `pushed` = it added a history entry ("Back" pops it). */
-  const [truckFrom, setTruckFrom] = useState<{ screen: Screen; pushed: boolean } | null>(null)
+  const [page, setPage] = useState<Page | null>(() => parsePage(window.location.hash))
+  const [backLabel, setBackLabel] = useState<string | null>(backLabelOfHistory)
   const signedIn = user !== null && user !== undefined
 
   useEffect(() => {
-    const onHash = () => setTruckRoute(parseTruckHash(window.location.hash))
-    window.addEventListener('hashchange', onHash)
-    return () => window.removeEventListener('hashchange', onHash)
+    const sync = () => {
+      setPage(parsePage(window.location.hash))
+      setBackLabel(backLabelOfHistory())
+    }
+    window.addEventListener('popstate', sync)
+    window.addEventListener('hashchange', sync)
+    return () => {
+      window.removeEventListener('popstate', sync)
+      window.removeEventListener('hashchange', sync)
+    }
   }, [])
 
   const refreshCount = useCallback(async () => {
@@ -89,31 +118,34 @@ export function App() {
   const go = (next: Screen) => {
     setFocus(null)
     clearHash()
-    setTruckRoute(null)
+    setPage(null)
     setScreen(next)
   }
 
-  const openTruck = (id: number, date: string) => {
-    const route: TruckRoute = { id, date, mode: 'week' }
+  /** Opens a page as a new history entry, so the browser's Back returns where it was opened from. */
+  const openPage = (next: Page) => {
+    const label = page ? (page.kind === 'driver' ? 'Kierowca' : 'Zestaw') : (BACK_LABELS[activeScreen] ?? 'Tablica')
     setFocus(null) // back on the board = the week that was open, without an old order panel
-    setTruckFrom({ screen: activeScreen, pushed: true })
-    setTruckRoute(route)
-    window.location.hash = truckHash(route)
+    window.history.pushState({ tablicaBack: label }, '', pageHash(next))
+    setPage(next)
+    setBackLabel(label)
   }
+  const openTruck = (id: number, date: string) => openPage({ kind: 'truck', route: { id, date, mode: 'week' } })
+  const openDriver = (id: number) => openPage({ kind: 'driver', id })
 
-  const closeTruck = () => {
-    if (truckFrom?.pushed) {
-      window.history.back()
-    } else {
-      clearHash()
+  const closePage = () => {
+    if (backLabelOfHistory()) {
+      window.history.back() // popstate brings the previous page (or the screen) back
+      return
     }
-    setTruckRoute(null)
-    setTruckFrom(null)
+    clearHash()
+    setPage(null)
+    setBackLabel(null)
   }
 
   const openOrder = async (orderNo: string) => {
     clearHash()
-    setTruckRoute(null)
+    setPage(null)
     let date = boardDate
     try {
       date = (await boardApi.order(orderNo)).order.loadDate || boardDate
@@ -168,33 +200,39 @@ export function App() {
       </header>
 
       <main>
-        {truckRoute && (
+        {page?.kind === 'truck' && (
           <TruckPage
-            key={truckRoute.id}
-            truckId={truckRoute.id}
-            date={truckRoute.date}
-            mode={truckRoute.mode}
-            backLabel={truckFrom?.screen === 'fleet' ? 'Flota' : 'Tablica'}
-            onBack={closeTruck}
+            key={page.route.id}
+            truckId={page.route.id}
+            date={page.route.date}
+            mode={page.route.mode}
+            backLabel={backLabel ?? 'Tablica'}
+            onBack={closePage}
             onNavigate={(date, mode) => {
-              const route: TruckRoute = { id: truckRoute.id, date, mode }
+              const route: TruckRoute = { id: page.route.id, date, mode }
               window.history.replaceState(window.history.state, '', truckHash(route))
-              setTruckRoute(route)
+              setPage({ kind: 'truck', route })
             }}
             onShowOnBoard={orderNo => void openOrder(orderNo)}
+            onOpenDriver={openDriver}
           />
         )}
-        {!truckRoute && activeScreen === 'board' && (
-          <WeekPage focus={focus} initialDate={boardDate} onDateChange={setBoardDate} onReview={() => go('review')} onOpenTruck={openTruck} />
+        {page?.kind === 'driver' && (
+          <DriverPage key={page.id} driverId={page.id} backLabel={backLabel ?? 'Flota'} onBack={closePage} onOpenTruck={id => openTruck(id, boardDate)} />
         )}
-        {!truckRoute && activeScreen === 'review' && <ReviewPage onOpenOrder={orderNo => void openOrder(orderNo)} onIssuesChanged={() => void refreshCount()} />}
-        {!truckRoute && activeScreen === 'fleet' && <FleetPage onChanged={() => void refreshCount()} onOpenTruck={id => openTruck(id, boardDate)} />}
-        {!truckRoute && activeScreen === 'users' && (
+        {!page && activeScreen === 'board' && (
+          <WeekPage focus={focus} initialDate={boardDate} onDateChange={setBoardDate} onReview={() => go('review')} onOpenTruck={openTruck} onOpenDriver={openDriver} />
+        )}
+        {!page && activeScreen === 'review' && <ReviewPage onOpenOrder={orderNo => void openOrder(orderNo)} onIssuesChanged={() => void refreshCount()} />}
+        {!page && activeScreen === 'fleet' && (
+          <FleetPage onChanged={() => void refreshCount()} onOpenTruck={id => openTruck(id, boardDate)} onOpenDriver={openDriver} />
+        )}
+        {!page && activeScreen === 'users' && (
           <div className="min-h-[calc(100vh-48px)] bg-slate-100">
             <UsersPage />
           </div>
         )}
-        {!truckRoute && activeScreen === 'calculator' && (
+        {!page && activeScreen === 'calculator' && (
           <div className="min-h-[calc(100vh-48px)] bg-slate-100">
             <nav aria-label="Kalkulator" className="border-b border-slate-200 bg-white">
               <ul className="mx-auto flex max-w-5xl gap-1 px-4 pt-3">

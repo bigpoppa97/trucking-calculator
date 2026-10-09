@@ -9,3 +9,4 @@ coverage/
 *.tsbuildinfo
 logs/
 data/kopie/
+data/pliki/

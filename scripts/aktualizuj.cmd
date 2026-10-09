@@ -57,6 +57,12 @@ if not exist "data\kopie" mkdir "data\kopie"
 if exist "%DB%" copy /y "%DB%" "data\kopie\calculator-%STAMP%.sqlite" >nul
 if exist "%DB%-wal" copy /y "%DB%-wal" "data\kopie\calculator-%STAMP%.sqlite-wal" >nul
 echo Kopia bazy: data\kopie\calculator-%STAMP%.sqlite
+rem Skany certyfikatow kierowcow (folder "pliki" obok bazy, chyba ze FILES_DIR w .env).
+for %%F in ("%DB%") do set "PLIKI=%%~dpFpliki"
+if exist ".env" for /f "tokens=1,* delims==" %%A in ('findstr /b /c:"FILES_DIR=" ".env"') do set "PLIKI=%%B"
+set "PLIKI=%PLIKI:/=\%"
+if exist "%PLIKI%" robocopy "%PLIKI%" "data\kopie\pliki-%STAMP%" /E /NFL /NDL /NJH /NJS /NP >nul
+if exist "%PLIKI%" echo Kopia skanow: data\kopie\pliki-%STAMP%
 call npm run migrate
 if errorlevel 1 goto blad
 

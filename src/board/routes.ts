@@ -3,6 +3,7 @@ import type { NoteKind } from '../db/schema.js'
 import type { HereGeocodingClient } from '../here/hereGeocodingClient.js'
 import { BoardError, type BoardService, type ServiceInput, type ServicePatch } from './boardService.js'
 import { ExportFormatError } from './exportReader.js'
+import { foldDiacritics } from './normalize.js'
 
 /**
  * HTTP endpoints of the board (prefix /api/board). Thin layer over
@@ -283,7 +284,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     async (request, reply) => handle(reply, () => as(request).syncFleetList(request.body.text, request.body.apply === true)),
   )
 
-  app.patch<{ Params: { id: string }; Body: { carrier?: string; driver?: string; phone?: string; trailerPlate?: string | null; notes?: string; active?: boolean; sortOrder?: number } }>(
+  app.patch<{ Params: { id: string }; Body: { carrier?: string; trailerPlate?: string | null; notes?: string; active?: boolean; sortOrder?: number } }>(
     '/api/board/fleet/:id',
     {
       schema: {
@@ -292,8 +293,6 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
           type: 'object',
           properties: {
             carrier: { type: 'string', maxLength: 200 },
-            driver: { type: 'string', maxLength: 200 },
-            phone: { type: 'string', maxLength: 40 },
             trailerPlate: { type: ['string', 'null'], maxLength: 20 },
             notes: { type: 'string', maxLength: 1000 },
             active: { type: 'boolean' },
@@ -372,6 +371,144 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
         await as(request).addTrailerAlias(request.body.alias, request.body.trailer.toUpperCase())
         await board.refreshIssues()
       }),
+  )
+
+  app.post<{ Body: { plate: string; truckId: number | null } }>(
+    '/api/board/trailers/fixed-truck',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: { plate: { type: 'string', minLength: 2, maxLength: 20 }, truckId: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] } },
+          required: ['plate', 'truckId'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => handle(reply, () => as(request).setTrailerFixedTruck(request.body.plate, request.body.truckId)),
+  )
+
+  // Drivers (kierowcy), driver changes per tractor, certificates and their scans.
+  const DRIVER_FIELDS = {
+    name: { type: 'string', minLength: 1, maxLength: 120 },
+    phone: { type: 'string', maxLength: 40 },
+    carrier: { type: 'string', maxLength: 200 },
+    notes: { type: 'string', maxLength: 1000 },
+  } as const
+  const CERT_FIELDS = {
+    kind: { type: 'string', minLength: 1, maxLength: 60 },
+    number: { type: 'string', maxLength: 80 },
+    validTo: { anyOf: [DATE, { type: 'null' }] },
+    notes: { type: 'string', maxLength: 500 },
+  } as const
+
+  app.get('/api/board/drivers', async (_request, reply) => handle(reply, async () => ({ drivers: await board.drivers() })))
+
+  app.get<{ Params: { id: string } }>('/api/board/drivers/:id', { schema: { params: ID_PARAMS } }, async (request, reply) =>
+    handle(reply, () => board.driverDetails(Number(request.params.id))),
+  )
+
+  app.post<{ Body: { name: string; phone?: string; carrier?: string; notes?: string } }>(
+    '/api/board/drivers',
+    { schema: { body: { type: 'object', properties: DRIVER_FIELDS, required: ['name'], additionalProperties: false } } },
+    async (request, reply) => handle(reply, async () => ({ id: await as(request).createDriver(request.body) })),
+  )
+
+  app.patch<{ Params: { id: string }; Body: { name?: string; phone?: string; carrier?: string; notes?: string; active?: boolean } }>(
+    '/api/board/drivers/:id',
+    { schema: { params: ID_PARAMS, body: { type: 'object', properties: { ...DRIVER_FIELDS, active: { type: 'boolean' } }, additionalProperties: false } } },
+    async (request, reply) => handle(reply, () => as(request).updateDriver(Number(request.params.id), request.body)),
+  )
+
+  const DRIVER_ID = { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] } as const
+  app.post<{ Body: { truckId: number; day: string; driverId: number | null; releaseOther?: boolean } }>(
+    '/api/board/driver-changes',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: { truckId: { type: 'integer', minimum: 1 }, day: DATE, driverId: DRIVER_ID, releaseOther: { type: 'boolean' } },
+          required: ['truckId', 'day', 'driverId'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => handle(reply, () => as(request).setDriverChange(request.body)),
+  )
+
+  app.patch<{ Params: { id: string }; Body: { day?: string; driverId?: number | null } }>(
+    '/api/board/driver-changes/:id',
+    { schema: { params: ID_PARAMS, body: { type: 'object', properties: { day: DATE, driverId: DRIVER_ID }, additionalProperties: false } } },
+    async (request, reply) => handle(reply, () => as(request).updateDriverChange(Number(request.params.id), request.body)),
+  )
+
+  app.delete<{ Params: { id: string } }>('/api/board/driver-changes/:id', { schema: { params: ID_PARAMS } }, async (request, reply) =>
+    handle(reply, () => as(request).deleteDriverChange(Number(request.params.id))),
+  )
+
+  app.post<{ Params: { id: string }; Body: { kind: string; number?: string; validTo?: string | null; notes?: string } }>(
+    '/api/board/drivers/:id/certs',
+    { schema: { params: ID_PARAMS, body: { type: 'object', properties: CERT_FIELDS, required: ['kind'], additionalProperties: false } } },
+    async (request, reply) => handle(reply, async () => ({ id: await as(request).createCert(Number(request.params.id), request.body) })),
+  )
+
+  app.patch<{ Params: { id: string }; Body: { kind?: string; number?: string; validTo?: string | null; notes?: string } }>(
+    '/api/board/certs/:id',
+    { schema: { params: ID_PARAMS, body: { type: 'object', properties: CERT_FIELDS, additionalProperties: false } } },
+    async (request, reply) => handle(reply, () => as(request).updateCert(Number(request.params.id), request.body)),
+  )
+
+  app.delete<{ Params: { id: string } }>('/api/board/certs/:id', { schema: { params: ID_PARAMS } }, async (request, reply) =>
+    handle(reply, () => as(request).deleteCert(Number(request.params.id))),
+  )
+
+  app.post<{ Params: { id: string }; Body: { filename: string; dataBase64: string } }>(
+    '/api/board/certs/:id/files',
+    {
+      bodyLimit: 25 * 1024 * 1024,
+      schema: {
+        params: ID_PARAMS,
+        body: {
+          type: 'object',
+          properties: { filename: { type: 'string', minLength: 1, maxLength: 255 }, dataBase64: { type: 'string', minLength: 1 } },
+          required: ['filename', 'dataBase64'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) =>
+      handle(reply, async () => ({
+        id: await as(request).addCertFile(Number(request.params.id), request.body.filename, Buffer.from(request.body.dataBase64, 'base64')),
+      })),
+  )
+
+  // Scan preview (inline) or download (?download=1). Behind the session like every /api route.
+  app.get<{ Params: { id: string }; Querystring: { download?: string } }>(
+    '/api/board/cert-files/:id',
+    { schema: { params: ID_PARAMS, querystring: { type: 'object', properties: { download: { type: 'string', enum: ['0', '1'] } } } } },
+    async (request, reply) => {
+      try {
+        const file = await board.certFile(Number(request.params.id))
+        const ascii = foldDiacritics(file.filename).replace(/[^\x20-\x7e]/g, '').replace(/["\\]/g, '') || 'skan'
+        const disposition = request.query.download === '1' ? 'attachment' : 'inline'
+        return await reply
+          .header('content-type', file.mime)
+          .header(
+            'content-disposition',
+            `${disposition}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.filename).replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`,
+          )
+          .header('cache-control', 'private, no-store')
+          .header('x-content-type-options', 'nosniff')
+          .send(file.data)
+      } catch (error) {
+        if (error instanceof BoardError) return reply.status(error.status).send({ error: { code: error.code, message: error.message } })
+        throw error
+      }
+    },
+  )
+
+  app.delete<{ Params: { id: string } }>('/api/board/cert-files/:id', { schema: { params: ID_PARAMS } }, async (request, reply) =>
+    handle(reply, () => as(request).deleteCertFile(Number(request.params.id))),
   )
 
   // Places

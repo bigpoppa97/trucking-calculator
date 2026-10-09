@@ -1,4 +1,7 @@
 import ExcelJS from 'exceljs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { FastifyInstance, InjectOptions } from 'fastify'
 import type { Kysely } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -6,6 +9,8 @@ import { createTestDatabase, migrateToLatest } from '../db/database.js'
 import type { DB } from '../db/schema.js'
 import type { RouteFetchService } from '../here/routeFetchService.js'
 import { buildApp } from '../server/app.js'
+import { BoardService } from './boardService.js'
+import { DistanceService } from './distances.js'
 import { seedSession } from '../server/testAuth.js'
 import { ensurePlaceSeed } from './placeSeed.js'
 
@@ -14,19 +19,23 @@ import { ensurePlaceSeed } from './placeSeed.js'
 let db: Kysely<DB>
 let app: FastifyInstance
 let cookies: { session: string }
+let filesDir: string
 const call = (options: InjectOptions) => app.inject({ ...options, cookies })
 
 beforeEach(async () => {
   db = createTestDatabase()
   await migrateToLatest(db)
   await ensurePlaceSeed(db)
-  app = buildApp({ db, fetchService: {} as RouteFetchService })
+  filesDir = mkdtempSync(join(tmpdir(), 'tablica-pliki-'))
+  const board = new BoardService(db, new DistanceService({ db, allowHere: false }), { filesDir })
+  app = buildApp({ db, fetchService: {} as RouteFetchService, board })
   cookies = (await seedSession(db, 'dispatcher')).cookies
 })
 
 afterEach(async () => {
   await app.close()
   await db.destroy()
+  rmSync(filesDir, { recursive: true, force: true })
 })
 
 async function exportFile(): Promise<string> {
@@ -93,6 +102,42 @@ describe('board API', () => {
     expect(res.statusCode).toBe(400)
   })
 
+  it('drivers, a driver change, a certificate with a scan: upload, preview, download', async () => {
+    let res = await call({ method: 'POST', url: '/api/board/fleet', payload: { plate: 'AA1001A', validFrom: '2026-01-01', carrier: 'Alfa' } })
+    const truckId = res.json().id as number
+    res = await call({ method: 'POST', url: '/api/board/drivers', payload: { name: 'Kierowca Testowy', phone: '600000001', carrier: 'Alfa' } })
+    const driverId = res.json().id as number
+    res = await call({ method: 'POST', url: '/api/board/driver-changes', payload: { truckId, day: '2026-09-21', driverId } })
+    expect(res.json()).toEqual({ released: [] })
+    res = await call({ method: 'GET', url: '/api/board/week?date=2026-09-23' })
+    expect(res.json().trucks[0]).toMatchObject({ driver: 'Kierowca Testowy', driverId })
+
+    res = await call({ method: 'POST', url: `/api/board/drivers/${driverId}/certs`, payload: { kind: 'AVSEC', number: 'X-1', validTo: '2027-01-31' } })
+    const certId = res.json().id as number
+    const pdf = Buffer.from('%PDF-1.4\n% test\n')
+    res = await call({ method: 'POST', url: `/api/board/certs/${certId}/files`, payload: { filename: 'AVSEC Łukasz.pdf', dataBase64: pdf.toString('base64') } })
+    expect(res.statusCode).toBe(200)
+    const fileId = res.json().id as number
+
+    res = await call({ method: 'GET', url: `/api/board/cert-files/${fileId}` })
+    expect(res.statusCode).toBe(200)
+    expect(res.headers['content-type']).toBe('application/pdf')
+    expect(res.headers['content-disposition']).toBe(`inline; filename="AVSEC Lukasz.pdf"; filename*=UTF-8''AVSEC%20%C5%81ukasz.pdf`)
+    expect(res.headers['x-content-type-options']).toBe('nosniff')
+    expect(res.body).toBe('%PDF-1.4\n% test\n')
+    res = await call({ method: 'GET', url: `/api/board/cert-files/${fileId}?download=1` })
+    expect(res.headers['content-disposition']).toMatch(/^attachment;/)
+    expect((await app.inject({ method: 'GET', url: `/api/board/cert-files/${fileId}` })).statusCode).toBe(401)
+
+    res = await call({ method: 'POST', url: `/api/board/certs/${certId}/files`, payload: { filename: 'x.txt', dataBase64: Buffer.from('hello').toString('base64') } })
+    expect(res.statusCode).toBe(400)
+    expect(res.json().error.message).toMatch(/PDF, JPG albo PNG/)
+    res = await call({ method: 'GET', url: `/api/board/drivers/${driverId}` })
+    expect(res.json().certs[0]).toMatchObject({ kind: 'AVSEC', number: 'X-1', status: 'ok' })
+    res = await call({ method: 'POST', url: '/api/board/drivers', payload: { name: '' } })
+    expect(res.json().error.message).toMatch(/Nieprawidłowe dane/)
+  })
+
   it('rejects a file without required columns with a clear message', async () => {
     const wb = new ExcelJS.Workbook()
     wb.addWorksheet('x').addRow(['Numer zlecenia', 'Zleceniodawca'])
@@ -111,5 +156,15 @@ describe('board API', () => {
   it('requires a signed-in user', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/board/week?date=2026-09-23' })
     expect(res.statusCode).toBe(401)
+  })
+
+  it('an encoded path does not get past the sign-in', async () => {
+    for (const url of ['/%61pi/board/week?date=2026-09-23', '/%61%70%69/board/drivers', '/api%2Fboard/drivers', '/%61pi/board/cert-files/1']) {
+      const res = await app.inject({ method: 'GET', url })
+      expect(res.statusCode, url).not.toBe(200)
+    }
+    const login = await app.inject({ method: 'POST', url: '/%61pi/auth/login', payload: { email: 'x@example.com', password: 'nie' } })
+    expect(login.statusCode).toBe(401)
+    expect(login.json().error.message).toBe('Invalid email or password.')
   })
 })

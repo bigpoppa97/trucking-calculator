@@ -1,4 +1,7 @@
 import ExcelJS from 'exceljs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Kysely } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createTestDatabase, migrateToLatest } from '../db/database.js'
@@ -89,6 +92,7 @@ let db: Kysely<DB>
 let distances: DistanceService
 let now = '2026-09-27T18:00:00Z'
 let board: BoardService
+let filesDir: string
 
 beforeEach(async () => {
   db = createTestDatabase()
@@ -96,7 +100,8 @@ beforeEach(async () => {
   await ensurePlaceSeed(db)
   distances = new DistanceService({ db, allowHere: false })
   now = '2026-09-27T18:00:00Z'
-  board = new BoardService(db, distances, { now: () => now, actor: 'test' })
+  filesDir = mkdtempSync(join(tmpdir(), 'tablica-pliki-'))
+  board = new BoardService(db, distances, { now: () => now, actor: 'test', filesDir })
   // Fleet: two trucks of carrier Alfa, one of Beta; trailers.
   await board.createTruck({ plate: 'AA1001A', validFrom: '2026-01-01', carrier: 'Przewoźnik Alfa', driver: 'Jan K.', phone: '600100100', trailerPlate: 'TR100' })
   await board.createTruck({ plate: 'AA1002A', validFrom: '2026-01-01', carrier: 'Przewoźnik Alfa', driver: 'Ewa L.' })
@@ -106,6 +111,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await db.destroy()
+  rmSync(filesDir, { recursive: true, force: true })
 })
 
 const issuesOf = async (kind?: string) => (await board.listIssues('open')).filter(i => !kind || i.kind === kind)
@@ -677,6 +683,162 @@ describe('migration 0011', () => {
       expect(notes).toEqual([
         { kind: 'service', deleted: 1 },
         { kind: 'pause', deleted: 0 },
+      ])
+    } finally {
+      await raw.destroy()
+    }
+  })
+})
+
+describe('drivers (kierowcy)', () => {
+  const truckId = async (plate: string) => (await board.fleet()).find(t => t.currentPlate === plate)!.id
+  const rowOf = async (plate: string, date = '2026-09-21') => (await board.weekView(date)).trucks.find(t => t.plate === plate)!
+
+  it('tractors added with a driver put him on the driver list, valid from the beginning', async () => {
+    const drivers = await board.drivers()
+    // Sorted by carrier, then name.
+    expect(drivers.map(d => [d.name, d.carrier, d.trucks.map(t => t.plate)])).toEqual([
+      ['Piotr M.', 'Beta Trans', ['BB2001B']],
+      ['Ewa L.', 'Przewoźnik Alfa', ['AA1002A']],
+      ['Jan K.', 'Przewoźnik Alfa', ['AA1001A']],
+    ])
+    const row = await rowOf('AA1001A')
+    expect(row).toMatchObject({ driver: 'Jan K.', phone: '600100100' })
+    expect(row.copyText).toBe('Truck AA1001A, Trailer TR100 (cooler 2.61m rollerbed), Driver: Jan K. 600 100 100')
+    expect((await board.fleet())[0]).not.toHaveProperty('phone')
+    await expect(board.createDriver({ name: ' jan  k. ', carrier: 'Przewoźnik Alfa' })).rejects.toThrow(/już jest na liście/)
+  })
+
+  it('a driver change shows from its day; the week shows who finished it; a move frees the other tractor', async () => {
+    const t1 = await truckId('AA1001A')
+    const t2 = await truckId('AA1002A')
+    const krzys = await board.createDriver({ name: 'Krzysztof Z.', phone: '600999999', carrier: 'Przewoźnik Alfa' })
+    // Saturday 26.09 Krzysztof takes over AA1001A.
+    await board.setDriverChange({ truckId: t1, day: '2026-09-26', driverId: krzys })
+    const week39 = await rowOf('AA1001A', '2026-09-21')
+    expect(week39.driver).toBe('Krzysztof Z.') // today (27.09) is in week 39 → the driver today
+    expect(week39.events.filter(e => e.kind === 'driver').map(e => [e.day, e.text])).toEqual([['2026-09-26', 'Kierowca: Jan K. → Krzysztof Z.']])
+    expect((await rowOf('AA1001A', '2026-09-14')).driver).toBe('Jan K.')
+
+    // One change per tractor and day: the second replaces the first.
+    await board.setDriverChange({ truckId: t1, day: '2026-09-26', driverId: krzys })
+    expect((await board.truckView(t1, '2026-09-21', '2026-09-21')).truck.driverChanges.map(c => c.day)).toEqual(['2026-09-26', '2000-01-01'])
+
+    // Krzysztof moves to AA1002A on 01.10 and leaves AA1001A without a driver.
+    const moved = await board.setDriverChange({ truckId: t2, day: '2026-10-01', driverId: krzys, releaseOther: true })
+    expect(moved.released).toEqual(['AA1001A'])
+    expect((await rowOf('AA1001A', '2026-10-05')).driver).toBe('')
+    expect((await rowOf('AA1002A', '2026-10-05')).driver).toBe('Krzysztof Z.')
+    const history = (await board.driverDetails(krzys)).history
+    expect(history.map(h => [h.plate, h.from, h.to])).toEqual([
+      ['AA1002A', '2026-10-01', null],
+      ['AA1001A', '2026-09-26', '2026-09-30'],
+    ])
+
+    const change = (await board.truckView(t2, '2026-10-01', '2026-10-01')).truck.driverChanges[0]!
+    await board.updateDriverChange(change.id, { day: '2026-10-02' })
+    await expect(board.updateDriverChange(change.id, { day: '2000-01-01' })).rejects.toThrow(/ma już zmianę kierowcy/)
+    await board.deleteDriverChange(change.id)
+    expect((await rowOf('AA1002A', '2026-10-05')).driver).toBe('Ewa L.')
+    await expect(board.setDriverChange({ truckId: t1, day: '2026-02-30', driverId: krzys })).rejects.toThrow(/poprawną datę/)
+  })
+
+  it('the driver of an order: a change between loading and unloading names both; on the loading day the new one; on the unloading day the old one', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-201-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-24', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-202-26', from: 'Budapest', ld: '2026-09-25', to: 'Warszawa', ud: '2026-09-26', rev: 1200, cost: 1000, sub: 'AA1001A', trailer: 'TR100' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const t1 = await truckId('AA1001A')
+    const krzys = await board.createDriver({ name: 'Krzysztof Z.', carrier: 'Przewoźnik Alfa' })
+    await board.setDriverChange({ truckId: t1, day: '2026-09-23', driverId: krzys })
+    let d = await board.orderDetails('79-201-26')
+    expect(d.legs[0]).toMatchObject({ driver: 'Jan K. → Krzysztof Z. (zmiana 23.09)', driverManual: false })
+
+    // Change moved to the unloading day 24.09 → the old driver did the whole order, the new one the next.
+    const change = (await board.truckView(t1, '2026-09-21', '2026-09-21')).truck.driverChanges[0]!
+    await board.updateDriverChange(change.id, { day: '2026-09-24' })
+    expect((await board.orderDetails('79-201-26')).legs[0]?.driver).toBe('Jan K.')
+    // On the loading day of 79-202-26 (25.09) → the new driver.
+    await board.updateDriverChange(change.id, { day: '2026-09-25' })
+    expect((await board.orderDetails('79-202-26')).legs[0]?.driver).toBe('Krzysztof Z.')
+    expect((await board.truckView(t1, '2026-09-21', '2026-09-27')).orders.map(o => [o.orderNo, o.driver])).toEqual([
+      ['79-201-26', 'Jan K.'],
+      ['79-202-26', 'Krzysztof Z.'],
+    ])
+
+    // Manual correction (driver id) wins; an unknown id is refused.
+    await expect(board.setOverride('79-201-26', 'driver', '999')).rejects.toThrow(/Wybierz kierowcę/)
+    await board.setOverride('79-201-26', 'driver', String(krzys))
+    d = await board.orderDetails('79-201-26')
+    expect(d.legs[0]).toMatchObject({ driver: 'Krzysztof Z.', driverManual: true })
+    expect(d.overrides.find(o => o.field === 'driver')?.display).toBe('Krzysztof Z.')
+  })
+
+  it('certificates: newest per kind decides, yellow 30 days before the end, red after it', async () => {
+    const jan = (await board.drivers()).find(d => d.name === 'Jan K.')!.id
+    const old = await board.createCert(jan, { kind: 'avsec', number: 'A-1', validTo: '2026-09-01' })
+    expect((await rowOf('AA1001A')).driverWarnings).toEqual([{ kind: 'AVSEC', validTo: '2026-09-01', status: 'expired' }])
+    await board.createCert(jan, { kind: 'AVSEC', number: 'A-2', validTo: '2026-10-20' })
+    expect((await rowOf('AA1001A')).driverWarnings).toEqual([{ kind: 'AVSEC', validTo: '2026-10-20', status: 'expiring' }])
+    await board.updateCert(old, { validTo: '2027-09-01' })
+    expect((await rowOf('AA1001A')).driverWarnings).toEqual([])
+    const list = await board.drivers()
+    expect(list.find(d => d.id === jan)?.avsec).toMatchObject({ validTo: '2027-09-01', number: 'A-1', status: 'ok' })
+    await expect(board.createCert(jan, { kind: '  ', validTo: null })).rejects.toThrow(/rodzaj certyfikatu/)
+    await expect(board.createCert(jan, { kind: 'ADR', validTo: '2026-13-01' })).rejects.toThrow(/datę ważności/)
+  })
+
+  it('scans: only PDF/JPG/PNG, stored on disk next to the database, removed with the certificate', async () => {
+    const jan = (await board.drivers()).find(d => d.name === 'Jan K.')!.id
+    const cert = await board.createCert(jan, { kind: 'AVSEC', validTo: '2027-01-31' })
+    const pdf = new TextEncoder().encode('%PDF-1.4\n% test\n')
+    await expect(board.addCertFile(cert, 'virus.exe', new TextEncoder().encode('MZ....'))).rejects.toThrow(/PDF, JPG albo PNG/)
+    const fileId = await board.addCertFile(cert, 'C:\\Users\\x\\AVSEC Jan.pdf', pdf)
+    const details = await board.driverDetails(jan)
+    expect(details.certs[0]?.files.map(f => [f.filename, f.mime, f.size, f.uploadedBy])).toEqual([['AVSEC Jan.pdf', 'application/pdf', pdf.length, 'test']])
+    const file = await board.certFile(fileId)
+    expect(file.data.toString()).toBe('%PDF-1.4\n% test\n')
+    const stored = (await db.selectFrom('board_driver_cert_files').select('stored_name').executeTakeFirstOrThrow()).stored_name
+    expect(readdirSync(join(filesDir, 'certyfikaty'))).toEqual([stored])
+
+    await board.deleteCert(cert)
+    expect(readdirSync(join(filesDir, 'certyfikaty'))).toEqual([])
+    await expect(board.certFile(fileId)).rejects.toThrow(/Nie ma takiego pliku/)
+  })
+
+  it('a fixed trailer is set from the trailer list; a tractor keeps one', async () => {
+    const t3 = await truckId('BB2001B')
+    await board.setTrailerFixedTruck('TR960PE', t3)
+    await board.setTrailerFixedTruck('TR200', t3)
+    const trailers = await board.trailers()
+    expect(trailers.filter(t => t.fixedTruckId !== null).map(t => [t.plate, t.fixedTruckPlate])).toEqual([
+      ['TR100', 'AA1001A'],
+      ['TR200', 'BB2001B'],
+    ])
+    await board.setTrailerFixedTruck('TR200', null)
+    expect((await board.fleet()).find(t => t.id === t3)?.trailerPlate).toBeNull()
+  })
+})
+
+describe('migration 0012', () => {
+  it('moves the drivers of the tractors to the driver list', async () => {
+    const raw = createTestDatabase()
+    try {
+      const migrator = new Migrator({ db: raw, provider: { getMigrations: async () => migrations } })
+      await migrator.migrateTo('0011_board_services')
+      const a = await raw.insertInto('board_trucks').values({ carrier: 'Alfa', driver: 'Kierowca  Testowy', phone: '600000001', sort_order: 1 }).returning('id').executeTakeFirstOrThrow()
+      const b = await raw.insertInto('board_trucks').values({ carrier: 'Alfa', driver: 'kierowca testowy', phone: '', sort_order: 2 }).returning('id').executeTakeFirstOrThrow()
+      await raw.insertInto('board_trucks').values({ carrier: 'Beta', driver: '', sort_order: 3 }).execute()
+      await migrateToLatest(raw)
+      expect(await raw.selectFrom('board_drivers').select(['name', 'phone', 'carrier']).execute()).toEqual([{ name: 'Kierowca Testowy', phone: '600000001', carrier: 'Alfa' }])
+      const changes = await raw.selectFrom('board_driver_changes').select(['truck_id', 'day']).orderBy('truck_id').execute()
+      expect(changes).toEqual([
+        { truck_id: a.id, day: '2000-01-01' },
+        { truck_id: b.id, day: '2000-01-01' },
       ])
     } finally {
       await raw.destroy()

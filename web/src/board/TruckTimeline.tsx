@@ -1,4 +1,4 @@
-import type { Service, WeekBar, WeekTruck } from './boardApi.js'
+import type { Service, WeekBar, WeekEvent, WeekTruck } from './boardApi.js'
 import { EVENT_LABELS, dm, km, signedEur } from './format.js'
 import { EVENT_ICON, Icon } from './Icon.js'
 import { SERVICE_COLORS, ServiceStrip } from './serviceUi.js'
@@ -63,9 +63,11 @@ export interface TruckTimelineProps {
   onTip: (key: string | null) => void
   onAddEvent?: ((day: string) => void) | undefined
   onOpenService: (s: Service) => void
+  /** Driver change chip clicked (edit / delete the change). */
+  onOpenDriverChange?: ((e: WeekEvent) => void) | undefined
 }
 
-export function TruckTimeline({ row, weekStart, days, showMoney, selected, tip, nowFraction, onSelect, onTip, onAddEvent, onOpenService }: TruckTimelineProps) {
+export function TruckTimeline({ row, weekStart, days, showMoney, selected, tip, nowFraction, onSelect, onTip, onAddEvent, onOpenService, onOpenDriverChange }: TruckTimelineProps) {
   const bars = placeBars(row.bars)
   return (
     <div className="relative min-w-0 p-2">
@@ -145,16 +147,30 @@ export function TruckTimeline({ row, weekStart, days, showMoney, selected, tip, 
           <div key={day} className="flex min-w-0 flex-col items-start gap-1">
             {row.events
               .filter(e => e.day === day)
-              .map((e, i) => (
-                <span
-                  key={`${e.id ?? 'auto'}-${i}`}
-                  title={e.auto ? 'Wykryte automatycznie z naczep w zleceniach' : EVENT_LABELS[e.kind]}
-                  className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] ${e.auto ? 'border-dashed border-[#9AA3AC] bg-[#F7F8F6]' : 'border-[#D5D9D3] bg-white'} text-[#3D444C]`}
-                >
-                  <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
-                  <span className="truncate">{e.text}</span>
-                </span>
-              ))}
+              .map((e, i) =>
+                e.driverChangeId !== undefined && onOpenDriverChange ? (
+                  <button
+                    key={`d${e.driverChangeId}`}
+                    type="button"
+                    onClick={() => onOpenDriverChange(e)}
+                    aria-label={e.text}
+                    title={`${e.text} — kliknij, żeby poprawić albo usunąć`}
+                    className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#9AB3DA] bg-[#EEF3FB] px-2 py-0.5 text-[11.5px] text-[#1E3A6E] hover:border-[#1E4E9C]"
+                  >
+                    <Icon name="driver" size={12} />
+                    <span className="truncate">→ {e.text.split(' → ').pop()?.replace(/^Kierowca: /, '')}</span>
+                  </button>
+                ) : (
+                  <span
+                    key={`${e.id ?? 'auto'}-${i}`}
+                    title={e.auto ? 'Wykryte automatycznie z naczep w zleceniach' : EVENT_LABELS[e.kind]}
+                    className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] ${e.auto ? 'border-dashed border-[#9AA3AC] bg-[#F7F8F6]' : 'border-[#D5D9D3] bg-white'} text-[#3D444C]`}
+                  >
+                    <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
+                    <span className="truncate">{e.text}</span>
+                  </span>
+                ),
+              )}
             {onAddEvent && (
               <button
                 type="button"

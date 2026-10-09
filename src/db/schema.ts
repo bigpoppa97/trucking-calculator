@@ -138,7 +138,9 @@ export type ServiceStatus = 'required' | 'planned' | 'cancelled' | 'deleted'
 export interface BoardTrucksTable {
   id: Generated<number>
   carrier: ColumnType<string, string | undefined, string>
+  /** Legacy (before 0012): the driver list and dated changes are in board_drivers / board_driver_changes. */
   driver: ColumnType<string, string | undefined, string>
+  /** Legacy (before 0012), see driver. */
   phone: ColumnType<string, string | undefined, string>
   trailer_plate: Nullable<string>
   notes: ColumnType<string, string | undefined, string>
@@ -308,6 +310,51 @@ export interface BoardServiceChangesTable {
   created_at: string
 }
 
+// Migration 0012 — drivers, dated driver changes per tractor, certificates and their scans.
+export interface BoardDriversTable {
+  id: Generated<number>
+  name: string
+  phone: ColumnType<string, string | undefined, string>
+  carrier: ColumnType<string, string | undefined, string>
+  notes: ColumnType<string, string | undefined, string>
+  active: ColumnType<number, number | undefined, number>
+  created_at: string
+}
+
+export interface BoardDriverChangesTable {
+  id: Generated<number>
+  truck_id: number
+  driver_id: Nullable<number> // null = no driver from that day
+  day: string // YYYY-MM-DD; 2000-01-01 = from the beginning
+  created_by: string
+  created_at: string
+}
+
+export interface BoardDriverCertsTable {
+  id: Generated<number>
+  driver_id: number
+  kind: string // AVSEC, ADR, … (free text with suggestions)
+  number: ColumnType<string, string | undefined, string>
+  valid_to: Nullable<string>
+  notes: ColumnType<string, string | undefined, string>
+  deleted: ColumnType<number, number | undefined, number>
+  created_by: string
+  created_at: string
+  updated_by: string
+  updated_at: string
+}
+
+export interface BoardDriverCertFilesTable {
+  id: Generated<number>
+  cert_id: number
+  filename: string // original name, shown and used for downloads
+  stored_name: string // random name on disk (data/pliki/certyfikaty/…)
+  mime: string
+  size: number
+  uploaded_by: string
+  uploaded_at: string
+}
+
 export interface BoardIssuesTable {
   id: Generated<number>
   key: string
@@ -353,6 +400,10 @@ export interface DB {
   board_issues: BoardIssuesTable
   board_services: BoardServicesTable
   board_service_changes: BoardServiceChangesTable
+  board_drivers: BoardDriversTable
+  board_driver_changes: BoardDriverChangesTable
+  board_driver_certs: BoardDriverCertsTable
+  board_driver_cert_files: BoardDriverCertFilesTable
 }
 
 export type AirportRow = Selectable<AirportsTable>

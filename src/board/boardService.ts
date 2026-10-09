@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { Kysely } from 'kysely'
 import type { DB, ImportMode, NoteKind, ServiceTarget } from '../db/schema.js'
 import { computeOrders, placesLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
@@ -6,6 +9,18 @@ import type { DistanceService } from './distances.js'
 import { importExportFile, FIELD_LABELS, type ImportSummary } from './importService.js'
 import { DEFAULT_THRESHOLDS, deriveIssues, fmtDate, syncDerivedIssues, type IssueThresholds } from './issues.js'
 import { planFleetSync, type FleetPlan } from './fleetList.js'
+import {
+  CERT_FILE_MAX_BYTES,
+  FROM_THE_BEGINNING,
+  certStatus,
+  certWarnings,
+  cleanFilename,
+  sniffScan,
+  type CertStatus,
+  kindKey as kindKeyOf,
+  type DriverRecord,
+  type LegDrivers,
+} from './drivers.js'
 import { addDays, aliasKey, isoWeekNumber, normalizePlate, weekStart } from './normalize.js'
 import {
   dm as dmDay,
@@ -39,7 +54,7 @@ export class BoardError extends Error {
   }
 }
 
-export const OVERRIDE_FIELDS = ['rev', 'cost', 'extra_cost', 'trailer', 'prz', 'exclude', 'km_loaded', 'km_empty', 'km_loaded:1', 'km_empty:1'] as const
+export const OVERRIDE_FIELDS = ['rev', 'cost', 'extra_cost', 'trailer', 'prz', 'exclude', 'km_loaded', 'km_empty', 'km_loaded:1', 'km_empty:1', 'driver', 'driver:1'] as const
 export type OverrideField = (typeof OVERRIDE_FIELDS)[number]
 
 /** Free-form day events; a service has its own record (board_services). */
@@ -79,14 +94,27 @@ export interface WeekEvent {
   kind: NoteKind
   text: string
   auto: boolean
+  /** Set for a driver change (board_driver_changes) — opens its edit dialog. */
+  driverChangeId?: number
+  driverId?: number | null
+}
+
+export interface CertWarning {
+  kind: string
+  validTo: string
+  status: 'expiring' | 'expired'
 }
 
 export interface WeekTruck {
   id: number
   plate: string
   carrier: string
+  /** Driver on the reference day (today in the current week, else the last day of the week). */
+  driverId: number | null
   driver: string
   phone: string
+  /** Expiring / expired certificates of that driver (newest per kind). */
+  driverWarnings: CertWarning[]
   trailer: string | null
   trailerTypePl: string
   trailerTypeEn: string
@@ -116,6 +144,9 @@ export interface TruckOrderRow {
   excluded: string | null
   noCarrier: boolean
   missing: boolean
+  /** "A → B (zmiana 11.10)"; manual = corrected in the order panel. */
+  driver: string
+  driverManual: boolean
 }
 
 export interface TruckView {
@@ -124,13 +155,17 @@ export interface TruckView {
     plate: string
     plates: Array<{ plate: string; validFrom: string; validTo: string | null }>
     carrier: string
+    driverId: number | null
     driver: string
     phone: string
+    driverWarnings: CertWarning[]
     trailer: string | null
     trailerTypePl: string
     active: boolean
     copyText: string
     required: ServiceDto[]
+    /** Driver changes of this tractor, newest first (the first entry may be "from the beginning"). */
+    driverChanges: Array<{ id: number; day: string; driverId: number | null; driver: string; createdBy: string; createdAt: string }>
   }
   from: string
   to: string
@@ -140,6 +175,40 @@ export interface TruckView {
   orders: TruckOrderRow[]
   services: ServiceDto[]
   activeOrder: { orderNo: string; title: string; startDate: string; endDate: string; upcoming: boolean } | null
+}
+
+export interface DriverListItem {
+  id: number
+  name: string
+  phone: string
+  carrier: string
+  notes: string
+  active: boolean
+  /** Tractors the driver is on today. */
+  trucks: Array<{ id: number; plate: string }>
+  avsec: { validTo: string | null; number: string; files: number; status: CertStatus; daysLeft: number | null } | null
+  certCount: number
+  warnings: CertWarning[]
+}
+
+export interface DriverDetails {
+  driver: { id: number; name: string; phone: string; carrier: string; notes: string; active: boolean }
+  trucks: Array<{ id: number; plate: string }>
+  history: Array<{ truckId: number; plate: string; from: string; to: string | null }>
+  certs: Array<{
+    id: number
+    kind: string
+    number: string
+    validTo: string | null
+    notes: string
+    status: CertStatus
+    daysLeft: number | null
+    createdBy: string
+    updatedBy: string
+    updatedAt: string
+    files: Array<{ id: number; filename: string; mime: string; size: number; uploadedBy: string; uploadedAt: string }>
+  }>
+  warnings: CertWarning[]
 }
 
 export interface ServiceInput {
@@ -194,6 +263,8 @@ export interface WeekView {
 export interface BoardServiceOptions {
   actor?: string
   now?: () => string
+  /** Where certificate scans are stored (default data/pliki next to the database). */
+  filesDir?: string
 }
 
 export class BoardService {
@@ -478,6 +549,7 @@ export class BoardService {
       .execute()) as ServiceRecord[]
     const history = await this.serviceHistory(serviceRows.map(r => r.id))
     const dtos = new Map(serviceRows.map(r => [r.id, toServiceDto(r, nowLocal, history.get(r.id) ?? [])]))
+    const certsByDriver = await this.certsByDriver()
 
     const legsByTruck = new Map<number, Array<{ o: ComputedOrder; l: ComputedLeg }>>()
     for (const o of orders) {
@@ -553,6 +625,14 @@ export class BoardService {
         for (const n of dayNotes.filter(n => n.truck_id === truck.id && n.day !== null && n.day >= start && n.day <= end)) {
           events.push({ id: n.id, day: n.day ?? start, kind: n.kind, text: n.text, auto: false })
         }
+        // Driver changes (the "from the beginning" entry is never in a week).
+        const changes = ctx.drivers.changesOf(truck.id)
+        for (const [i, c] of changes.entries()) {
+          if (c.day < start || c.day > end || c.day <= FROM_THE_BEGINNING) continue
+          const prev = i > 0 ? changes[i - 1]! : null
+          const text = prev ? `${ctx.drivers.name(prev.driverId)} → ${ctx.drivers.name(c.driverId)}` : ctx.drivers.name(c.driverId)
+          events.push({ id: null, day: c.day, kind: 'driver', text: `Kierowca: ${text}`, auto: false, driverChangeId: c.id, driverId: c.driverId })
+        }
 
         const truckServiceDays = serviceRows
           .filter(r => r.status === 'planned' && r.target === 'truck' && r.truck_id === truck.id)
@@ -593,16 +673,19 @@ export class BoardService {
           .map(r => dtos.get(r.id)!)
           .sort((a, b) => a.reportedAt.localeCompare(b.reportedAt))
 
+        const driver = ctx.drivers.driverOn(truck.id, today >= start && today <= end ? today : end)
         trucks.push({
           id: truck.id,
           plate,
           carrier: truck.carrier,
-          driver: truck.driver,
-          phone: truck.phone,
+          driverId: driver?.id ?? null,
+          driver: driver?.name ?? '',
+          phone: driver?.phone ?? '',
+          driverWarnings: driver ? certWarnings(certsByDriver.get(driver.id) ?? [], today) : [],
           trailer,
           trailerTypePl: typePl,
           trailerTypeEn: typeEn,
-          copyText: `Truck ${plate}, Trailer ${trailer ?? '—'} (${typeEn}), Driver: ${truck.driver}${truck.phone ? ` ${formatPhone(truck.phone)}` : ''}`,
+          copyText: copyTextFor(plate, trailer, typeEn, driver),
           bars,
           events: events.sort((a, b) => a.day.localeCompare(b.day)),
           services,
@@ -621,7 +704,7 @@ export class BoardService {
       return { start, end, days, weekNumber: isoWeekNumber(start), trucks }
     })
     const requiredAll = serviceRows.filter(r => r.status === 'required').map(r => dtos.get(r.id)!)
-    return { ctx, orders, weeks, today, nowLocal, legsByTruck, requiredAll }
+    return { ctx, orders, weeks, today, nowLocal, legsByTruck, requiredAll, certsByDriver }
   }
 
   private toBar(
@@ -684,7 +767,7 @@ export class BoardService {
     const exists = await this.db.selectFrom('board_trucks').select('id').where('id', '=', truckId).executeTakeFirst()
     if (!exists) throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
 
-    const { ctx, weeks, today, nowLocal, legsByTruck, requiredAll } = await this.loadWeeks(weekStarts, t => t.id === truckId)
+    const { ctx, weeks, today, nowLocal, legsByTruck, requiredAll, certsByDriver } = await this.loadWeeks(weekStarts, t => t.id === truckId)
     const truck = ctx.fleet.byId(truckId)!
     const rows = weeks.map(w => ({ weekStart: w.start, weekEnd: w.end, weekNumber: w.weekNumber, days: w.days, row: w.trucks[0]! }))
     const periodFrom = first
@@ -722,6 +805,10 @@ export class BoardService {
         excluded: o.excluded,
         noCarrier: o.noCarrier,
         missing: o.missing,
+        ...((): { driver: string; driverManual: boolean } => {
+          const d = legDriversOf(o, l, ctx)
+          return { driver: d.text, driverManual: d.manual }
+        })(),
       }))
 
     // Active order and the header (trailer, badges) are about today; computed around today when the period is elsewhere.
@@ -744,6 +831,7 @@ export class BoardService {
       : null
 
     const plateToday = ctx.fleet.plateOn(truck, today)
+    const driverToday = ctx.drivers.driverOn(truckId, today)
     let header: { trailer: string | null; trailerTypePl: string; copyText: string; required: ServiceDto[] }
     if (todayRow) {
       header = { trailer: todayRow.trailer, trailerTypePl: todayRow.trailerTypePl, copyText: todayRow.copyText, required: todayRow.required }
@@ -755,7 +843,7 @@ export class BoardService {
       header = {
         trailer,
         trailerTypePl: rec?.typePl ?? 'chłodnia 2,61 m · rolki',
-        copyText: `Truck ${plateToday}, Trailer ${trailer ?? '—'} (${typeEn}), Driver: ${truck.driver}${truck.phone ? ` ${formatPhone(truck.phone)}` : ''}`,
+        copyText: copyTextFor(plateToday, trailer, typeEn, driverToday),
         required: requiredAll.filter(sv => (sv.target === 'truck' ? sv.truckId === truckId : trailer !== null && sv.trailerPlate === trailer)),
       }
     }
@@ -782,13 +870,23 @@ export class BoardService {
         plate: plateToday,
         plates: truck.plates.map(p => ({ plate: p.plate, validFrom: p.validFrom, validTo: p.validTo })),
         carrier: truck.carrier,
-        driver: truck.driver,
-        phone: truck.phone,
+        driverId: driverToday?.id ?? null,
+        driver: driverToday?.name ?? '',
+        phone: driverToday?.phone ?? '',
+        driverWarnings: driverToday ? certWarnings(certsByDriver.get(driverToday.id) ?? [], today) : [],
         trailer: headerRow.trailer,
         trailerTypePl: headerRow.trailerTypePl,
         active: truck.active,
         copyText: headerRow.copyText,
         required: headerRow.required,
+        driverChanges: [...ctx.drivers.changesOf(truckId)].reverse().map(c => ({
+          id: c.id,
+          day: c.day,
+          driverId: c.driverId,
+          driver: ctx.drivers.name(c.driverId),
+          createdBy: c.createdBy,
+          createdAt: c.createdAt,
+        })),
       },
       from: periodFrom,
       to: periodTo,
@@ -1021,7 +1119,7 @@ export class BoardService {
       })),
       ...overrides.map(ov => ({
         at: ov.created_at,
-        text: `ręczna poprawka (${ov.field}): ${ov.value}${ov.active ? '' : ` — zastąpiona: ${ov.superseded_note ?? ''}`}`,
+        text: `ręczna poprawka (${ov.field}): ${ov.field.startsWith('driver') ? ctx.drivers.name(Number(ov.value) || null) : ov.value}${ov.active ? '' : ` — zastąpiona: ${ov.superseded_note ?? ''}`}`,
       })),
     ].sort((a, b) => a.at.localeCompare(b.at))
 
@@ -1069,9 +1167,20 @@ export class BoardService {
         kmEmpty: l.kmEmpty,
         kmEmptyFrom: l.kmEmptyFrom ? ctx.places.name(l.kmEmptyFrom) : null,
         kmEstimated: l.kmEstimated,
+        ...((): { driver: string; driverManual: boolean; drivers: Array<{ id: number | null; name: string }> } => {
+          const d = legDriversOf(o, l, ctx)
+          return { driver: d.text, driverManual: d.manual, drivers: d.drivers.map(x => ({ id: x.id, name: x.name })) }
+        })(),
       })),
       notes: notes.map(n => ({ id: n.id, text: n.text, createdBy: n.created_by, createdAt: n.created_at })),
-      overrides: overrides.filter(ov => ov.active === 1).map(ov => ({ field: ov.field, value: ov.value, createdAt: ov.created_at })),
+      overrides: overrides
+        .filter(ov => ov.active === 1)
+        .map(ov => ({
+          field: ov.field,
+          value: ov.value,
+          display: ov.field.startsWith('driver') ? ctx.drivers.name(Number(ov.value) || null) : ov.value,
+          createdAt: ov.created_at,
+        })),
       issues: issues.map(i => ({ id: i.id, kind: i.kind, message: i.message })),
       history,
     }
@@ -1123,6 +1232,10 @@ export class BoardService {
 
   async setOverride(orderNo: string, field: string, value: string) {
     if (!(OVERRIDE_FIELDS as readonly string[]).includes(field)) throw new BoardError('BAD_FIELD', 'Tego pola nie można poprawić.')
+    if (field.startsWith('driver')) {
+      const driver = await this.db.selectFrom('board_drivers').select('id').where('id', '=', Number(value) || 0).executeTakeFirst()
+      if (!driver) throw new BoardError('DRIVER_NOT_FOUND', 'Wybierz kierowcę z listy.')
+    }
     const row = await this.requireOrder(orderNo)
     const appValue =
       field === 'rev' ? row.rev_eur : field === 'cost' ? row.cost_eur : field === 'trailer' ? row.trailer_raw : field === 'prz' ? row.notes_app : null
@@ -1165,6 +1278,359 @@ export class BoardService {
     const row = await this.db.selectFrom('board_orders').selectAll().where('order_no', '=', orderNo).executeTakeFirst()
     if (!row) throw new BoardError('ORDER_NOT_FOUND', 'Nie ma takiego zlecenia na tablicy.', 404)
     return row
+  }
+
+  // ---------------------------------------------------------------- drivers (kierowcy)
+
+  private filesRoot(): string {
+    return this.options.filesDir ?? join('data', 'pliki')
+  }
+
+  private certPath(storedName: string): string {
+    return join(this.filesRoot(), 'certyfikaty', storedName)
+  }
+
+  /** Certificates (kind + valid to) of every driver, for the board warnings. */
+  private async certsByDriver(): Promise<Map<number, Array<{ kind: string; validTo: string | null }>>> {
+    const rows = await this.db.selectFrom('board_driver_certs').select(['driver_id', 'kind', 'valid_to']).where('deleted', '=', 0).execute()
+    const map = new Map<number, Array<{ kind: string; validTo: string | null }>>()
+    for (const r of rows) {
+      const list = map.get(r.driver_id) ?? []
+      list.push({ kind: r.kind, validTo: r.valid_to })
+      map.set(r.driver_id, list)
+    }
+    return map
+  }
+
+  async drivers(): Promise<DriverListItem[]> {
+    const ctx = await loadBoardContext(this.db)
+    const today = this.today()
+    const certs = await this.db.selectFrom('board_driver_certs').selectAll().where('deleted', '=', 0).execute()
+    const fileCounts = await this.db
+      .selectFrom('board_driver_cert_files')
+      .select(['cert_id', eb => eb.fn.countAll<number>().as('n')])
+      .groupBy('cert_id')
+      .execute()
+    const filesOf = new Map(fileCounts.map(f => [f.cert_id, Number(f.n)]))
+    const truckIds = ctx.fleet.trucks.map(t => t.id)
+    return ctx.drivers
+      .all()
+      .map(d => {
+        const own = certs.filter(c => c.driver_id === d.id)
+        const avsec = own
+          .filter(c => kindKeyOf(c.kind) === 'AVSEC')
+          .sort((a, b) => (b.valid_to ?? '9999').localeCompare(a.valid_to ?? '9999'))[0]
+        return {
+          id: d.id,
+          name: d.name,
+          phone: d.phone,
+          carrier: d.carrier,
+          notes: d.notes,
+          active: d.active,
+          trucks: ctx.drivers.trucksOf(d.id, today, truckIds).map(id => ({ id, plate: ctx.fleet.plateOn(ctx.fleet.byId(id)!, today) })),
+          avsec: avsec ? { validTo: avsec.valid_to, number: avsec.number, files: filesOf.get(avsec.id) ?? 0, ...certStatus(avsec.valid_to, today) } : null,
+          certCount: own.length,
+          warnings: certWarnings(
+            own.map(c => ({ kind: c.kind, validTo: c.valid_to })),
+            today,
+          ),
+        }
+      })
+      .sort((a, b) => Number(b.active) - Number(a.active) || a.carrier.localeCompare(b.carrier, 'pl') || a.name.localeCompare(b.name, 'pl'))
+  }
+
+  async driverDetails(id: number): Promise<DriverDetails> {
+    const ctx = await loadBoardContext(this.db)
+    const d = ctx.drivers.byId.get(id)
+    if (!d) throw new BoardError('DRIVER_NOT_FOUND', 'Nie ma takiego kierowcy.', 404)
+    const today = this.today()
+    const certs = await this.db.selectFrom('board_driver_certs').selectAll().where('driver_id', '=', id).where('deleted', '=', 0).execute()
+    const files = certs.length
+      ? await this.db
+          .selectFrom('board_driver_cert_files')
+          .selectAll()
+          .where(
+            'cert_id',
+            'in',
+            certs.map(c => c.id),
+          )
+          .orderBy('id')
+          .execute()
+      : []
+    // Tractors this driver drove: each change to him, until the next change of that tractor.
+    const history: DriverDetails['history'] = []
+    for (const t of ctx.fleet.trucks) {
+      const changes = ctx.drivers.changesOf(t.id)
+      changes.forEach((c, i) => {
+        if (c.driverId !== id) return
+        const next = changes[i + 1]
+        history.push({
+          truckId: t.id,
+          plate: ctx.fleet.plateOn(t, next ? addDays(next.day, -1) : today),
+          from: c.day,
+          to: next ? addDays(next.day, -1) : null,
+        })
+      })
+    }
+    history.sort((a, b) => b.from.localeCompare(a.from))
+    return {
+      driver: { id: d.id, name: d.name, phone: d.phone, carrier: d.carrier, notes: d.notes, active: d.active },
+      trucks: ctx.drivers
+        .trucksOf(
+          id,
+          today,
+          ctx.fleet.trucks.map(t => t.id),
+        )
+        .map(tid => ({ id: tid, plate: ctx.fleet.plateOn(ctx.fleet.byId(tid)!, today) })),
+      history,
+      certs: certs
+        .map(c => ({
+          id: c.id,
+          kind: c.kind,
+          number: c.number,
+          validTo: c.valid_to,
+          notes: c.notes,
+          ...certStatus(c.valid_to, today),
+          createdBy: c.created_by,
+          updatedBy: c.updated_by,
+          updatedAt: c.updated_at,
+          files: files
+            .filter(f => f.cert_id === c.id)
+            .map(f => ({ id: f.id, filename: f.filename, mime: f.mime, size: f.size, uploadedBy: f.uploaded_by, uploadedAt: f.uploaded_at })),
+        }))
+        .sort((a, b) => (kindKeyOf(a.kind) === 'AVSEC' ? 0 : 1) - (kindKeyOf(b.kind) === 'AVSEC' ? 0 : 1) || (b.validTo ?? '').localeCompare(a.validTo ?? '')),
+      warnings: certWarnings(
+        certs.map(c => ({ kind: c.kind, validTo: c.valid_to })),
+        today,
+      ),
+    }
+  }
+
+  async createDriver(input: { name: string; phone?: string | undefined; carrier?: string | undefined; notes?: string | undefined }): Promise<number> {
+    const name = cleanName(input.name)
+    if (!name) throw new BoardError('EMPTY_DRIVER', 'Podaj imię i nazwisko kierowcy.')
+    const carrier = (input.carrier ?? '').trim()
+    const all = await this.db.selectFrom('board_drivers').select(['id', 'name', 'carrier']).execute()
+    if (all.some(d => sameName(d.name, name) && sameName(d.carrier, carrier))) {
+      throw new BoardError('DRIVER_EXISTS', `${name} już jest na liście kierowców${carrier ? ` (${carrier})` : ''}.`)
+    }
+    const row = await this.db
+      .insertInto('board_drivers')
+      .values({ name, phone: (input.phone ?? '').trim(), carrier, notes: (input.notes ?? '').trim(), created_at: this.now() })
+      .returning('id')
+      .executeTakeFirstOrThrow()
+    return row.id
+  }
+
+  /** Same name and carrier → the existing driver (used when a tractor is added with its driver). */
+  private async findOrCreateDriver(input: { name: string; phone: string; carrier: string }): Promise<number> {
+    const name = cleanName(input.name)
+    const all = await this.db.selectFrom('board_drivers').select(['id', 'name', 'carrier']).execute()
+    const found = all.find(d => sameName(d.name, name) && sameName(d.carrier, input.carrier))
+    return found ? found.id : this.createDriver(input)
+  }
+
+  async updateDriver(id: number, patch: { name?: string | undefined; phone?: string | undefined; carrier?: string | undefined; notes?: string | undefined; active?: boolean | undefined }) {
+    const set: Record<string, unknown> = {}
+    if (patch.name !== undefined) {
+      const name = cleanName(patch.name)
+      if (!name) throw new BoardError('EMPTY_DRIVER', 'Podaj imię i nazwisko kierowcy.')
+      set['name'] = name
+    }
+    if (patch.phone !== undefined) set['phone'] = patch.phone.trim()
+    if (patch.carrier !== undefined) set['carrier'] = patch.carrier.trim()
+    if (patch.notes !== undefined) set['notes'] = patch.notes.trim()
+    if (patch.active !== undefined) set['active'] = patch.active ? 1 : 0
+    if (Object.keys(set).length === 0) return
+    const res = await this.db.updateTable('board_drivers').set(set).where('id', '=', id).executeTakeFirst()
+    if (Number(res.numUpdatedRows) === 0) throw new BoardError('DRIVER_NOT_FOUND', 'Nie ma takiego kierowcy.', 404)
+  }
+
+  /**
+   * Driver of a tractor from a day (one change per tractor and day — a second one replaces it).
+   * `driverId` null = no driver. With `releaseOther` the driver leaves any other tractor he is on
+   * that day (drivers move between a carrier's tractors).
+   */
+  async setDriverChange(input: { truckId: number; day: string; driverId: number | null; releaseOther?: boolean | undefined }): Promise<{ released: string[] }> {
+    if (!isRealDay(input.day)) throw new BoardError('BAD_DATE', 'Podaj poprawną datę.')
+    const truck = await this.db.selectFrom('board_trucks').select('id').where('id', '=', input.truckId).executeTakeFirst()
+    if (!truck) throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
+    if (input.driverId !== null && !(await this.db.selectFrom('board_drivers').select('id').where('id', '=', input.driverId).executeTakeFirst())) {
+      throw new BoardError('DRIVER_NOT_FOUND', 'Nie ma takiego kierowcy.', 404)
+    }
+    const released: string[] = []
+    const ctx = await loadBoardContext(this.db)
+    const others =
+      input.releaseOther && input.driverId !== null
+        ? ctx.drivers.trucksOf(
+            input.driverId,
+            input.day,
+            ctx.fleet.trucks.map(t => t.id).filter(id => id !== input.truckId),
+          )
+        : []
+    await this.db.transaction().execute(async trx => {
+      const upsert = async (truckId: number, driverId: number | null) =>
+        trx
+          .insertInto('board_driver_changes')
+          .values({ truck_id: truckId, driver_id: driverId, day: input.day, created_by: this.actor(), created_at: this.now() })
+          .onConflict(oc => oc.columns(['truck_id', 'day']).doUpdateSet({ driver_id: driverId, created_by: this.actor(), created_at: this.now() }))
+          .execute()
+      await upsert(input.truckId, input.driverId)
+      for (const other of others) {
+        await upsert(other, null)
+        released.push(ctx.fleet.plateOn(ctx.fleet.byId(other)!, input.day))
+      }
+    })
+    return { released }
+  }
+
+  async updateDriverChange(id: number, patch: { day?: string | undefined; driverId?: number | null | undefined }) {
+    const row = await this.db.selectFrom('board_driver_changes').selectAll().where('id', '=', id).executeTakeFirst()
+    if (!row) throw new BoardError('CHANGE_NOT_FOUND', 'Nie ma takiej zmiany kierowcy.', 404)
+    const day = patch.day ?? row.day
+    if (!isRealDay(day)) throw new BoardError('BAD_DATE', 'Podaj poprawną datę.')
+    const driverId = patch.driverId !== undefined ? patch.driverId : row.driver_id
+    if (driverId !== null && !(await this.db.selectFrom('board_drivers').select('id').where('id', '=', driverId).executeTakeFirst())) {
+      throw new BoardError('DRIVER_NOT_FOUND', 'Nie ma takiego kierowcy.', 404)
+    }
+    if (day !== row.day) {
+      const clash = await this.db.selectFrom('board_driver_changes').select('id').where('truck_id', '=', row.truck_id).where('day', '=', day).executeTakeFirst()
+      if (clash) throw new BoardError('CHANGE_EXISTS', 'Tego dnia auto ma już zmianę kierowcy — popraw tamtą albo ją usuń.')
+    }
+    await this.db
+      .updateTable('board_driver_changes')
+      .set({ day, driver_id: driverId, created_by: this.actor(), created_at: this.now() })
+      .where('id', '=', id)
+      .execute()
+  }
+
+  async deleteDriverChange(id: number) {
+    const res = await this.db.deleteFrom('board_driver_changes').where('id', '=', id).executeTakeFirst()
+    if (Number(res.numDeletedRows) === 0) throw new BoardError('CHANGE_NOT_FOUND', 'Nie ma takiej zmiany kierowcy.', 404)
+  }
+
+  // ---------------------------------------------------------------- certificates (certyfikaty)
+
+  private certInput(input: { kind?: string | undefined; number?: string | undefined; validTo?: string | null | undefined; notes?: string | undefined }) {
+    const out: Record<string, unknown> = {}
+    if (input.kind !== undefined) {
+      const kind = input.kind.replace(/\s+/g, ' ').trim()
+      if (!kind) throw new BoardError('EMPTY_KIND', 'Podaj rodzaj certyfikatu (np. AVSEC).')
+      out['kind'] = kindKeyOf(kind) === 'AVSEC' ? 'AVSEC' : kind
+    }
+    if (input.number !== undefined) out['number'] = input.number.trim()
+    if (input.validTo !== undefined) {
+      if (input.validTo !== null && !isRealDay(input.validTo)) throw new BoardError('BAD_DATE', 'Podaj poprawną datę ważności.')
+      out['valid_to'] = input.validTo
+    }
+    if (input.notes !== undefined) out['notes'] = input.notes.trim()
+    return out
+  }
+
+  async createCert(driverId: number, input: { kind: string; number?: string | undefined; validTo?: string | null | undefined; notes?: string | undefined }): Promise<number> {
+    if (!(await this.db.selectFrom('board_drivers').select('id').where('id', '=', driverId).executeTakeFirst())) {
+      throw new BoardError('DRIVER_NOT_FOUND', 'Nie ma takiego kierowcy.', 404)
+    }
+    const values = this.certInput(input)
+    const now = this.now()
+    const row = await this.db
+      .insertInto('board_driver_certs')
+      .values({
+        driver_id: driverId,
+        kind: String(values['kind']),
+        number: (values['number'] as string | undefined) ?? '',
+        valid_to: (values['valid_to'] as string | null | undefined) ?? null,
+        notes: (values['notes'] as string | undefined) ?? '',
+        created_by: this.actor(),
+        created_at: now,
+        updated_by: this.actor(),
+        updated_at: now,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow()
+    return row.id
+  }
+
+  async updateCert(id: number, patch: { kind?: string | undefined; number?: string | undefined; validTo?: string | null | undefined; notes?: string | undefined }) {
+    const set = this.certInput(patch)
+    if (Object.keys(set).length === 0) return
+    const res = await this.db
+      .updateTable('board_driver_certs')
+      .set({ ...set, updated_by: this.actor(), updated_at: this.now() })
+      .where('id', '=', id)
+      .where('deleted', '=', 0)
+      .executeTakeFirst()
+    if (Number(res.numUpdatedRows) === 0) throw new BoardError('CERT_NOT_FOUND', 'Nie ma takiego certyfikatu.', 404)
+  }
+
+  /** Removes the certificate and its scans from disk (personal data is not kept after a delete). */
+  async deleteCert(id: number) {
+    const cert = await this.db.selectFrom('board_driver_certs').select('id').where('id', '=', id).where('deleted', '=', 0).executeTakeFirst()
+    if (!cert) throw new BoardError('CERT_NOT_FOUND', 'Nie ma takiego certyfikatu.', 404)
+    // Scans first: if anything fails, the certificate is still there to retry.
+    const files = await this.db.selectFrom('board_driver_cert_files').select('id').where('cert_id', '=', id).execute()
+    for (const f of files) await this.deleteCertFile(f.id)
+    await this.db.updateTable('board_driver_certs').set({ deleted: 1, updated_by: this.actor(), updated_at: this.now() }).where('id', '=', id).execute()
+  }
+
+  async addCertFile(certId: number, filename: string, data: Uint8Array): Promise<number> {
+    const cert = await this.db.selectFrom('board_driver_certs').select('id').where('id', '=', certId).where('deleted', '=', 0).executeTakeFirst()
+    if (!cert) throw new BoardError('CERT_NOT_FOUND', 'Nie ma takiego certyfikatu.', 404)
+    if (data.length === 0) throw new BoardError('EMPTY_FILE', 'Plik jest pusty.')
+    if (data.length > CERT_FILE_MAX_BYTES) throw new BoardError('FILE_TOO_BIG', 'Plik jest za duży — najwyżej 15 MB.')
+    const type = sniffScan(data)
+    if (!type) throw new BoardError('BAD_FILE_TYPE', 'Wgraj skan jako PDF, JPG albo PNG.')
+    const storedName = `${randomUUID()}.${type.ext}`
+    const path = this.certPath(storedName)
+    await mkdir(join(this.filesRoot(), 'certyfikaty'), { recursive: true })
+    await writeFile(path, data)
+    try {
+      const row = await this.db
+        .insertInto('board_driver_cert_files')
+        .values({
+          cert_id: certId,
+          filename: cleanFilename(filename, type.ext),
+          stored_name: storedName,
+          mime: type.mime,
+          size: data.length,
+          uploaded_by: this.actor(),
+          uploaded_at: this.now(),
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow()
+      return row.id
+    } catch (error) {
+      await rm(path, { force: true })
+      throw error
+    }
+  }
+
+  async certFile(id: number): Promise<{ filename: string; mime: string; data: Buffer }> {
+    const row = await this.db
+      .selectFrom('board_driver_cert_files')
+      .innerJoin('board_driver_certs', 'board_driver_certs.id', 'board_driver_cert_files.cert_id')
+      .select(['board_driver_cert_files.filename', 'board_driver_cert_files.stored_name', 'board_driver_cert_files.mime'])
+      .where('board_driver_cert_files.id', '=', id)
+      .where('board_driver_certs.deleted', '=', 0)
+      .executeTakeFirst()
+    if (!row) throw new BoardError('FILE_NOT_FOUND', 'Nie ma takiego pliku.', 404)
+    try {
+      return { filename: row.filename, mime: row.mime, data: await readFile(this.certPath(row.stored_name)) }
+    } catch {
+      throw new BoardError('FILE_MISSING', 'Pliku nie ma na dysku (folder data\\pliki). Wgraj skan jeszcze raz.', 404)
+    }
+  }
+
+  async deleteCertFile(id: number) {
+    const row = await this.db.selectFrom('board_driver_cert_files').select(['stored_name']).where('id', '=', id).executeTakeFirst()
+    if (!row) throw new BoardError('FILE_NOT_FOUND', 'Nie ma takiego pliku.', 404)
+    // Remove from disk first (a scan open in a viewer on Windows can refuse — then nothing changes and the user can retry).
+    try {
+      await rm(this.certPath(row.stored_name), { force: true })
+    } catch {
+      throw new BoardError('FILE_BUSY', 'Nie udało się usunąć pliku z dysku — zamknij podgląd skanu i spróbuj ponownie.', 409)
+    }
+    await this.db.deleteFrom('board_driver_cert_files').where('id', '=', id).execute()
   }
 
   // ---------------------------------------------------------------- registries
@@ -1214,8 +1680,17 @@ export class BoardService {
 
   async fleet() {
     const ctx = await loadBoardContext(this.db)
-    const today = this.now().slice(0, 10)
-    return ctx.fleet.trucks.map(t => ({ ...t, currentPlate: ctx.fleet.plateOn(t, today) }))
+    const today = this.today()
+    return ctx.fleet.trucks.map(truck => {
+      const { driver: _legacyDriver, phone: _legacyPhone, ...t } = truck
+      const d = ctx.drivers.driverOn(t.id, today)
+      return { ...t, currentPlate: ctx.fleet.plateOn(truck, today), driverId: d?.id ?? null, driver: d?.name ?? '' }
+    })
+  }
+
+  /** The board's "today": the Polish date. */
+  private today(): string {
+    return warsawNow(this.now()).slice(0, 10)
   }
 
   async createTruck(input: { plate: string; validFrom: string; carrier?: string; driver?: string; phone?: string; trailerPlate?: string }) {
@@ -1228,8 +1703,6 @@ export class BoardService {
       .insertInto('board_trucks')
       .values({
         carrier: input.carrier ?? '',
-        driver: input.driver ?? '',
-        phone: input.phone ?? '',
         trailer_plate: input.trailerPlate ? normalizePlate(input.trailerPlate) : null,
         sort_order: Number(max?.m ?? 0) + 1,
       })
@@ -1237,14 +1710,16 @@ export class BoardService {
       .executeTakeFirstOrThrow()
     await this.db.insertInto('board_truck_plates').values({ truck_id: truck.id, plate, valid_from: input.validFrom, valid_to: null }).execute()
     await this.db.deleteFrom('board_ignored_plates').where('plate', '=', plate).execute()
+    if (input.driver?.trim()) {
+      const driverId = await this.findOrCreateDriver({ name: input.driver, phone: input.phone ?? '', carrier: input.carrier ?? '' })
+      await this.setDriverChange({ truckId: truck.id, day: FROM_THE_BEGINNING, driverId })
+    }
     return truck.id
   }
 
-  async updateTruck(id: number, patch: { carrier?: string; driver?: string; phone?: string; trailerPlate?: string | null; notes?: string; active?: boolean; sortOrder?: number }) {
+  async updateTruck(id: number, patch: { carrier?: string; trailerPlate?: string | null; notes?: string; active?: boolean; sortOrder?: number }) {
     const set: Record<string, unknown> = {}
     if (patch.carrier !== undefined) set['carrier'] = patch.carrier
-    if (patch.driver !== undefined) set['driver'] = patch.driver
-    if (patch.phone !== undefined) set['phone'] = patch.phone
     if (patch.trailerPlate !== undefined) set['trailer_plate'] = patch.trailerPlate ? normalizePlate(patch.trailerPlate) : null
     if (patch.notes !== undefined) set['notes'] = patch.notes
     if (patch.active !== undefined) set['active'] = patch.active ? 1 : 0
@@ -1281,10 +1756,34 @@ export class BoardService {
   async trailers() {
     const ctx = await loadBoardContext(this.db)
     const aliases = await this.db.selectFrom('board_trailer_aliases').selectAll().execute()
-    return ctx.trailers.all().map(t => ({
-      ...t,
-      aliases: aliases.filter(a => a.trailer_plate === t.plate && a.alias !== t.plate).map(a => a.alias),
-    }))
+    const today = this.today()
+    return ctx.trailers.all().map(t => {
+      const fixed = ctx.fleet.trucks.find(tr => tr.trailerPlate === t.plate) ?? null
+      return {
+        ...t,
+        aliases: aliases.filter(a => a.trailer_plate === t.plate && a.alias !== t.plate).map(a => a.alias),
+        fixedTruckId: fixed?.id ?? null,
+        fixedTruckPlate: fixed ? ctx.fleet.plateOn(fixed, today) : null,
+      }
+    })
+  }
+
+  /**
+   * "Stały ciągnik" of a trailer (moved here from the tractor list, 08.10.2026): only for a carrier
+   * with one set. null = the trailer rotates; a tractor keeps at most one fixed trailer.
+   */
+  async setTrailerFixedTruck(rawPlate: string, truckId: number | null) {
+    const plate = normalizePlate(rawPlate)
+    if (!(await this.db.selectFrom('board_trailers').select('plate').where('plate', '=', plate).executeTakeFirst())) {
+      throw new BoardError('TRAILER_NOT_FOUND', `Naczepy ${plate} nie ma w bazie.`, 404)
+    }
+    if (truckId !== null && !(await this.db.selectFrom('board_trucks').select('id').where('id', '=', truckId).executeTakeFirst())) {
+      throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
+    }
+    await this.db.transaction().execute(async trx => {
+      await trx.updateTable('board_trucks').set({ trailer_plate: null }).where('trailer_plate', '=', plate).execute()
+      if (truckId !== null) await trx.updateTable('board_trucks').set({ trailer_plate: plate }).where('id', '=', truckId).execute()
+    })
   }
 
   /**
@@ -1391,6 +1890,19 @@ export class BoardService {
   }
 }
 
+/** Text for "Kopiuj" (sent to clients in English). */
+function copyTextFor(plate: string, trailer: string | null, typeEn: string, driver: DriverRecord | null): string {
+  return `Truck ${plate}, Trailer ${trailer ?? '—'} (${typeEn}), Driver: ${driver?.name ?? ''}${driver?.phone ? ` ${formatPhone(driver.phone)}` : ''}`
+}
+
+/** Driver(s) of a fleet leg; a manual correction ("driver" / "driver:1" = driver id) wins. */
+function legDriversOf(o: ComputedOrder, l: ComputedLeg, ctx: BoardContext): LegDrivers {
+  if (l.kind !== 'fleet' || l.truckId === null) return { drivers: [], text: '', manual: false }
+  const ov = l.index === 0 ? (o.overrides['driver'] ?? o.overrides['driver:0']) : o.overrides[`driver:${l.index}`]
+  const manual = ov ? Number(ov.value) : null
+  return ctx.drivers.legDrivers(l.truckId, l.startDate, l.endDate, manual !== null && Number.isInteger(manual) && manual > 0 ? manual : null)
+}
+
 /** "Warszawa → Budapeszt (przez Kraków)" */
 function legTitle(l: ComputedLeg, ctx: BoardContext): string {
   const from = l.stops[0] ? (ctx.places.name(l.stops[0].code) === '?' ? l.stops[0].raw : ctx.places.name(l.stops[0].code)) : '?'
@@ -1427,6 +1939,15 @@ function serviceListOrder(a: ServiceDto, b: ServiceDto): number {
   const ka = `${a.startDay ?? ''}T${a.startTime ?? ''}`
   const kb = `${b.startDay ?? ''}T${b.startTime ?? ''}`
   return pa <= 2 ? ka.localeCompare(kb) : kb.localeCompare(ka)
+}
+
+function cleanName(raw: string): string {
+  return raw.replace(/\s+/g, ' ').trim()
+}
+
+/** Names compared without case, diacritics and extra spaces. */
+function sameName(a: string, b: string): boolean {
+  return aliasKey(a) === aliasKey(b)
 }
 
 function round2(n: number): number {

@@ -82,4 +82,22 @@ export const OVERRIDE_LABELS: Record<string, string> = {
   km_empty: 'Km puste',
   'km_loaded:1': 'Km z ładunkiem — 2. odcinek',
   'km_empty:1': 'Km puste — 2. odcinek',
+  driver: 'Kierowca',
+  'driver:1': 'Kierowca — 2. odcinek',
+}
+
+/** "2026-10-20" → "20.10.2026" */
+export function dmy(iso: string | null | undefined): string {
+  return iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}` : ''
+}
+
+/** Scan URLs (behind the session cookie). */
+export function certFileUrl(id: number, download = false): string {
+  return `/api/board/cert-files/${id}${download ? '?download=1' : ''}`
+}
+
+export function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`
+  return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} MB`
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import {
   boardApi,
   errorMessage,
+  type Driver,
   type FleetTruck,
   type GeocodeCandidate,
   type Place,
@@ -12,11 +13,14 @@ import {
 } from './boardApi.js'
 import { addDaysIso, dm, todayIso } from './format.js'
 import { Icon } from './Icon.js'
+import { DriverForm } from './DriverPage.js'
+import { CERT_STYLE, certStatusText } from './driversUi.js'
 
 /**
- * "Flota": the registries the board depends on — trucks (with plate history),
- * trailers (types + typo aliases), places (aliases, coordinates, manual
- * distances) and the warning thresholds used by the review queue.
+ * "Flota": the registries the board depends on — drivers (with certificates),
+ * trucks (with plate history), trailers (types, typo aliases, fixed tractor),
+ * places (aliases, coordinates, manual distances) and the warning thresholds
+ * used by the review queue.
  */
 
 const INPUT = 'h-10 rounded-lg border border-[#C9CEC6] bg-white px-3 text-sm'
@@ -26,9 +30,10 @@ const CARD = 'flex flex-col gap-4 rounded-xl border border-[#D5D9D3] bg-white px
 const TH = 'px-3 py-2 text-left text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]'
 const TD = 'px-3 py-2.5 align-top'
 
-type Section = 'trucks' | 'trailers' | 'list' | 'places' | 'thresholds'
+type Section = 'drivers' | 'trucks' | 'trailers' | 'list' | 'places' | 'thresholds'
 
 const SECTIONS: Array<{ id: Section; label: string }> = [
+  { id: 'drivers', label: 'Kierowcy' },
   { id: 'trucks', label: 'Ciągniki' },
   { id: 'trailers', label: 'Naczepy' },
   { id: 'list', label: 'Wklej stan floty' },
@@ -36,8 +41,16 @@ const SECTIONS: Array<{ id: Section; label: string }> = [
   { id: 'thresholds', label: 'Progi ostrzeżeń' },
 ]
 
-export function FleetPage({ onChanged, onOpenTruck }: { onChanged?: () => void; onOpenTruck?: (truckId: number) => void }) {
-  const [section, setSection] = useState<Section>('trucks')
+export function FleetPage({
+  onChanged,
+  onOpenTruck,
+  onOpenDriver,
+}: {
+  onChanged?: () => void
+  onOpenTruck?: (truckId: number) => void
+  onOpenDriver?: (driverId: number) => void
+}) {
+  const [section, setSection] = useState<Section>('drivers')
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-5 p-6">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -59,6 +72,7 @@ export function FleetPage({ onChanged, onOpenTruck }: { onChanged?: () => void; 
           </ul>
         </nav>
       </div>
+      {section === 'drivers' && <DriversSection {...(onOpenDriver ? { onOpenDriver } : {})} />}
       {section === 'trucks' && <TrucksSection {...(onChanged ? { onChanged } : {})} {...(onOpenTruck ? { onOpenTruck } : {})} />}
       {section === 'trailers' && <TrailersSection />}
       {section === 'list' && <FleetListSection {...(onChanged ? { onChanged } : {})} />}
@@ -109,9 +123,193 @@ function useAction() {
   return { busy, error, done, run, setError }
 }
 
+/** A tractor of the trailer's carrier ("ABC Transport" = "ABC Transport Jan Kowalski"); a trailer without a carrier fits any. */
+function sameCarrierName(a: string, b: string): boolean {
+  const k = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim()
+  const ka = k(a)
+  const kb = k(b)
+  if (!kb) return true
+  if (!ka) return false
+  return ka === kb || ka.startsWith(`${kb} `) || kb.startsWith(`${ka} `)
+}
+
 function fmtDay(iso: string | null): string {
   if (!iso) return ''
   return `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}`
+}
+
+// ---------------------------------------------------------------- drivers
+
+function DriversSection({ onOpenDriver }: { onOpenDriver?: (driverId: number) => void }) {
+  const [drivers, setDrivers] = useState<Driver[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [editing, setEditing] = useState<number | null>(null)
+  const action = useAction()
+
+  const load = useCallback(async () => {
+    try {
+      setDrivers(await boardApi.drivers())
+      setLoadError(null)
+    } catch (e) {
+      setLoadError(errorMessage(e, 'Nie udało się wczytać kierowców.'))
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const carriers = useMemo(() => [...new Set((drivers ?? []).map(d => d.carrier).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pl')), [drivers])
+  const active = (drivers ?? []).filter(d => d.active)
+  const inactive = (drivers ?? []).filter(d => !d.active)
+
+  const row = (d: Driver) =>
+    editing === d.id ? (
+      <tr key={d.id} className="border-b border-[#ECEEEA] bg-[#F6F7F4]">
+        <td colSpan={7} className="px-3 py-3">
+          <DriverForm
+            initial={d}
+            carriers={carriers}
+            busy={action.busy}
+            onCancel={() => setEditing(null)}
+            onSave={async patch => {
+              const ok = await action.run(
+                async () => {
+                  await boardApi.updateDriver(d.id, patch)
+                  await load()
+                },
+                `Zapisano ${patch.name}.`,
+                'Nie udało się zapisać kierowcy.',
+              )
+              if (ok) setEditing(null)
+            }}
+          />
+        </td>
+      </tr>
+    ) : (
+      <tr key={d.id} className={`border-b border-[#ECEEEA] ${d.active ? '' : 'text-[#8A939C]'}`}>
+        <td className={`${TD} font-semibold`}>{d.name}</td>
+        <td className={`${TD} font-mono`}>{d.phone || <span className="text-[#8A939C]">—</span>}</td>
+        <td className={TD}>{d.carrier || <span className="text-[#8A939C]">—</span>}</td>
+        <td className={`${TD} font-mono`}>{d.trucks.length ? d.trucks.map(t => t.plate).join(', ') : <span className="text-[#8A939C]">—</span>}</td>
+        <td className={TD}>
+          {d.avsec ? (
+            <span className="inline-flex flex-col items-start gap-0.5">
+              <span className="rounded px-2 py-0.5 text-xs font-semibold" style={{ background: CERT_STYLE[d.avsec.status].bg, color: CERT_STYLE[d.avsec.status].fg }}>
+                {certStatusText(d.avsec.status, d.avsec.validTo, d.avsec.daysLeft)}
+              </span>
+              <span className="text-xs text-[#545B63]">{d.avsec.files ? `skan: ${d.avsec.files}` : 'bez skanu'}</span>
+            </span>
+          ) : (
+            <span className="text-[#B4690E]">brak</span>
+          )}
+        </td>
+        <td className={TD}>
+          {d.active ? (
+            <span className="rounded bg-[#E3F1E6] px-2 py-0.5 text-xs font-semibold text-[#14532D]">aktywny</span>
+          ) : (
+            <span className="rounded bg-[#ECEEEA] px-2 py-0.5 text-xs font-semibold text-[#545B63]">nieaktywny</span>
+          )}
+        </td>
+        <td className={`${TD} whitespace-nowrap text-right`}>
+          <span className="inline-flex gap-2">
+            <button type="button" onClick={() => setEditing(d.id)} className={BTN} aria-label={`Edytuj ${d.name}`}>
+              <Icon name="pencil" size={14} /> Edytuj
+            </button>
+            {onOpenDriver && (
+              <button type="button" onClick={() => onOpenDriver(d.id)} className={BTN_PRIMARY} aria-label={`Certyfikaty: ${d.name}`}>
+                Certyfikaty{d.certCount ? ` (${d.certCount})` : ''} <Icon name="right" size={14} />
+              </button>
+            )}
+          </span>
+        </td>
+      </tr>
+    )
+
+  return (
+    <section aria-labelledby="drivers-h" className="flex flex-col gap-4">
+      <div className={CARD}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 id="drivers-h" className="text-base font-bold">
+            Kierowcy
+          </h2>
+          <span className="text-[13px] text-[#545B63]">
+            Kierowca należy do firmy, nie do ciągnika — kto jeździ którym autem, ustawiasz na tablicy („+” pod dniem → Zmiana kierowcy). Certyfikaty i skany po
+            prawej.
+          </span>
+        </div>
+        <Alert text={loadError ?? action.error} />
+        <Done text={action.done} />
+        {drivers && (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-[#D5D9D3]">
+                  <th className={TH}>Kierowca</th>
+                  <th className={TH}>Telefon</th>
+                  <th className={TH}>Firma</th>
+                  <th className={TH}>Ciągnik (dziś)</th>
+                  <th className={TH}>AVSEC</th>
+                  <th className={TH}>Status</th>
+                  <th className={TH}>
+                    <span className="sr-only">Akcje</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {active.map(row)}
+                {active.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-4 text-sm text-[#545B63]">
+                      Brak kierowców — dodaj pierwszego niżej.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {inactive.length > 0 && (
+          <details className="rounded-lg bg-[#F6F7F4] px-3 py-2">
+            <summary className="cursor-pointer text-sm font-semibold">Nieaktywni ({inactive.length})</summary>
+            <table className="mt-2 w-full border-collapse text-sm">
+              <tbody>{inactive.map(row)}</tbody>
+            </table>
+          </details>
+        )}
+      </div>
+      {adding ? (
+        <div className={CARD}>
+          <h2 className="text-base font-bold">Nowy kierowca</h2>
+          <DriverForm
+            initial={{ name: '', phone: '', carrier: '', notes: '', active: true }}
+            carriers={carriers}
+            busy={action.busy}
+            submitLabel="Dodaj kierowcę"
+            onCancel={() => setAdding(false)}
+            onSave={async patch => {
+              const ok = await action.run(
+                async () => {
+                  await boardApi.createDriver({ name: patch.name, phone: patch.phone, carrier: patch.carrier, notes: patch.notes })
+                  await load()
+                },
+                `Dodano ${patch.name}. Na auto przypiszesz go na tablicy („+” → Zmiana kierowcy).`,
+                'Nie udało się dodać kierowcy.',
+              )
+              if (ok) setAdding(false)
+            }}
+          />
+        </div>
+      ) : (
+        <div>
+          <button type="button" onClick={() => setAdding(true)} className={BTN}>
+            <Icon name="plus" size={14} /> Dodaj kierowcę
+          </button>
+        </div>
+      )}
+    </section>
+  )
 }
 
 // ---------------------------------------------------------------- trucks
@@ -171,23 +369,20 @@ function TrucksSection({ onChanged, onOpenTruck }: { onChanged?: () => void; onO
             Ciągniki w dziale
           </h2>
           <span className="text-[13px] text-[#545B63]">
-            Kolejność tutaj = kolejność wierszy na tablicy. Numer rejestracyjny zmieniaj przez „Nowy numer” — stare zlecenia zostaną przy tym samym aucie. Stała
-            naczepa tylko przy jednym zestawie przewoźnika; puste = naczepy rotują, tablica pokazuje naczepę z ostatniego zlecenia.
+            Kolejność tutaj = kolejność wierszy na tablicy. Numer rejestracyjny zmieniaj przez „Nowy numer” — stare zlecenia zostaną przy tym samym aucie.
+            Kierowców zmieniasz na tablicy („+” pod dniem → Zmiana kierowcy), stałą naczepę w zakładce Naczepy.
           </span>
         </div>
         <Alert text={loadError ?? action.error} />
         <Done text={action.done} />
         {trucks && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[960px] border-collapse text-sm">
+            <table className="w-full min-w-[760px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-[#D5D9D3]">
                   <th className={TH}>Kolejność</th>
                   <th className={TH}>Ciągnik</th>
                   <th className={TH}>Przewoźnik</th>
-                  <th className={TH}>Kierowca</th>
-                  <th className={TH}>Telefon</th>
-                  <th className={TH}>Naczepa (stała)</th>
                   <th className={TH}>Status</th>
                   <th className={TH}>
                     <span className="sr-only">Akcje</span>
@@ -301,9 +496,6 @@ function TruckRow(props: {
           )}
         </td>
         <td className={TD}>{t.carrier || <span className="text-[#8A939C]">—</span>}</td>
-        <td className={TD}>{t.driver || <span className="text-[#8A939C]">—</span>}</td>
-        <td className={`${TD} font-mono`}>{t.phone || <span className="text-[#8A939C]">—</span>}</td>
-        <td className={`${TD} font-mono`}>{t.trailerPlate || <span className="text-[#8A939C]">—</span>}</td>
         <td className={TD}>
           {t.active ? (
             <span className="rounded bg-[#E3F1E6] px-2 py-0.5 text-xs font-semibold text-[#14532D]">aktywny</span>
@@ -329,7 +521,7 @@ function TruckRow(props: {
       </tr>
       {props.replating && (
         <tr className="border-b border-[#ECEEEA] bg-[#F6F7F4]">
-          <td colSpan={8} className="px-3 py-3">
+          <td colSpan={5} className="px-3 py-3">
             <ReplateForm current={t.currentPlate} busy={props.busy} onSave={props.onSavePlate} />
           </td>
         </tr>
@@ -377,15 +569,12 @@ function TruckEditRow({
   truck: FleetTruck
   busy: boolean
   onCancel: () => void
-  onSave: (patch: { carrier: string; driver: string; phone: string; trailerPlate: string | null; active: boolean }) => Promise<void>
+  onSave: (patch: { carrier: string; active: boolean }) => Promise<void>
 }) {
   const id = useId()
   const [carrier, setCarrier] = useState(truck.carrier)
-  const [driver, setDriver] = useState(truck.driver)
-  const [phone, setPhone] = useState(truck.phone)
-  const [trailer, setTrailer] = useState(truck.trailerPlate ?? '')
   const [active, setActive] = useState(truck.active)
-  const submit = () => void onSave({ carrier: carrier.trim(), driver: driver.trim(), phone: phone.trim(), trailerPlate: trailer.trim() || null, active })
+  const submit = () => void onSave({ carrier: carrier.trim(), active })
   return (
     <tr className="border-b border-[#ECEEEA] bg-[#F6F7F4]">
       <td className={TD} />
@@ -395,24 +584,6 @@ function TruckEditRow({
           Przewoźnik
         </label>
         <input id={`${id}-c`} value={carrier} onChange={e => setCarrier(e.target.value)} className={`${INPUT} w-full`} />
-      </td>
-      <td className={TD}>
-        <label className="sr-only" htmlFor={`${id}-d`}>
-          Kierowca
-        </label>
-        <input id={`${id}-d`} value={driver} onChange={e => setDriver(e.target.value)} className={`${INPUT} w-full`} />
-      </td>
-      <td className={TD}>
-        <label className="sr-only" htmlFor={`${id}-p`}>
-          Telefon
-        </label>
-        <input id={`${id}-p`} value={phone} onChange={e => setPhone(e.target.value)} className={`${INPUT} w-full font-mono`} />
-      </td>
-      <td className={TD}>
-        <label className="sr-only" htmlFor={`${id}-t`}>
-          Naczepa
-        </label>
-        <input id={`${id}-t`} value={trailer} onChange={e => setTrailer(e.target.value)} className={`${INPUT} w-32 font-mono uppercase`} />
       </td>
       <td className={TD}>
         <label className="flex h-10 items-center gap-2 text-sm">
@@ -440,9 +611,6 @@ function NewTruckForm({ onCreated }: { onCreated: (plate: string) => Promise<str
   const [plate, setPlate] = useState('')
   const [from, setFrom] = useState(todayIso())
   const [carrier, setCarrier] = useState('')
-  const [driver, setDriver] = useState('')
-  const [phone, setPhone] = useState('')
-  const [trailer, setTrailer] = useState('')
   const action = useAction()
 
   if (!open) {
@@ -474,9 +642,6 @@ function NewTruckForm({ onCreated }: { onCreated: (plate: string) => Promise<str
                 plate: plate.trim(),
                 validFrom: from,
                 ...(carrier.trim() ? { carrier: carrier.trim() } : {}),
-                ...(driver.trim() ? { driver: driver.trim() } : {}),
-                ...(phone.trim() ? { phone: phone.trim() } : {}),
-                ...(trailer.trim() ? { trailerPlate: trailer.trim() } : {}),
               })
               await onCreated(plate)
             },
@@ -487,9 +652,6 @@ function NewTruckForm({ onCreated }: { onCreated: (plate: string) => Promise<str
             if (ok) {
               setPlate('')
               setCarrier('')
-              setDriver('')
-              setPhone('')
-              setTrailer('')
             }
           })
       }}
@@ -506,9 +668,6 @@ function NewTruckForm({ onCreated }: { onCreated: (plate: string) => Promise<str
         {field('plate', 'Numer ciągnika *', plate, setPlate, 'w-40 font-mono uppercase')}
         {field('from', 'W dziale od *', from, setFrom, '', 'date')}
         {field('carrier', 'Przewoźnik (jak w aplikacji)', carrier, setCarrier, 'w-72')}
-        {field('driver', 'Kierowca', driver, setDriver, 'w-48')}
-        {field('phone', 'Telefon', phone, setPhone, 'w-40 font-mono')}
-        {field('trailer', 'Naczepa', trailer, setTrailer, 'w-32 font-mono uppercase')}
         <button type="submit" disabled={action.busy || !plate.trim()} className={BTN_PRIMARY}>
           Dodaj
         </button>
@@ -531,6 +690,7 @@ function TrailersSection() {
   const [aliasFor, setAliasFor] = useState<string | null>(null)
   const [alias, setAlias] = useState('')
   const [required, setRequired] = useState<Service[]>([])
+  const [fleet, setFleet] = useState<FleetTruck[]>([])
   const action = useAction()
 
   const load = useCallback(async () => {
@@ -543,6 +703,7 @@ function TrailersSection() {
     try {
       const [list, fleet] = await Promise.all([boardApi.trailers(), boardApi.fleet()])
       setTrailers(list)
+      setFleet(fleet)
       setCarriers([...new Set([...fleet.map(t => t.carrier), ...list.map(t => t.carrier)].filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pl')))
       setLoadError(null)
     } catch (e) {
@@ -667,18 +828,20 @@ function TrailersSection() {
             Naczepy we flocie
           </h2>
           <span className="text-[13px] text-[#545B63]">
-            Naczepa należy do przewoźnika i może jeździć z każdym jego ciągnikiem. Typ trafia do „Kopiuj dane auta”, alias to literówka z aplikacji.
+            Naczepa należy do przewoźnika i może jeździć z każdym jego ciągnikiem. Stały ciągnik ustaw tylko przy przewoźniku z jednym zestawem. Typ trafia do
+            „Kopiuj dane auta”, alias to literówka z aplikacji.
           </span>
         </div>
         <Alert text={loadError ?? action.error} />
         <Done text={action.done} />
         {trailers && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] border-collapse text-sm">
+            <table className="w-full min-w-[1040px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-[#D5D9D3]">
                   <th className={TH}>Naczepa</th>
                   <th className={TH}>Przewoźnik</th>
+                  <th className={TH}>Stały ciągnik</th>
                   <th className={TH}>Typ (PL)</th>
                   <th className={TH}>Typ (EN)</th>
                   <th className={TH}>Rozpoznawane też jako</th>
@@ -705,6 +868,35 @@ function TrailersSection() {
                         ))}
                     </td>
                     <td className={TD}>{t.carrier || <span className="text-[#B4690E]">nieprzypisana</span>}</td>
+                    <td className={TD}>
+                      <select
+                        aria-label={`Stały ciągnik naczepy ${t.plate}`}
+                        value={t.fixedTruckId ?? ''}
+                        disabled={action.busy}
+                        onChange={e => {
+                          const truckId = e.target.value ? Number(e.target.value) : null
+                          const truck = fleet.find(f => f.id === truckId)
+                          void action.run(
+                            async () => {
+                              await boardApi.setFixedTruck(t.plate, truckId)
+                              await load()
+                            },
+                            truck ? `${t.plate} jeździ na stałe z ${truck.currentPlate}.` : `${t.plate} rotuje — tablica pokaże naczepę z ostatniego zlecenia.`,
+                            'Nie udało się zapisać.',
+                          )
+                        }}
+                        className={`${INPUT} h-9 w-40 font-mono`}
+                      >
+                        <option value="">— rotuje —</option>
+                        {fleet
+                          .filter(f => f.id === t.fixedTruckId || (f.active && sameCarrierName(f.carrier, t.carrier)))
+                          .map(f => (
+                            <option key={f.id} value={f.id}>
+                              {f.currentPlate}
+                            </option>
+                          ))}
+                      </select>
+                    </td>
                     <td className={TD}>{t.typePl}</td>
                     <td className={TD}>{t.typeEn}</td>
                     <td className={TD}>{aliasCell(t)}</td>
@@ -722,7 +914,7 @@ function TrailersSection() {
                 ))}
                 {inFleet.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-3 py-4 text-sm text-[#545B63]">
+                    <td colSpan={7} className="px-3 py-4 text-sm text-[#545B63]">
                       Brak naczep we flocie — dodaj je niżej albo wklej stan floty.
                     </td>
                   </tr>

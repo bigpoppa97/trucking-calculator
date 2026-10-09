@@ -6,6 +6,7 @@ import { OrderPanel } from './OrderPanel.js'
 import { PHASE_LABELS, RequiredBadges, SERVICE_COLORS, ServiceDialog, defaultServiceDay, serviceTitle } from './serviceUi.js'
 import { TruckTimeline, nowFractionFor } from './TruckTimeline.js'
 import { EventDialog, Kpi, Total, readShowMoney, writeShowMoney } from './WeekPage.js'
+import { DriverChangeDialog, DriverWarnings } from './driversUi.js'
 
 /**
  * Strona zestawu: one tractor over a week or a month — header (plates, carrier,
@@ -72,6 +73,7 @@ export function TruckPage({
   onBack,
   backLabel = 'Tablica',
   onShowOnBoard,
+  onOpenDriver,
 }: {
   truckId: number
   date: string
@@ -81,6 +83,8 @@ export function TruckPage({
   backLabel?: string
   /** Opens an order on the board week view. */
   onShowOnBoard?: (orderNo: string) => void
+  /** Driver page with certificates. */
+  onOpenDriver?: (driverId: number) => void
 }) {
   const [view, setView] = useState<TruckView | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -92,6 +96,8 @@ export function TruckPage({
   const [serviceForm, setServiceForm] = useState<{ service?: Service; day?: string } | null>(null)
   const [eventTarget, setEventTarget] = useState<{ row: WeekTruck; day: string } | null>(null)
   const [copied, setCopied] = useState(false)
+  const [driverForm, setDriverForm] = useState<{ day: string; change?: { id: number; driverId: number | null } } | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const period = truckPeriod(date, mode)
   const load = useCallback(async () => {
@@ -218,6 +224,12 @@ export function TruckPage({
         </p>
       )}
 
+      {notice && (
+        <p role="status" className="mx-6 mb-3 rounded-lg bg-[#E3F1E6] px-4 py-2.5 text-sm text-[#14532D]">
+          {notice}
+        </p>
+      )}
+
       <section aria-label="Zestaw" className="mx-6 mb-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,380px)]">
         <div className="flex flex-wrap items-start gap-x-8 gap-y-3 rounded-xl border border-[#D5D9D3] bg-white px-5 py-4">
           <div className="flex min-w-[180px] flex-col gap-1">
@@ -242,8 +254,43 @@ export function TruckPage({
             <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Przewoźnik i kierowca</span>
             <span>{t.carrier || <span className="text-[#8A939C]">przewoźnik — uzupełnij we Flocie</span>}</span>
             <span>
-              {t.driver || 'kierowca?'} {t.phone && <span className="text-[#545B63]">· {t.phone}</span>}
+              {t.driverId !== null && onOpenDriver ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenDriver(t.driverId!)}
+                  className="font-semibold text-[#1E4E9C] underline decoration-[#9AB3DA] underline-offset-[3px]"
+                  title="Certyfikaty kierowcy"
+                >
+                  {t.driver}
+                </button>
+              ) : (
+                t.driver || <span className="text-[#8A939C]">bez kierowcy</span>
+              )}{' '}
+              {t.phone && <span className="text-[#545B63]">· {t.phone}</span>}
             </span>
+            <DriverWarnings warnings={t.driverWarnings} onOpen={t.driverId !== null && onOpenDriver ? () => onOpenDriver(t.driverId!) : undefined} />
+            <button
+              type="button"
+              onClick={() => setDriverForm({ day: defaultServiceDay(view.from, view.to) })}
+              className="self-start text-[13px] font-semibold text-[#1E4E9C] underline"
+            >
+              Zmień kierowcę
+            </button>
+            {t.driverChanges.length > 0 && (
+              <details className="text-xs text-[#545B63]">
+                <summary className="cursor-pointer">Historia kierowców ({t.driverChanges.length})</summary>
+                <ul className="mt-1 flex flex-col gap-0.5">
+                  {t.driverChanges.map(c => (
+                    <li key={c.id}>
+                      <button type="button" onClick={() => setDriverForm({ day: c.day, change: { id: c.id, driverId: c.driverId } })} className="underline">
+                        {c.day <= '2000-01-01' ? 'od początku tablicy' : `od ${dm(c.day)}`}
+                      </button>
+                      : <span className="font-semibold text-[#15181C]">{c.driver}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
           </div>
           <div className="flex min-w-[180px] flex-col items-start gap-1 text-[13.5px]">
             <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Naczepa</span>
@@ -347,6 +394,9 @@ export function TruckPage({
                     onTip={setTip}
                     onAddEvent={day => setEventTarget({ row: w.row, day })}
                     onOpenService={s => setServiceForm({ service: s })}
+                    onOpenDriverChange={e =>
+                      e.driverChangeId !== undefined && setDriverForm({ day: e.day, change: { id: e.driverChangeId, driverId: e.driverId ?? null } })
+                    }
                   />
                   <div className="grid grid-cols-2 content-start gap-x-3 gap-y-1.5 border-l border-[#E3E6E1] px-3.5 py-3 text-[13px]">
                     {showMoney && (
@@ -421,6 +471,7 @@ export function TruckPage({
                     <th className="px-2 py-2">Trasa</th>
                     <th className="px-2 py-2">Załadunek</th>
                     <th className="px-2 py-2">Rozładunek</th>
+                    <th className="px-2 py-2">Kierowca</th>
                     {showMoney && (
                       <>
                         <th className="px-2 py-2 text-right">Przychód</th>
@@ -449,6 +500,10 @@ export function TruckPage({
                         <td className={`px-2 py-2 ${o.excluded === 'cancelled' ? 'line-through' : ''}`}>{o.title}</td>
                         <td className="px-2 py-2 font-mono">{dm(o.startDate)}</td>
                         <td className="px-2 py-2 font-mono">{dm(o.endDate)}</td>
+                        <td className="px-2 py-2">
+                          {o.driver || '—'}
+                          {o.driverManual && <span className="ml-1 text-xs text-[#545B63]">(poprawione)</span>}
+                        </td>
                         {showMoney && (
                           <>
                             <td className="px-2 py-2 text-right font-mono">{eur(o.revAlloc)}</td>
@@ -464,7 +519,7 @@ export function TruckPage({
                 </tbody>
                 <tfoot>
                   <tr className="font-semibold">
-                    <td className="px-2 py-2" colSpan={4}>
+                    <td className="px-2 py-2" colSpan={5}>
                       Razem (bez anulowanych i wyłączonych)
                     </td>
                     {showMoney && (
@@ -502,8 +557,22 @@ export function TruckPage({
           truck={{ ...eventTarget.row, required: t.required }}
           day={eventTarget.day}
           onClose={() => setEventTarget(null)}
-          onSaved={() => {
+          onSaved={message => {
             setEventTarget(null)
+            setNotice(message ?? null)
+            void load()
+          }}
+        />
+      )}
+      {driverForm && (
+        <DriverChangeDialog
+          truck={{ id: t.id, plate: t.plate, carrier: t.carrier, driverId: t.driverId }}
+          day={driverForm.day}
+          change={driverForm.change ?? null}
+          onClose={() => setDriverForm(null)}
+          onSaved={message => {
+            setDriverForm(null)
+            setNotice(message ?? null)
             void load()
           }}
         />

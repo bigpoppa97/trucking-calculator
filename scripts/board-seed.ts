@@ -2,7 +2,9 @@ import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createDatabase, migrateToLatest } from '../src/db/database.js'
 import { readExport } from '../src/board/exportReader.js'
+import { FROM_THE_BEGINNING } from '../src/board/drivers.js'
 import { readGrafik } from '../src/board/grafik.js'
+import { aliasKey } from '../src/board/normalize.js'
 import { ensurePlaceSeed } from '../src/board/placeSeed.js'
 import { importAirports } from '../src/import/importAirports.js'
 import { loadDotEnv } from '../src/loadDotEnv.js'
@@ -14,8 +16,9 @@ loadDotEnv()
  *
  *   npm run board:seed -- --grafik "C:/…/Grafik podwykonawców.xlsm" [--export "C:/…/export.xlsx"] [--curtain PLATE,PLATE]
  *
- *  - fleet: the trucks of the LATEST week sheet (plate, driver, phone,
- *    trailer); "valid from" = first week the plate appears in the planner
+ *  - fleet: the trucks of the LATEST week sheet (plate, trailer); "valid
+ *    from" = first week the plate appears in the planner; their drivers go
+ *    to the driver list (Flota → Kierowcy), valid from the beginning
  *  - carriers: from the export, if given (most frequent carrier per plate)
  *  - trailers: plates from row 3 of the last 26 weeks; cooler 2.61 m by
  *    default, plates listed in --curtain become curtain-siders 2.7 m
@@ -92,8 +95,6 @@ try {
       .insertInto('board_trucks')
       .values({
         carrier: carriers.get(t.plate) ?? '',
-        driver: t.driver,
-        phone: t.phone.replace(/\D/g, ''),
         trailer_plate: t.trailer || null,
         sort_order: order,
       })
@@ -103,6 +104,28 @@ try {
       .insertInto('board_truck_plates')
       .values({ truck_id: truck.id, plate: t.plate, valid_from: firstSeen.get(t.plate) ?? latest.weekStart, valid_to: null })
       .execute()
+    // Driver from the planner → driver list (same name and carrier = the same driver), valid from the beginning.
+    const name = t.driver.replace(/\s+/g, ' ').trim()
+    if (name) {
+      const carrier = carriers.get(t.plate) ?? ''
+      const existing = (await db.selectFrom('board_drivers').select(['id', 'name', 'carrier']).execute()).find(
+        d => aliasKey(d.name) === aliasKey(name) && aliasKey(d.carrier) === aliasKey(carrier),
+      )
+      const driverId =
+        existing?.id ??
+        (
+          await db
+            .insertInto('board_drivers')
+            .values({ name, phone: t.phone.replace(/\D/g, ''), carrier, created_at: new Date().toISOString() })
+            .returning('id')
+            .executeTakeFirstOrThrow()
+        ).id
+      await db
+        .insertInto('board_driver_changes')
+        .values({ truck_id: truck.id, driver_id: driverId, day: FROM_THE_BEGINNING, created_by: 'grafik', created_at: new Date().toISOString() })
+        .onConflict(oc => oc.columns(['truck_id', 'day']).doNothing())
+        .execute()
+    }
     console.log(`  ${t.plate}: dodano (${carriers.get(t.plate) ?? 'przewoźnik do uzupełnienia'}), od ${firstSeen.get(t.plate)}.`)
   }
 

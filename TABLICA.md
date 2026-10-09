@@ -53,6 +53,20 @@ wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
   Tydzień / miesiąc, wynik okresu, aktywne zlecenie, zakładki Serwis i Zlecenia. Strona ma własny adres —
   „Wstecz” w przeglądarce wraca na tablicę.
 
+## Kierowcy i certyfikaty
+
+- **Flota → Kierowcy**: lista kierowców (imię i nazwisko, telefon, firma), kto dziś jeździ którym ciągnikiem
+  i termin AVSEC. „Certyfikaty” otwiera stronę kierowcy: certyfikaty (AVSEC i inne) ze skanami PDF/JPG/PNG
+  do 15 MB — „Podgląd” w nowej karcie, „Pobierz” do wysłania klientowi, „Kopiuj dane” po angielsku.
+  Na żółto 30 dni przed końcem ważności, na czerwono po terminie (też przy kierowcy na tablicy).
+- **Zmiana kierowcy**: „+” pod dniem → Rodzaj „Zmiana kierowcy” (albo „Zmień kierowcę” na stronie zestawu).
+  Od tego dnia tablica pokazuje nowego kierowcę; jeśli jeździł innym autem, tamto zostaje bez kierowcy.
+  Zmianę na tablicy można kliknąć i poprawić albo usunąć.
+- **Kierowca zlecenia** liczy się sam: zmiana między dniem załadunku a rozładunku → obaj („A → B (zmiana dd.mm)”),
+  w dniu załadunku → nowy, w dniu rozładunku → stary. Wyjątki: panel zlecenia → „Popraw ręcznie” → Kierowca.
+- **Ciągniki** mają tylko numer, przewoźnika i status; **stały ciągnik naczepy** ustawiasz w zakładce Naczepy.
+- Skany leżą tylko na komputerze biurowym w `data\pliki` (obok bazy); `aktualizuj.cmd` kopiuje je do `data\kopie`.
+
 ## Dwa tygodnie równolegle z Excelem
 
 W `cmd` w folderze projektu (Node z fnm: najpierw `set PATH=%USERPROFILE%\.fnm\aliases\default;%PATH%`):
@@ -72,4 +86,4 @@ jak w aplikacji), km szacunkowe (≈) zanim HERE policzy dokładne w tle.
 ## Poza etapem 1
 
 Dashboard finansowy, import historii, historia stawek na trasach w kalkulatorze, uprawnienia ról na tablicy
-(na razie każdy zalogowany widzi i edytuje tablicę), kierowcy z certyfikatami (paczka B).
+(na razie każdy zalogowany widzi i edytuje tablicę), notatki dyspozytora o zestawie, certyfikaty pojazdu.

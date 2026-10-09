@@ -1,5 +1,6 @@
 import type { Kysely } from 'kysely'
 import type { DB, PlaceKind } from '../db/schema.js'
+import { DriverIndex } from './drivers.js'
 import { aliasKey, editDistance, foldDiacritics, normalizePlate, splitPlaces } from './normalize.js'
 
 /**
@@ -217,6 +218,7 @@ export class PlaceIndex {
 
 export interface BoardContext {
   fleet: FleetIndex
+  drivers: DriverIndex
   trailers: TrailerIndex
   places: PlaceIndex
   ownPlates: Set<string>
@@ -224,7 +226,7 @@ export interface BoardContext {
 }
 
 export async function loadBoardContext(db: Kysely<DB>): Promise<BoardContext> {
-  const [trucks, plates, trailers, trailerAliases, places, placeAliases, own, ignored] = await Promise.all([
+  const [trucks, plates, trailers, trailerAliases, places, placeAliases, own, ignored, drivers, driverChanges] = await Promise.all([
     db.selectFrom('board_trucks').selectAll().orderBy('sort_order').orderBy('id').execute(),
     db.selectFrom('board_truck_plates').selectAll().execute(),
     db.selectFrom('board_trailers').selectAll().execute(),
@@ -233,6 +235,8 @@ export async function loadBoardContext(db: Kysely<DB>): Promise<BoardContext> {
     db.selectFrom('board_place_aliases').selectAll().execute(),
     db.selectFrom('board_own_plates').select('plate').execute(),
     db.selectFrom('board_ignored_plates').select('plate').execute(),
+    db.selectFrom('board_drivers').selectAll().execute(),
+    db.selectFrom('board_driver_changes').selectAll().execute(),
   ])
   const fleet = new FleetIndex(
     trucks.map(t => ({
@@ -252,6 +256,10 @@ export async function loadBoardContext(db: Kysely<DB>): Promise<BoardContext> {
   )
   return {
     fleet,
+    drivers: new DriverIndex(
+      drivers.map(d => ({ id: d.id, name: d.name, phone: d.phone, carrier: d.carrier, notes: d.notes, active: d.active === 1 })),
+      driverChanges.map(c => ({ id: c.id, truckId: c.truck_id, driverId: c.driver_id, day: c.day, createdBy: c.created_by, createdAt: c.created_at })),
+    ),
     trailers: new TrailerIndex(
       trailers.map(t => ({ plate: t.plate, typePl: t.type_pl, typeEn: t.type_en, notes: t.notes, carrier: t.carrier, activeTo: t.active_to })),
       trailerAliases.map(a => ({ alias: a.alias, plate: a.trailer_plate })),

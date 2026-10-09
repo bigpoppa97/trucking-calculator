@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { boardApi, errorMessage, type NoteKind, type Service, type WeekTruck, type WeekView } from './boardApi.js'
+import { boardApi, errorMessage, type NoteKind, type Service, type WeekEvent, type WeekTruck, type WeekView } from './boardApi.js'
 import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
 import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { RequiredBadges, SERVICE_COLORS, ServiceDialog } from './serviceUi.js'
+import { DriverChangeDialog, DriverWarnings } from './driversUi.js'
 import { TruckTimeline, nowFractionFor } from './TruckTimeline.js'
 
 /**
@@ -41,6 +42,7 @@ export function WeekPage({
   onReview,
   onDateChange,
   onOpenTruck,
+  onOpenDriver,
 }: {
   focus: WeekFocus | null
   initialDate?: string
@@ -48,6 +50,8 @@ export function WeekPage({
   onDateChange?: (date: string) => void
   /** Set page of a truck (double click on the truck cell or click on its plate). */
   onOpenTruck?: (truckId: number, date: string) => void
+  /** Driver page with certificates. */
+  onOpenDriver?: (driverId: number) => void
 }) {
   const [date, setDate] = useState(focus?.date ?? initialDate ?? todayIso())
   const [view, setView] = useState<WeekView | null>(null)
@@ -59,6 +63,8 @@ export function WeekPage({
   const [copied, setCopied] = useState<number | null>(null)
   const [eventTarget, setEventTarget] = useState<{ truck: WeekTruck; day: string } | null>(null)
   const [serviceTarget, setServiceTarget] = useState<{ truck: WeekTruck; service: Service } | null>(null)
+  const [driverChange, setDriverChange] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => {
     if (focus) {
@@ -180,6 +186,14 @@ export function WeekPage({
         </button>
       </section>
 
+      {notice && (
+        <p role="status" className="mx-6 mb-3 flex items-center justify-between gap-3 rounded-lg bg-[#E3F1E6] px-4 py-2.5 text-sm text-[#14532D]">
+          {notice}
+          <button type="button" onClick={() => setNotice(null)} aria-label="Zamknij komunikat" className="flex h-8 w-8 items-center justify-center rounded-md">
+            <Icon name="close" size={14} />
+          </button>
+        </p>
+      )}
       {view.trucks.length === 0 && (
         <p className="mx-6 rounded-lg border border-[#D5D9D3] bg-white px-4 py-6 text-center text-sm">
           Baza floty jest pusta. Dodaj swoje auta w zakładce <strong>Flota</strong> (albo uruchom <code>npm run board:seed</code>), a potem zaimportuj eksport.
@@ -234,6 +248,8 @@ export function WeekPage({
                   onAddEvent={day => setEventTarget({ truck, day })}
                   onOpenService={service => setServiceTarget({ truck, service })}
                   {...(onOpenTruck ? { onOpenTruck: () => onOpenTruck(truck.id, view.weekStart) } : {})}
+                  {...(onOpenDriver ? { onOpenDriver } : {})}
+                  onOpenDriverChange={event => setDriverChange({ truck, event })}
                 />
               ))}
             </div>
@@ -255,8 +271,21 @@ export function WeekPage({
           truck={eventTarget.truck}
           day={eventTarget.day}
           onClose={() => setEventTarget(null)}
-          onSaved={() => {
+          onSaved={message => {
             setEventTarget(null)
+            setNotice(message ?? null)
+            void load()
+          }}
+        />
+      )}
+      {driverChange && driverChange.event.driverChangeId !== undefined && (
+        <DriverChangeDialog
+          truck={driverChange.truck}
+          day={driverChange.event.day}
+          change={{ id: driverChange.event.driverChangeId, driverId: driverChange.event.driverId ?? null }}
+          onClose={() => setDriverChange(null)}
+          onSaved={() => {
+            setDriverChange(null)
             void load()
           }}
         />
@@ -326,9 +355,29 @@ interface TruckRowProps {
   onAddEvent: (day: string) => void
   onOpenService: (s: Service) => void
   onOpenTruck?: () => void
+  onOpenDriver?: (driverId: number) => void
+  onOpenDriverChange: (e: WeekEvent) => void
 }
 
-function TruckRow({ truck, weekStart, days, showMoney, selected, tip, nowFraction, copied, onSelect, onTip, onCopy, onAddEvent, onOpenService, onOpenTruck }: TruckRowProps) {
+function TruckRow({
+  truck,
+  weekStart,
+  days,
+  showMoney,
+  selected,
+  tip,
+  nowFraction,
+  copied,
+  onSelect,
+  onTip,
+  onCopy,
+  onAddEvent,
+  onOpenService,
+  onOpenTruck,
+  onOpenDriver,
+  onOpenDriverChange,
+}: TruckRowProps) {
+  const openDriver = onOpenDriver && truck.driverId !== null ? () => onOpenDriver(truck.driverId!) : undefined
   const t = truck.totals
   return (
     <div className="grid grid-cols-[236px_minmax(0,1fr)_156px] border-b border-[#E3E6E1]">
@@ -365,8 +414,22 @@ function TruckRow({ truck, weekStart, days, showMoney, selected, tip, nowFractio
           {truck.carrier || 'przewoźnik — uzupełnij we Flocie'}
         </span>
         <span className="text-[13px]">
-          {truck.driver || 'kierowca?'} {truck.phone && <span className="text-[#545B63]">· {truck.phone}</span>}
+          {openDriver ? (
+            <button
+              type="button"
+              onClick={openDriver}
+              onDoubleClick={e => e.stopPropagation()}
+              title="Certyfikaty kierowcy"
+              className="text-left hover:underline"
+            >
+              {truck.driver}
+            </button>
+          ) : (
+            truck.driver || <span className="text-[#8A939C]">bez kierowcy</span>
+          )}{' '}
+          {truck.phone && <span className="text-[#545B63]">· {truck.phone}</span>}
         </span>
+        <DriverWarnings warnings={truck.driverWarnings} onOpen={openDriver} />
         <RequiredBadges services={truck.required.filter(s => s.target === 'truck')} onOpen={onOpenService} />
         <span className="mt-0.5 self-start rounded bg-[#EEF0EC] px-1.5 py-0.5 text-xs">
           <span className="font-mono font-semibold">{truck.trailer ?? '—'}</span> · {truck.trailerTypePl}
@@ -386,6 +449,7 @@ function TruckRow({ truck, weekStart, days, showMoney, selected, tip, nowFractio
         onTip={onTip}
         onAddEvent={onAddEvent}
         onOpenService={onOpenService}
+        onOpenDriverChange={onOpenDriverChange}
       />
 
       <div className="flex flex-col gap-1.5 border-l border-[#E3E6E1] px-3.5 py-3 text-[13px]">
@@ -413,7 +477,7 @@ export function Total({ label, value, strong, small }: { label: string; value: s
 
 const EVENT_KINDS: NoteKind[] = ['note', 'service', 'pause', 'driver', 'trailer', 'position']
 
-export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck; day: string; onClose: () => void; onSaved: () => void }) {
+export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck; day: string; onClose: () => void; onSaved: (message?: string) => void }) {
   const [kind, setKind] = useState<NoteKind>('note')
   const [text, setText] = useState('')
   const [place, setPlace] = useState('')
@@ -439,7 +503,10 @@ export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck
   }
 
   if (kind === 'service') {
-    return <ServiceDialog truck={truck} day={day} candidates={truck.required} onClose={onClose} onSaved={onSaved} />
+    return <ServiceDialog truck={truck} day={day} candidates={truck.required} onClose={onClose} onSaved={() => onSaved()} />
+  }
+  if (kind === 'driver') {
+    return <DriverChangeDialog truck={truck} day={day} onClose={onClose} onSaved={onSaved} />
   }
 
   return (
@@ -472,7 +539,7 @@ export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck
             <input
               value={text}
               onChange={e => setText(e.target.value)}
-              placeholder={kind === 'driver' ? 'np. wsiada Patryk' : kind === 'trailer' ? 'np. WAW: odstawił KNS463RP, wziął KNS897RP' : 'np. pauza 24h'}
+              placeholder={kind === 'trailer' ? 'np. WAW: odstawił AB123CD, wziął AB456CD' : kind === 'position' ? 'np. stoi na bazie' : 'np. pauza 24h'}
               className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal"
             />
           </label>

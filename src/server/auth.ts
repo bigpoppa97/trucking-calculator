@@ -41,12 +41,19 @@ const PUBLIC_PATHS = new Set(['/api/auth/login'])
 export function registerAuthHook(app: FastifyInstance, deps: AuthDeps): void {
   app.decorateRequest('user', null)
   app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
-    const path = request.url.split('?')[0] ?? request.url
     // Only the API is session-guarded. Static assets and the SPA shell are
     // public — the app itself renders the login screen, and every data
-    // request it makes goes through /api/*.
-    if (!path.startsWith('/api/')) return
-    if (PUBLIC_PATHS.has(path)) return
+    // request it makes goes through /api/*. Decide on the decoded path AND the
+    // matched route: the router decodes %xx, so "/%61pi/…" reaches /api routes.
+    let path = request.url.split('?')[0] ?? request.url
+    try {
+      path = decodeURIComponent(path)
+    } catch {
+      // malformed escape — keep the raw path; the router will not match it either
+    }
+    const route = request.routeOptions?.url
+    if (!path.startsWith('/api/') && !(route ?? '').startsWith('/api/')) return
+    if (PUBLIC_PATHS.has(route ?? path) && PUBLIC_PATHS.has(path)) return
     const token = request.cookies[SESSION_COOKIE]
     if (!token) return reply.status(401).send(UNAUTHENTICATED)
     const userRow = await deps.sessions.resolveUser(token)
