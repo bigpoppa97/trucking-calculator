@@ -26,6 +26,8 @@ const KIND_TAG: Record<string, { label: string; bg: string; fg: string }> = {
   OVERRIDE_SUPERSEDED: { label: 'Poprawka', bg: '#E6E9EE', fg: '#15181C' },
   NO_CARRIER: { label: 'Przewoźnik', bg: '#F4C77A', fg: '#3A2400' },
   FERRY_PARSE: { label: 'Prom', bg: '#F4C77A', fg: '#3A2400' },
+  DRAFT_MATCH: { label: 'Zlecenie wstępne', bg: '#DCE5F2', fg: '#15181C' },
+  DRAFT_STALE: { label: 'Zlecenie wstępne', bg: '#E6E9EE', fg: '#15181C' },
 }
 
 const ORDER_KINDS = new Set([
@@ -44,6 +46,8 @@ const ORDER_KINDS = new Set([
   'OVERRIDE_SUPERSEDED',
   'NO_CARRIER',
   'FERRY_PARSE',
+  'DRAFT_MATCH',
+  'DRAFT_STALE',
 ])
 
 export function ReviewPage({ onOpenOrder, onIssuesChanged }: { onOpenOrder: (orderNo: string) => void; onIssuesChanged: () => void }) {
@@ -224,6 +228,24 @@ function ImportCard({ summary, fresh, onOpenOrder }: { summary: ImportSummary; f
         <Stat label="Zniknęło" n={summary.disappeared.length} />
         <Stat label="Bez zmian" n={summary.unchanged} />
       </div>
+      {(summary.replacedDrafts?.length ?? 0) > 0 && (
+        <div className="flex flex-col gap-1 text-[13px]">
+          <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Zastąpione zlecenia wstępne</span>
+          {summary.replacedDrafts!.map(r => (
+            <span key={r.draftNo}>
+              <span className="font-mono">{r.draftNo}</span> →{' '}
+              <button type="button" onClick={() => onOpenOrder(r.orderNo)} className="font-mono font-semibold text-[#1E4E9C] underline">
+                {r.orderNo}
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {(summary.draftQuestions?.length ?? 0) > 0 && (
+        <p className="rounded-lg bg-[#DCE5F2] px-3 py-2 text-[13px]">
+          Zlecenia wstępne do rozstrzygnięcia (pasuje kilka zleceń): {summary.draftQuestions!.join(', ')} — zobacz listę „Do sprawdzenia”.
+        </p>
+      )}
       {summary.warnings.map(w => (
         <p key={w} className="rounded-lg bg-[#FBEBD0] px-3 py-2 text-[13px] text-[#3A2400]">
           {w}
@@ -330,7 +352,25 @@ function IssueCard({
             <ActionButton onClick={() => onResolve('delete')}>Usuń z tablicy</ActionButton>
           </>
         )}
-        {!['NEW_TRUCK', 'DISAPPEARED'].includes(issue.kind) && (
+        {issue.kind === 'DRAFT_MATCH' && (
+          <>
+            {(Array.isArray(d['candidates']) ? (d['candidates'] as string[]) : []).map(no => (
+              <ActionButton key={no} primary onClick={() => onResolve('replace', { orderNo: no })}>
+                Zastąp zleceniem {no}
+              </ActionButton>
+            ))}
+            <ActionButton onClick={() => onResolve('keep')}>Żadne — zostaw wstępne</ActionButton>
+          </>
+        )}
+        {issue.kind === 'DRAFT_STALE' && (
+          <>
+            <ActionButton primary onClick={() => onResolve('delete')}>
+              Usuń zlecenie wstępne
+            </ActionButton>
+            <ActionButton onClick={() => onResolve('dismiss')}>Zostaw</ActionButton>
+          </>
+        )}
+        {!['NEW_TRUCK', 'DISAPPEARED', 'DRAFT_MATCH', 'DRAFT_STALE'].includes(issue.kind) && (
           <ActionButton onClick={() => onResolve('dismiss')}>{issue.kind === 'OVERRIDE_SUPERSEDED' ? 'OK' : 'W porządku'}</ActionButton>
         )}
       </div>

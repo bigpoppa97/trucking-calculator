@@ -6,6 +6,7 @@ import { parsePrz, resolveSwapDate, type PrzEntry } from './prz.js'
 import { parseFerries } from './ferry.js'
 import { parseNumberInput } from './amount.js'
 import { normalizePlate, splitPlaces } from './normalize.js'
+import { parseAtValue } from './times.js'
 
 /**
  * Turns imported orders (+ manual corrections) into what the board shows:
@@ -22,6 +23,11 @@ import { normalizePlate, splitPlaces } from './normalize.js'
  *    (lowers the margin); a manual "Koszt dodatkowy" correction replaces it
  *  - km loaded = along the leg's stops; km empty = from the truck's previous
  *    unloading (or a day event with a place, e.g. "Pozycja auta") to this leg's first stop
+ *  - loading/unloading date and hour: from the export, unless corrected on the
+ *    board ("load_at" / "unload_at"); a corrected loading date moves the order
+ *    to that day everywhere (12.10.2026)
+ *  - a preliminary order (draft, "W-…") runs on the truck it was entered for;
+ *    without both rates its money is left out of the totals (km still count)
  */
 
 export type LegKind = 'fleet' | 'own' | 'other'
@@ -40,6 +46,9 @@ export interface ComputedLeg {
   kind: LegKind
   startDate: string
   endDate: string
+  /** Hour at the start / end of the leg ("HH:MM"), null = unknown (e.g. at a PRZ swap). */
+  startTime: string | null
+  endTime: string | null
   stops: Stop[]
   amount: number | null
   revAlloc: number | null
@@ -80,10 +89,19 @@ export interface ComputedOrder {
   statusSped: string
   subPlate: string
   ownPlate: string
+  /** Effective dates and hours (a manual correction wins over the export). */
   loadDate: string
   unloadDate: string
+  loadTime: string | null
+  unloadTime: string | null
+  loadAtManual: boolean
+  unloadAtManual: boolean
   loadPlaces: string
   unloadPlaces: string
+  /** Preliminary order typed on the board (12.10.2026). */
+  draft: boolean
+  /** Draft without the client rate or the carrier amount: its money stays out of the totals. */
+  draftNoMoney: boolean
   rev: number | null
   costApp: number | null
   cost: number | null
@@ -162,8 +180,22 @@ function num(value: string | undefined): number | null {
 }
 
 export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo>, ctx: BoardContext): ComputedOrder {
-  const rev = overrides['rev'] ? num(overrides['rev'].value) : row.rev_eur
-  const cost = overrides['cost'] ? num(overrides['cost'].value) : row.cost_eur
+  const isDraft = row.draft === 1
+  const draftNoMoney = isDraft && (row.rev_eur === null || row.cost_eur === null)
+  const rev = draftNoMoney ? null : overrides['rev'] ? num(overrides['rev'].value) : row.rev_eur
+  const cost = draftNoMoney ? null : overrides['cost'] ? num(overrides['cost'].value) : row.cost_eur
+
+  // Loading / unloading: manual correction ("YYYY-MM-DD[ HH:MM]") or the export.
+  const loadAt = parseAtValue(overrides['load_at']?.value)
+  const unloadAt = parseAtValue(overrides['unload_at']?.value)
+  const loadDate = loadAt?.date ?? row.load_date
+  const loadTime = loadAt ? loadAt.time : (row.load_time ?? null)
+  let unloadDate = unloadAt?.date ?? row.unload_date
+  let unloadTime = unloadAt ? unloadAt.time : (row.unload_time ?? null)
+  if (unloadDate < loadDate) {
+    unloadDate = loadDate
+    unloadTime = null
+  }
   const trailerRaw = overrides['trailer'] ? overrides['trailer'].value : row.trailer_raw
   const przText = overrides['prz'] ? overrides['prz'].value : row.notes_app
   const ferries = parseFerries(przText)
@@ -183,7 +215,9 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
 
   const parsed = parsePrz(przText)
   const entry: PrzEntry | undefined = parsed.entries[0]
+  const draftTruck = isDraft && row.draft_truck_id !== null ? ctx.fleet.byId(row.draft_truck_id) : undefined
   const classify = (plate: string, date: string): { kind: LegKind; truckId: number | null } => {
+    if (isDraft) return draftTruck ? { kind: 'fleet', truckId: draftTruck.id } : { kind: 'other', truckId: null }
     const truck = ctx.fleet.truckFor(plate, date)
     if (truck) return { kind: 'fleet', truckId: truck.id }
     if (ctx.ownPlates.has(plate)) return { kind: 'own', truckId: null }
@@ -219,10 +253,10 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
       raw: entry.raw,
     }
     const swapStop: Stop = { raw: entry.place, code: placeCode }
-    const startA = row.load_date
+    const startA = loadDate
     const endA = swapDate < startA ? startA : swapDate
     const startB = endA
-    const endB = row.unload_date < startB ? startB : row.unload_date
+    const endB = unloadDate < startB ? startB : unloadDate
     const a = classify(entry.from, startA)
     const b = classify(entry.to, startB)
     legs.push({
@@ -233,6 +267,8 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
       kind: a.kind,
       startDate: startA,
       endDate: endA,
+      startTime: loadTime,
+      endTime: null,
       stops: [...loadStops, swapStop],
       amount: entry.amountFrom,
       przRole: 'from',
@@ -245,20 +281,24 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
       kind: b.kind,
       startDate: startB,
       endDate: endB,
+      startTime: null,
+      endTime: endB === unloadDate ? unloadTime : null,
       stops: [swapStop, ...unloadStops],
       amount: entry.amountTo,
       przRole: 'to',
     })
   } else {
-    const c = classify(row.sub_plate, row.load_date)
+    const c = classify(row.sub_plate, loadDate)
     legs.push({
       ...baseLeg,
       index: 0,
       truckId: c.truckId,
-      plate: row.sub_plate,
+      plate: draftTruck ? ctx.fleet.plateOn(draftTruck, loadDate) : row.sub_plate,
       kind: c.kind,
-      startDate: row.load_date,
-      endDate: row.unload_date,
+      startDate: loadDate,
+      endDate: unloadDate,
+      startTime: loadTime,
+      endTime: unloadTime,
       stops: [...loadStops, ...unloadStops],
       amount: cost,
       przRole: 'none',
@@ -289,10 +329,16 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     statusSped: row.status_sped,
     subPlate: row.sub_plate,
     ownPlate: row.own_plate,
-    loadDate: row.load_date,
-    unloadDate: row.unload_date,
+    loadDate,
+    unloadDate,
+    loadTime,
+    unloadTime,
+    loadAtManual: loadAt !== null,
+    unloadAtManual: unloadAt !== null,
     loadPlaces: row.load_places,
     unloadPlaces: row.unload_places,
+    draft: isDraft,
+    draftNoMoney,
     rev,
     costApp: row.cost_eur,
     cost,
@@ -454,6 +500,27 @@ async function attachKilometres(
       }
     }
   }
+}
+
+/**
+ * Route of a whole order for the order panel (12.10.2026): every place in the
+ * application's order except the last unloading, joined with "+", then "→" and
+ * the last unloading — "Warszawa + Katowice (Pyrzowice) → Budapeszt (Vecsés)".
+ */
+export function routeLabel(loadRaw: string, unloadRaw: string, ctx: BoardContext): string {
+  const names = (raw: string) =>
+    splitPlaces(raw)
+      .map(p => {
+        const code = ctx.places.resolve(p)
+        return code ? ctx.places.name(code) : p
+      })
+      .filter((v, i, arr) => arr.indexOf(v) === i)
+  const loads = names(loadRaw)
+  const unloads = names(unloadRaw)
+  const last = unloads[unloads.length - 1]
+  if (!last) return `${loads.join(' + ') || '?'} → ?`
+  const before = [...loads, ...unloads.slice(0, -1)].filter((v, i, arr) => arr.indexOf(v) === i)
+  return `${before.join(' + ') || '?'} → ${last}`
 }
 
 /** All place names of an order for display ("Warszawa + Wrocław"). */

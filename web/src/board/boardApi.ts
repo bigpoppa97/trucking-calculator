@@ -12,6 +12,9 @@ export interface WeekBar {
   title: string
   startDate: string
   endDate: string
+  /** Hours at the start / end of the leg ("HH:MM"), null = unknown. */
+  startTime: string | null
+  endTime: string | null
   startDay: number
   endDay: number
   revAlloc: number | null
@@ -25,6 +28,8 @@ export interface WeekBar {
   excluded: string | null
   missing: boolean
   noCarrier: boolean
+  /** Preliminary order typed on the board ("W-…"). */
+  draft: boolean
   inWeek: boolean
   noteLines: string[]
   /** Set when the truck is in service all day on a day of this leg. */
@@ -121,7 +126,8 @@ export interface WeekTruck {
   services: Service[]
   /** Required services (no date yet) of the tractor and of the trailer behind it. */
   required: Service[]
-  totals: { revenue: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean }
+  /** revenue = ours, carrier = what the carrier gets (without ferries). */
+  totals: { revenue: number; carrier: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean }
 }
 
 export interface TruckOrderRow {
@@ -133,6 +139,8 @@ export interface TruckOrderRow {
   endDate: string
   revAlloc: number | null
   amount: number | null
+  /** What the carrier gets for this leg (without ferries). */
+  carrierAmount: number | null
   margin: number | null
   km: number | null
   kmEstimated: boolean
@@ -140,6 +148,7 @@ export interface TruckOrderRow {
   excluded: string | null
   noCarrier: boolean
   missing: boolean
+  draft: boolean
   driver: string
   driverManual: boolean
 }
@@ -165,7 +174,7 @@ export interface TruckView {
   to: string
   today: string
   weeks: Array<{ weekStart: string; weekEnd: string; weekNumber: number; days: string[]; row: WeekTruck }>
-  totals: { revenue: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean; services: number }
+  totals: { revenue: number; carrier: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean; services: number }
   orders: TruckOrderRow[]
   services: Service[]
   activeOrder: { orderNo: string; title: string; startDate: string; endDate: string; upcoming: boolean } | null
@@ -183,6 +192,8 @@ export interface WeekView {
     revenue: number
     cost: number
     orders: number
+    /** Preliminary orders among `orders`. */
+    drafts: number
     km: number
     kmEmpty: number
     revenuePerKm: number | null
@@ -203,7 +214,15 @@ export interface OrderDetails {
     statusSped: string
     loadDate: string
     unloadDate: string
+    loadTime: string | null
+    unloadTime: string | null
+    loadAtManual: boolean
+    unloadAtManual: boolean
     route: string
+    /** Preliminary order without both rates — left out of the totals. */
+    draftNoMoney: boolean
+    /** The preliminary order as typed; null for orders from the application. */
+    draft: DraftData | null
     rev: number | null
     costApp: number | null
     amountsTotal: number | null
@@ -249,6 +268,32 @@ export interface OrderDetails {
   history: Array<{ at: string; text: string }>
 }
 
+export interface DraftData {
+  truckId: number | null
+  loadPlaces: string
+  loadDate: string
+  loadTime: string | null
+  unloadPlaces: string
+  unloadDate: string
+  unloadTime: string | null
+  client: string
+  rev: number | null
+  cost: number | null
+}
+
+/** Form of a preliminary order (rates as typed; empty = not known yet). */
+export interface DraftForm {
+  loadPlaces: string
+  loadDate: string
+  loadTime: string | null
+  unloadPlaces: string
+  unloadDate: string
+  unloadTime: string | null
+  client: string
+  rev: string | null
+  cost: string | null
+}
+
 export interface ImportSummary {
   importId: number
   filename: string
@@ -267,6 +312,9 @@ export interface ImportSummary {
   reappeared: string[]
   supersededOverrides: Array<{ orderNo: string; field: string }>
   newTruckCandidates: Array<{ plate: string; carrier: string; orders: number }>
+  /** Missing in summaries from before 12.10.2026. */
+  replacedDrafts?: Array<{ draftNo: string; orderNo: string }>
+  draftQuestions?: string[]
   warnings: string[]
 }
 
@@ -429,6 +477,9 @@ export const boardApi = {
   clearOverride: (orderNo: string, field: string) =>
     call('DELETE', `/api/board/orders/${encodeURIComponent(orderNo)}/overrides/${encodeURIComponent(field)}`),
   addEvent: (input: { truckId: number; day: string; kind: NoteKind; text: string; place?: string }) => call('POST', '/api/board/events', input),
+  createDraft: async (input: DraftForm & { truckId: number; note?: string }) => (await call<{ orderNo: string }>('POST', '/api/board/drafts', input)).orderNo,
+  updateDraft: (orderNo: string, patch: Partial<DraftForm>) => call('PATCH', `/api/board/drafts/${encodeURIComponent(orderNo)}`, patch),
+  deleteDraft: (orderNo: string) => call('DELETE', `/api/board/drafts/${encodeURIComponent(orderNo)}`),
   truckView: (id: number, from: string, to: string) => call<TruckView>('GET', `/api/board/trucks/${id}/view?from=${from}&to=${to}`),
   requiredServices: async () => (await call<{ services: Service[] }>('GET', '/api/board/services/required')).services,
   createService: async (input: ServiceInput) => (await call<{ id: number }>('POST', '/api/board/services', input)).id,

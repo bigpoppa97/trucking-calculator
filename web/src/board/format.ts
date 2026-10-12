@@ -27,6 +27,34 @@ export function perKm(n: number | null | undefined): string {
   return `${n.toFixed(2).replace('.', ',')} €`
 }
 
+/** Two values "ours / carrier's" in one cell (12.10.2026). */
+export function pair(a: string, b: string): string {
+  return `${a} / ${b}`
+}
+
+/** Polish plural: 1 zlecenie, 2–4 (22–24…) zlecenia, 0 and 5+ (12–14) zleceń. */
+export function plural(n: number, one: string, few: string, many: string): string {
+  const abs = Math.abs(n)
+  if (abs === 1) return one
+  const d = abs % 10
+  const dd = abs % 100
+  return d >= 2 && d <= 4 && !(dd >= 12 && dd <= 14) ? few : many
+}
+
+export function ordersLabel(n: number): string {
+  return `${n} ${plural(n, 'zlecenie', 'zlecenia', 'zleceń')}`
+}
+
+/** "27 zleceń (w tym 2 wstępne)" — the second part only when there are preliminary orders. */
+export function ordersWithDrafts(n: number, drafts: number): string {
+  return drafts > 0 ? `${ordersLabel(n)} (w tym ${drafts} ${plural(drafts, 'wstępne', 'wstępne', 'wstępnych')})` : ordersLabel(n)
+}
+
+/** "07.10 16:00" (no hour → "07.10"). */
+export function dmTime(iso: string, time: string | null | undefined): string {
+  return `${dm(iso)}${time ? ` ${time}` : ''}`
+}
+
 export const DAY_NAMES = ['Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So', 'Nd']
 
 export const MONTHS_GEN = ['stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 'lipca', 'sierpnia', 'września', 'października', 'listopada', 'grudnia']
@@ -84,6 +112,8 @@ export const OVERRIDE_LABELS: Record<string, string> = {
   'km_empty:1': 'Km puste — 2. odcinek',
   driver: 'Kierowca',
   'driver:1': 'Kierowca — 2. odcinek',
+  load_at: 'Załadunek (data i godzina)',
+  unload_at: 'Rozładunek (data i godzina)',
 }
 
 /** "2026-10-20" → "20.10.2026" */

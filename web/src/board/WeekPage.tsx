@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { boardApi, errorMessage, type NoteKind, type Service, type WeekEvent, type WeekTruck, type WeekView } from './boardApi.js'
-import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
+import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, ordersWithDrafts, pair, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
 import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { RequiredBadges, SERVICE_COLORS, ServiceDialog } from './serviceUi.js'
 import { DriverChangeDialog, DriverWarnings } from './driversUi.js'
 import { TruckTimeline, nowFractionFor } from './TruckTimeline.js'
+import { DraftDialog } from './DraftDialog.js'
 
 /**
  * Week view of the fleet board: trucks in rows, days in columns, orders as
@@ -158,6 +159,7 @@ export function WeekPage({
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[12.5px] text-[#3D444C]">
           <Legend color="#DCE5F2" label="Zlecenie" />
           <Legend color="#DCE5F2" label="Przepinka" dashed />
+          <Legend color="#F4F6FA" label="Zlecenie wstępne" dashedGray />
           <Legend color="#F4C77A" label="Do sprawdzenia" />
           <Legend color="#ECEEF0" label="Załadunek w poprzednim tygodniu" border />
           <Legend color={SERVICE_COLORS.light} label="Serwis" />
@@ -173,7 +175,7 @@ export function WeekPage({
         {showMoney && (
           <>
             <Kpi label="Marża tygodnia" value={eur(k.margin)} sub={`${pct(k.margin, k.revenue)} przychodu`} />
-            <Kpi label="Przychód" value={eur(k.revenue)} sub={`${k.orders} zleceń z załadunkiem w tym tygodniu`} />
+            <Kpi label="Przychód" value={eur(k.revenue)} sub={ordersWithDrafts(k.orders, k.drafts)} />
             <Kpi label="Koszt przewoźników" value={eur(k.cost)} sub="po skontach i poprawkach" />
           </>
         )}
@@ -209,7 +211,7 @@ export function WeekPage({
         <section className="relative px-6">
           <div className="overflow-x-auto rounded-xl border border-[#D5D9D3] bg-white">
             <div className="min-w-[1120px]">
-              <div className="grid grid-cols-[236px_minmax(0,1fr)_156px] rounded-t-xl border-b border-[#D5D9D3] bg-[#F7F8F6]">
+              <div className="grid grid-cols-[236px_minmax(0,1fr)_184px] rounded-t-xl border-b border-[#D5D9D3] bg-[#F7F8F6]">
                 <div className="flex items-center px-3.5 py-2.5 text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Auto</div>
                 <div className="grid grid-cols-7 gap-x-1 px-2">
                   {view.days.map((d, i) => {
@@ -313,15 +315,29 @@ export function WeekPage({
   )
 }
 
-function Legend({ color, label, dashed, border, conflict }: { color: string; label: string; dashed?: boolean; border?: boolean; conflict?: boolean }) {
+function Legend({
+  color,
+  label,
+  dashed,
+  dashedGray,
+  border,
+  conflict,
+}: {
+  color: string
+  label: string
+  dashed?: boolean
+  dashedGray?: boolean
+  border?: boolean
+  conflict?: boolean
+}) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <span
         className="inline-block h-3 w-[18px] rounded-[3px]"
         style={{
           background: color,
-          outline: conflict ? `2px solid ${SERVICE_COLORS.conflict}` : dashed ? '2px dashed #1E4E9C' : undefined,
-          outlineOffset: dashed || conflict ? -2 : undefined,
+          outline: conflict ? `2px solid ${SERVICE_COLORS.conflict}` : dashed ? '2px dashed #1E4E9C' : dashedGray ? '2px dashed #7C8794' : undefined,
+          outlineOffset: dashed || dashedGray || conflict ? -2 : undefined,
           boxShadow: border ? 'inset 0 0 0 1px #C9CEC6' : undefined,
         }}
       />
@@ -330,11 +346,14 @@ function Legend({ color, label, dashed, border, conflict }: { color: string; lab
   )
 }
 
-export function Kpi({ label, value, sub }: { label: string; value: string; sub: string }) {
+export function Kpi({ label, value, second, sub }: { label: string; value: string; /** Paired value ("nasz / przewoźnika"), shown smaller after a slash. */ second?: string; sub: string }) {
   return (
     <div className="flex flex-col gap-1 rounded-[10px] border border-[#D5D9D3] bg-white px-3.5 py-3">
       <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">{label}</span>
-      <span className="font-mono text-[22px] font-semibold">{value}</span>
+      <span className="font-mono text-[22px] font-semibold">
+        {value}
+        {second !== undefined && <span className="whitespace-nowrap text-[16px] font-medium text-[#545B63]"> / {second}</span>}
+      </span>
       <span className="text-xs text-[#545B63]">{sub}</span>
     </div>
   )
@@ -380,7 +399,7 @@ function TruckRow({
   const openDriver = onOpenDriver && truck.driverId !== null ? () => onOpenDriver(truck.driverId!) : undefined
   const t = truck.totals
   return (
-    <div className="grid grid-cols-[236px_minmax(0,1fr)_156px] border-b border-[#E3E6E1]">
+    <div className="grid grid-cols-[236px_minmax(0,1fr)_184px] border-b border-[#E3E6E1]">
       <div
         className="flex min-w-0 flex-col gap-1 border-r border-[#E3E6E1] px-3.5 py-3"
         onDoubleClick={onOpenTruck}
@@ -456,29 +475,47 @@ function TruckRow({
         {showMoney && (
           <>
             <Total label="Marża" value={signedEur(t.margin)} strong />
-            <Total label="Przychód" value={eur(t.revenue)} />
+            <Total label="Przychód" value={pair(eur(t.revenue), eur(t.carrier))} title="nasz / przewoźnika" />
+            <Total label="EUR/KM" value={t.km ? pair(perKm(t.revenue / t.km), perKm(t.carrier / t.km)) : '—'} title="nasz / przewoźnika" />
           </>
         )}
         <Total label="Km razem" value={km(t.km, t.kmEstimated)} />
-        <Total label="Na km · puste" value={`${t.km ? perKm(t.revenue / t.km) : '—'} · ${pct(t.kmEmpty, t.km)}`} small />
       </div>
     </div>
   )
 }
 
-export function Total({ label, value, strong, small }: { label: string; value: string; strong?: boolean; small?: boolean }) {
+export function Total({
+  label,
+  value,
+  strong,
+  small,
+  title,
+  className = '',
+}: {
+  label: string
+  value: string
+  strong?: boolean
+  small?: boolean
+  /** Hover hint (e.g. "nasz / przewoźnika" for paired values). */
+  title?: string
+  className?: string
+}) {
   return (
-    <div className="flex flex-col">
+    <div className={`flex flex-col ${className}`} title={title}>
       <span className="text-[11px] font-semibold uppercase tracking-wider text-[#545B63]">{label}</span>
-      <span className={`font-mono ${strong ? 'text-[15px] font-semibold' : ''} ${small ? 'text-[12.5px]' : ''}`}>{value}</span>
+      <span className={`whitespace-nowrap font-mono ${strong ? 'text-[15px] font-semibold' : ''} ${small ? 'text-[12.5px]' : ''}`}>{value}</span>
     </div>
   )
 }
 
-const EVENT_KINDS: NoteKind[] = ['note', 'service', 'pause', 'driver', 'trailer', 'position']
+/** "+" under a day: board events, plus a preliminary order (zlecenie wstępne, 12.10.2026). */
+type DialogKind = NoteKind | 'draft'
+const EVENT_KINDS: DialogKind[] = ['note', 'draft', 'service', 'pause', 'driver', 'trailer', 'position']
+const DIALOG_LABELS: Record<string, string> = { ...EVENT_LABELS, draft: 'Zlecenie wstępne' }
 
 export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck; day: string; onClose: () => void; onSaved: (message?: string) => void }) {
-  const [kind, setKind] = useState<NoteKind>('note')
+  const [kind, setKind] = useState<DialogKind>('note')
   const [text, setText] = useState('')
   const [place, setPlace] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -486,6 +523,7 @@ export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck
   const needsPlace = kind === 'position'
 
   const save = async () => {
+    if (kind === 'draft') return
     setSaving(true)
     try {
       await boardApi.addEvent({
@@ -508,6 +546,9 @@ export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck
   if (kind === 'driver') {
     return <DriverChangeDialog truck={truck} day={day} onClose={onClose} onSaved={onSaved} />
   }
+  if (kind === 'draft') {
+    return <DraftDialog truck={truck} day={day} onClose={onClose} onSaved={onSaved} />
+  }
 
   return (
     <div role="dialog" aria-modal="true" aria-labelledby="event-title" className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
@@ -526,10 +567,10 @@ export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck
         <div className="flex flex-col gap-3 text-sm">
           <label className="flex flex-col gap-1 font-semibold">
             Rodzaj
-            <select value={kind} onChange={e => setKind(e.target.value as NoteKind)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal">
+            <select value={kind} onChange={e => setKind(e.target.value as DialogKind)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal">
               {EVENT_KINDS.map(k => (
                 <option key={k} value={k}>
-                  {EVENT_LABELS[k]}
+                  {DIALOG_LABELS[k]}
                 </option>
               ))}
             </select>

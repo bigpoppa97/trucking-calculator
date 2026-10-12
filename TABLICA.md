@@ -42,6 +42,17 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
 6. Zlecenie spedycyjne anulowane w aplikacji (status A) bez wpisu PRZ — auto go nie wiezie: znika z tablicy
    i z wyników, zostaje tylko na liście zleceń zestawu jako „anulowane u przewoźnika”.
 
+7. Godziny: tablica czyta kolumny „Godziny załadunku” i „Godziny rozładunku” z eksportu (muszą być w zapisanym
+   widoku). Załadunek = początek okna, rozładunek = koniec okna („do 16:00”). Dwa zlecenia auta tego samego dnia
+   stoją w jednym wierszu (dzień dzielony na pół), gdy rozładunek pierwszego jest przed załadunkiem drugiego.
+   Faktyczna godzina inna niż w zleceniu: panel zlecenia → „Popraw ręcznie” → Załadunek / Rozładunek,
+   np. `07.10 12:00` albo sama godzina `12:00`. Zmieniona data załadunku przenosi zlecenie na ten dzień (także w sumach).
+8. Zlecenie wstępne (uzgodnione, zanim klient wyśle zlecenie): „+” pod dniem auta → Rodzaj „Zlecenie wstępne”.
+   Numer „W-1”, „W-2”…, przerywana szara ramka. Liczy się w km i sumach (bez którejś z kwot — tylko w km).
+   Import zastępuje je zleceniem z aplikacji na tym samym aucie z załadunkiem ±1 dzień (notatki przechodzą);
+   kilka pasujących zleceń → pytanie w „Do sprawdzenia”. Dzień po rozładunku bez zlecenia → „Do sprawdzenia”
+   (Zostaw / Usuń). Edycja i usuwanie: panel zlecenia.
+
 Ręczne poprawki (panel zlecenia → „Popraw ręcznie”) obowiązują, dopóki aplikacja nie zmieni tej samej wartości —
 wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
 

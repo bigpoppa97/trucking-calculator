@@ -7,6 +7,9 @@ import { TruckPage, parseTruckHash, truckHash } from './TruckPage.js'
 import { DriverPage, parseDriverHash } from './DriverPage.js'
 import { ReviewPage } from './ReviewPage.js'
 import { FleetPage } from './FleetPage.js'
+import { placeBars } from './TruckTimeline.js'
+import { ordersWithDrafts } from './format.js'
+import type { WeekBar } from './boardApi.js'
 
 vi.mock('./boardApi.js', async importOriginal => {
   const original = await importOriginal<typeof import('./boardApi.js')>()
@@ -45,6 +48,8 @@ const WEEK: WeekView = {
           title: 'Warszawa → Budapeszt (Vecsés)',
           startDate: '2026-09-22',
           endDate: '2026-09-23',
+          startTime: '16:00',
+          endTime: '16:00',
           startDay: 1,
           endDay: 2,
           revAlloc: 1500,
@@ -58,6 +63,7 @@ const WEEK: WeekView = {
           excluded: null,
           missing: false,
           noCarrier: false,
+          draft: false,
           inWeek: true,
           noteLines: [],
           serviceConflict: null,
@@ -66,10 +72,10 @@ const WEEK: WeekView = {
       events: [],
       services: [],
       required: [],
-      totals: { revenue: 1500, cost: 1300, margin: 200, km: 680, kmEmpty: 0, legs: 1, kmEstimated: true },
+      totals: { revenue: 1500, carrier: 1300, cost: 1300, margin: 200, km: 680, kmEmpty: 0, legs: 1, kmEstimated: true },
     },
   ],
-  kpis: { margin: 200, revenue: 1500, cost: 1300, orders: 1, km: 680, kmEmpty: 0, revenuePerKm: 2.21, costPerKm: 1.91, kmEstimated: true, openIssues: 2 },
+  kpis: { margin: 200, revenue: 1500, cost: 1300, orders: 1, drafts: 0, km: 680, kmEmpty: 0, revenuePerKm: 2.21, costPerKm: 1.91, kmEstimated: true, openIssues: 2 },
   lastImport: { importedAt: '2026-09-23T08:00:00Z', filename: 'export.xlsx' },
 }
 
@@ -83,7 +89,13 @@ const ORDER: OrderDetails = {
     statusSped: 'Z',
     loadDate: '2026-09-22',
     unloadDate: '2026-09-23',
+    loadTime: '16:00',
+    unloadTime: null,
+    loadAtManual: false,
+    unloadAtManual: false,
     route: 'Warszawa → Budapeszt (Vecsés)',
+    draftNoMoney: false,
+    draft: null,
     rev: 1500,
     costApp: 1300,
     amountsTotal: 1300,
@@ -452,7 +464,7 @@ const TRUCK_VIEW = (): TruckView => {
     to: '2026-09-27',
     today: '2026-09-23',
     weeks: [{ weekStart: '2026-09-21', weekEnd: '2026-09-27', weekNumber: 39, days: WEEK.days, row }],
-    totals: { revenue: 1500, cost: 1300, margin: 200, km: 680, kmEmpty: 0, legs: 1, kmEstimated: true, services: 1 },
+    totals: { revenue: 1500, carrier: 1300, cost: 1300, margin: 200, km: 680, kmEmpty: 0, legs: 1, kmEstimated: true, services: 1 },
     orders: [
       {
         orderNo: '79-1000-26',
@@ -463,6 +475,7 @@ const TRUCK_VIEW = (): TruckView => {
         endDate: '2026-09-23',
         revAlloc: 1500,
         amount: 1300,
+        carrierAmount: 1300,
         margin: 200,
         km: 680,
         kmEstimated: true,
@@ -470,6 +483,7 @@ const TRUCK_VIEW = (): TruckView => {
         excluded: null,
         noCarrier: false,
         missing: false,
+        draft: false,
         driver: 'Kierowca A',
         driverManual: false,
       },
@@ -688,5 +702,117 @@ describe('DriverPage (certyfikaty)', () => {
     expect(screen.getByRole('button', { name: /AVSEC wygasa 01\.10/ })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('tab', { name: 'Zlecenia (1)' }))
     expect(within(screen.getByRole('tabpanel')).getByRole('columnheader', { name: 'Kierowca' })).toBeInTheDocument()
+  })
+})
+
+describe('paczka 12.10.2026', () => {
+  const bar = (over: Partial<WeekBar>): WeekBar => ({ ...WEEK.trucks[0]!.bars[0]!, ...over })
+
+  it('the week column: our / carrier revenue and EUR/KM; money hidden together; short order count', async () => {
+    api.week.mockResolvedValue(WEEK)
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    expect(await screen.findByText('1 500 € / 1 300 €')).toBeInTheDocument()
+    expect(screen.getByText('2,21 € / 1,91 €')).toBeInTheDocument()
+    expect(screen.getByText('1 zlecenie')).toBeInTheDocument()
+    expect(screen.queryByText(/puste ·|Na km · puste/)).not.toBeInTheDocument()
+    await userEvent.click(screen.getByLabelText('Pokaż kwoty'))
+    expect(screen.queryByText('2,21 € / 1,91 €')).not.toBeInTheDocument()
+    expect(screen.getAllByText('≈680 km').length).toBeGreaterThan(0)
+  })
+
+  it('order counts in Polish, with preliminary orders mentioned only when there are any', () => {
+    expect(ordersWithDrafts(1, 0)).toBe('1 zlecenie')
+    expect(ordersWithDrafts(23, 0)).toBe('23 zlecenia')
+    expect(ordersWithDrafts(12, 0)).toBe('12 zleceń')
+    expect(ordersWithDrafts(27, 2)).toBe('27 zleceń (w tym 2 wstępne)')
+    expect(ordersWithDrafts(27, 5)).toBe('27 zleceń (w tym 5 wstępnych)')
+  })
+
+  it('two orders sharing a day go in one row when the first is unloaded before the second is loaded', () => {
+    const a = bar({ key: 'a', orderNo: 'A', startDay: 1, endDay: 2, startDate: '2026-09-22', endDate: '2026-09-23', endTime: '16:00' })
+    const b = bar({ key: 'b', orderNo: 'B', startDay: 2, endDay: 2, startDate: '2026-09-23', endDate: '2026-09-23', startTime: '17:00', endTime: '23:00' })
+    const placed = placeBars([a, b])
+    expect(placed.map(p => [p.orderNo, p.lane, p.colStart, p.colEnd])).toEqual([
+      ['A', 1, 3, 6],
+      ['B', 1, 6, 7],
+    ])
+    // Unknown hour or loading before the unloading: two rows, whole days.
+    expect(placeBars([a, { ...b, startTime: null }]).map(p => p.lane)).toEqual([1, 2])
+    expect(placeBars([a, { ...b, startTime: '12:00' }]).map(p => [p.lane, p.colStart])).toEqual([
+      [1, 3],
+      [2, 5],
+    ])
+    // A one-day bar that already starts at noon cannot end at noon too.
+    const c = bar({ key: 'c', orderNo: 'C', startDay: 2, endDay: 2, startDate: '2026-09-23', endDate: '2026-09-23', startTime: '23:30', endTime: '23:59' })
+    expect(placeBars([a, b, c]).map(p => [p.orderNo, p.lane])).toEqual([
+      ['A', 1],
+      ['B', 1],
+      ['C', 2],
+    ])
+  })
+
+  it('a preliminary order from "+" under a day', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.places.mockResolvedValue([])
+    api.createDraft.mockResolvedValue('W-1')
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Dodaj zdarzenie: AA1050H, 24.09' }))
+    await userEvent.selectOptions(screen.getByLabelText('Rodzaj'), 'draft')
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(/Zlecenie wstępne · AA1050H/)).toBeInTheDocument()
+    const [loadPlace, unloadPlace] = within(dialog).getAllByLabelText('Miejsce')
+    await userEvent.type(loadPlace!, 'Wiedeń')
+    await userEvent.type(unloadPlace!, 'Wilno')
+    await userEvent.type(within(dialog).getByLabelText('Stawka klienta (€)'), '3620')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Dodaj zlecenie wstępne' }))
+    expect(api.createDraft).toHaveBeenCalledWith({
+      truckId: 1,
+      loadPlaces: 'Wiedeń',
+      loadDate: '2026-09-24',
+      loadTime: null,
+      unloadPlaces: 'Wilno',
+      unloadDate: '2026-09-25',
+      unloadTime: null,
+      client: '',
+      rev: '3620',
+      cost: null,
+    })
+    expect(await screen.findByRole('status')).toHaveTextContent('Dodano zlecenie wstępne W-1')
+  })
+
+  it('the order panel of a preliminary order: banner, edit and delete after a confirmation', async () => {
+    api.week.mockResolvedValue({ ...WEEK, trucks: [{ ...WEEK.trucks[0]!, bars: [bar({ orderNo: 'W-1', key: 'W-1|0', draft: true })] }] })
+    api.order.mockResolvedValue({
+      ...ORDER,
+      order: {
+        ...ORDER.order,
+        orderNo: 'W-1',
+        draftNoMoney: true,
+        draft: { truckId: 1, loadPlaces: 'Wiedeń', loadDate: '2026-09-22', loadTime: null, unloadPlaces: 'Wilno', unloadDate: '2026-09-23', unloadTime: null, client: '', rev: 3620, cost: null },
+      },
+    })
+    api.deleteDraft.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const barButton = await screen.findByRole('button', { name: /W-1, zlecenie wstępne/ })
+    expect(within(barButton).getByText(/wstępne/)).toBeInTheDocument()
+    await userEvent.click(barButton)
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText(/Bez obu kwot nie liczy się w sumach/)).toBeInTheDocument()
+    expect(within(panel).queryByText('Ręczne poprawki')).not.toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Usuń' }))
+    await userEvent.click(within(panel).getByRole('button', { name: 'Usuń' }))
+    expect(api.deleteDraft).toHaveBeenCalledWith('W-1')
+  })
+
+  it('review: a preliminary order with two possible orders is settled by choosing one', async () => {
+    api.issues.mockResolvedValue([
+      issue({ id: 7, kind: 'DRAFT_MATCH', ref: 'W-3', message: 'Zlecenie wstępne W-3 pasuje do kilku nowych zleceń', details: { candidates: ['79-1-26', '79-2-26'] } }),
+    ])
+    api.fleet.mockResolvedValue(FLEET)
+    api.imports.mockResolvedValue([])
+    api.resolveIssue.mockResolvedValue({ ok: true })
+    render(<ReviewPage onOpenOrder={() => {}} onIssuesChanged={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Zastąp zleceniem 79-2-26' }))
+    expect(api.resolveIssue).toHaveBeenCalledWith(7, 'replace', { orderNo: '79-2-26' })
   })
 })

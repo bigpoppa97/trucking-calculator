@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { boardApi, errorMessage, type Service, type TruckView, type WeekTruck } from './boardApi.js'
-import { DAY_NAMES, addDaysIso, dm, eur, km, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
+import { DAY_NAMES, addDaysIso, dm, eur, km, ordersLabel, pair, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
 import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { PHASE_LABELS, RequiredBadges, SERVICE_COLORS, ServiceDialog, defaultServiceDay, serviceTitle } from './serviceUi.js'
@@ -342,11 +342,16 @@ export function TruckPage({
         {showMoney && (
           <>
             <Kpi label="Marża" value={eur(tot.margin)} sub={`${pct(tot.margin, tot.revenue)} przychodu`} />
-            <Kpi label="Przychód" value={eur(tot.revenue)} sub={`${tot.legs} zleceń · ${dm(view.from)}–${dm(view.to)}`} />
+            <Kpi label="Przychód" value={eur(tot.revenue)} second={eur(tot.carrier)} sub={`nasz / przewoźnika · ${ordersLabel(tot.legs)} · ${dm(view.from)}–${dm(view.to)}`} />
+            <Kpi
+              label="EUR/KM"
+              value={perKm(tot.km ? tot.revenue / tot.km : null)}
+              second={perKm(tot.km ? tot.carrier / tot.km : null)}
+              sub="nasz / przewoźnika · na km razem"
+            />
           </>
         )}
         <Kpi label="Km razem" value={km(tot.km, tot.kmEstimated).replace(' km', '')} sub={`w tym puste ${pct(tot.kmEmpty, tot.km)}`} />
-        {showMoney && <Kpi label="Przychód na km" value={perKm(tot.km ? tot.revenue / tot.km : null)} sub="przychód / km razem" />}
         <Kpi label="Serwisy" value={String(tot.services)} sub={`w okresie · wymagane: ${t.required.length}`} />
       </section>
 
@@ -401,13 +406,18 @@ export function TruckPage({
                   <div className="grid grid-cols-2 content-start gap-x-3 gap-y-1.5 border-l border-[#E3E6E1] px-3.5 py-3 text-[13px]">
                     {showMoney && (
                       <>
-                        <Total label="Marża" value={signedEur(w.row.totals.margin)} strong />
-                        <Total label="Przychód" value={eur(w.row.totals.revenue)} />
+                        <Total label="Marża" value={signedEur(w.row.totals.margin)} strong className="col-span-2" />
+                        <Total label="Przychód" value={pair(eur(w.row.totals.revenue), eur(w.row.totals.carrier))} title="nasz / przewoźnika" className="col-span-2" />
+                        <Total
+                          label="EUR/KM"
+                          value={w.row.totals.km ? pair(perKm(w.row.totals.revenue / w.row.totals.km), perKm(w.row.totals.carrier / w.row.totals.km)) : '—'}
+                          title="nasz / przewoźnika"
+                          className="col-span-2"
+                        />
                       </>
                     )}
                     <Total label="Km razem" value={km(w.row.totals.km, w.row.totals.kmEstimated)} />
                     <Total label="Puste km" value={pct(w.row.totals.kmEmpty, w.row.totals.km)} />
-                    {showMoney && <Total label="Na km" value={w.row.totals.km ? perKm(w.row.totals.revenue / w.row.totals.km) : '—'} />}
                   </div>
                 </div>
               </div>
@@ -480,13 +490,30 @@ export function TruckPage({
                       </>
                     )}
                     <th className="px-2 py-2 text-right">Km</th>
-                    {showMoney && <th className="px-2 py-2 text-right">€/km</th>}
+                    {showMoney && (
+                      <th className="px-2 py-2 text-right" title="nasz / przewoźnika">
+                        €/km nasz / przewoźnika
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {view.orders.map(o => {
                     const off = Boolean(o.excluded || o.noCarrier)
-                    const status = o.excluded === 'cancelled' ? 'anulowane' : o.excluded === 'unconfirmed' ? 'niezatwierdzone' : o.excluded === 'manual' ? 'wyłączone' : o.noCarrier ? 'anulowane u przewoźnika' : o.missing ? 'zniknęło' : null
+                    const status =
+                      o.excluded === 'cancelled'
+                        ? 'anulowane'
+                        : o.excluded === 'unconfirmed'
+                          ? 'niezatwierdzone'
+                          : o.excluded === 'manual'
+                            ? 'wyłączone'
+                            : o.noCarrier
+                              ? 'anulowane u przewoźnika'
+                              : o.missing
+                                ? 'zniknęło'
+                                : o.draft
+                                  ? 'wstępne'
+                                  : null
                     return (
                       <tr key={`${o.orderNo}|${o.legIndex}`} className={`border-b border-[#ECEEEA] ${off ? 'text-[#8A939C]' : ''}`}>
                         <td className="px-2 py-2">
@@ -512,7 +539,11 @@ export function TruckPage({
                           </>
                         )}
                         <td className="px-2 py-2 text-right font-mono">{km(o.km, o.kmEstimated)}</td>
-                        {showMoney && <td className="px-2 py-2 text-right font-mono">{o.km && o.revAlloc !== null ? perKm(o.revAlloc / o.km) : '—'}</td>}
+                        {showMoney && (
+                          <td className="whitespace-nowrap px-2 py-2 text-right font-mono">
+                            {o.km && o.revAlloc !== null ? pair(perKm(o.revAlloc / o.km), o.carrierAmount !== null ? perKm(o.carrierAmount / o.km) : '—') : '—'}
+                          </td>
+                        )}
                       </tr>
                     )
                   })}
@@ -530,7 +561,9 @@ export function TruckPage({
                       </>
                     )}
                     <td className="px-2 py-2 text-right font-mono">{km(tot.km, tot.kmEstimated)}</td>
-                    {showMoney && <td className="px-2 py-2 text-right font-mono">{tot.km ? perKm(tot.revenue / tot.km) : '—'}</td>}
+                    {showMoney && (
+                      <td className="whitespace-nowrap px-2 py-2 text-right font-mono">{tot.km ? pair(perKm(tot.revenue / tot.km), perKm(tot.carrier / tot.km)) : '—'}</td>
+                    )}
                   </tr>
                 </tfoot>
               </table>

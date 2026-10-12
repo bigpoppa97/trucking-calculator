@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs'
 import { aliasKey, cellText, normalizePlate, parseAmount, parseDate } from './normalize.js'
+import { loadHour, parseHoursWindow, unloadHour } from './times.js'
 
 /**
  * Reads the order-list export from the company application (an AG Grid
@@ -33,6 +34,10 @@ export interface ExportRow {
   notes: string
   subPlate: string
   trailerRaw: string
+  /** Loading hour "HH:MM" (start of the window); null = not given; undefined = no such column in the file. */
+  loadTime?: string | null | undefined
+  /** Unloading hour "HH:MM" (end of the window, "do 16:00"); null / undefined as above. */
+  unloadTime?: string | null | undefined
 }
 
 type Field = keyof ExportRow
@@ -63,6 +68,9 @@ const COLUMNS: ColumnSpec[] = [
   { field: 'notes', headers: ['uwagi'], required: true, label: 'Uwagi' },
   { field: 'subPlate', headers: ['ciagnik podwykonawcy'], required: true, label: 'Ciągnik podwykonawcy' },
   { field: 'trailerRaw', headers: ['naczepa podwykonawcy'], required: false, label: 'Naczepa podwykonawcy' },
+  // 12.10.2026: hours put orders that share a day in one row on the board.
+  { field: 'loadTime', headers: ['godziny zaladunku', 'godzina zaladunku'], required: false, label: 'Godziny załadunku' },
+  { field: 'unloadTime', headers: ['godziny rozladunku', 'godzina rozladunku', 'godziny dostawy'], required: false, label: 'Godziny rozładunku' },
 ]
 
 export class ExportFormatError extends Error {
@@ -148,6 +156,8 @@ export async function readExport(data: ArrayBuffer | Uint8Array): Promise<Export
       notes: cellText(get('notes')),
       subPlate: normalizePlate(get('subPlate')),
       trailerRaw: cellText(get('trailerRaw')),
+      loadTime: columnOf.has('loadTime') ? loadHour(parseHoursWindow(get('loadTime'))) : undefined,
+      unloadTime: columnOf.has('unloadTime') ? unloadHour(parseHoursWindow(get('unloadTime'))) : undefined,
     })
   }
   if (skippedNoDate > 0) warnings.push(`Pominięto ${skippedNoDate} wierszy bez daty załadunku.`)

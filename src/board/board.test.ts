@@ -56,7 +56,12 @@ interface Row {
   notes?: string
   sub?: string
   trailer?: string
+  /** "Godziny załadunku" / "Godziny rozładunku" as the application writes them ("16:00 — —"). */
+  lh?: string
+  uh?: string
 }
+
+const HOURS_HEADERS = [...HEADERS, 'Godziny załadunku', 'Godziny rozładunku']
 
 async function xlsx(rows: Row[], headers = HEADERS): Promise<Uint8Array> {
   const wb = new ExcelJS.Workbook()
@@ -82,6 +87,8 @@ async function xlsx(rows: Row[], headers = HEADERS): Promise<Uint8Array> {
       Uwagi: r.notes ?? null,
       'Ciągnik podwykonawcy': r.sub ?? null,
       'Naczepa podwykonawcy': r.trailer ?? null,
+      'Godziny załadunku': r.lh ?? '— — —',
+      'Godziny rozładunku': r.uh ?? '— — —',
     }
     ws.addRow(headers.map(h => byHeader[h] ?? null))
   }
@@ -951,5 +958,218 @@ describe('migration 0012', () => {
     } finally {
       await raw.destroy()
     }
+  })
+})
+
+describe('paczka 12.10.2026 — hours, totals, route header, "zniknęło"', () => {
+  const truckId = async (plate: string) => (await board.fleet()).find(t => t.currentPlate === plate)!.id
+
+  it('reads hour windows from the export; hours appearing for the first time are not a change; a file without the columns keeps them', async () => {
+    const rows: Row[] = [
+      { no: '79-1-26', from: 'Łódź', ld: '2026-09-21', to: 'Vecsés', ud: '2026-09-22', rev: 1400, cost: 1150, sub: 'AA1001A', trailer: 'TR100', lh: '16:00 — —', uh: '— — 16:00' },
+      { no: '79-2-26', from: 'Vecsés', ld: '2026-09-22', to: 'Flughafen Wien', ud: '2026-09-22', rev: 500, cost: 400, sub: 'AA1001A', trailer: 'TR100', lh: '17:00 — —', uh: '23:00 — —' },
+    ]
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily') // no hour columns yet
+    const second = await board.importFile(await xlsx(rows, HOURS_HEADERS), 'b.xlsx', 'daily')
+    expect(second.updated).toEqual([])
+    const bars = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!.bars
+    expect(bars.map(b => [b.orderNo, b.startTime, b.endTime])).toEqual([
+      ['79-1-26', '16:00', '16:00'],
+      ['79-2-26', '17:00', '23:00'],
+    ])
+    await board.importFile(await xlsx(rows), 'c.xlsx', 'daily')
+    const d = await board.orderDetails('79-2-26')
+    expect([d.order.loadTime, d.order.unloadTime]).toEqual(['17:00', '23:00'])
+    const changed = await board.importFile(await xlsx([rows[0]!, { ...rows[1]!, uh: '22:00 — 22:00' }], HOURS_HEADERS), 'd.xlsx', 'daily')
+    expect(changed.updated).toEqual([{ orderNo: '79-2-26', changes: [{ field: 'unload_time', from: '23:00', to: '22:00' }] }])
+  })
+
+  it('manual loading/unloading: date and hour or just the hour; refused when unreadable or out of order; the application wins only when it changes it', async () => {
+    const row: Row = { no: '79-3-26', from: 'Warszawa', ld: '2026-09-21', to: 'Vecsés', ud: '2026-09-23', rev: 1400, cost: 1150, sub: 'AA1001A', trailer: 'TR100', lh: '08:00 — 09:00', uh: '— — 16:00' }
+    await board.importFile(await xlsx([row], HOURS_HEADERS), 'a.xlsx', 'daily')
+    await board.setOverride('79-3-26', 'unload_at', '22.09 22:00')
+    let d = await board.orderDetails('79-3-26')
+    expect([d.order.unloadDate, d.order.unloadTime, d.order.unloadAtManual]).toEqual(['2026-09-22', '22:00', true])
+    expect(d.overrides.find(o => o.field === 'unload_at')?.display).toBe('22.09 22:00')
+    await board.setOverride('79-3-26', 'unload_at', '12:00')
+    d = await board.orderDetails('79-3-26')
+    expect([d.order.unloadDate, d.order.unloadTime]).toEqual(['2026-09-22', '12:00'])
+    await expect(board.setOverride('79-3-26', 'unload_at', 'jutro')).rejects.toMatchObject({ code: 'BAD_AT' })
+    await expect(board.setOverride('79-3-26', 'unload_at', '20.09 10:00')).rejects.toMatchObject({ code: 'AT_ORDER' })
+    const bar = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!.bars[0]!
+    expect([bar.endDate, bar.endTime]).toEqual(['2026-09-22', '12:00'])
+
+    // Same values from the application: the correction stays.
+    await board.importFile(await xlsx([row], HOURS_HEADERS), 'b.xlsx', 'daily')
+    expect((await board.orderDetails('79-3-26')).order.unloadAtManual).toBe(true)
+    // The application changes the unloading hour: it wins and the review says so.
+    await board.importFile(await xlsx([{ ...row, uh: '— — 18:00' }], HOURS_HEADERS), 'c.xlsx', 'daily')
+    d = await board.orderDetails('79-3-26')
+    expect([d.order.unloadDate, d.order.unloadTime, d.order.unloadAtManual]).toEqual(['2026-09-23', '18:00', false])
+    expect((await issuesOf('OVERRIDE_SUPERSEDED'))[0]?.message).toContain('(rozładunek)')
+  })
+
+  it('a correction made before the file had hours survives the hours arriving; a corrected loading day moves the order to that week', async () => {
+    const row: Row = { no: '79-4-26', from: 'Warszawa', ld: '2026-09-28', to: 'Vecsés', ud: '2026-09-29', rev: 1400, cost: 1150, sub: 'AA1001A', trailer: 'TR100' }
+    await board.importFile(await xlsx([row]), 'a.xlsx', 'daily')
+    await board.setOverride('79-4-26', 'load_at', '27.09 20:00')
+    await board.importFile(await xlsx([{ ...row, lh: '06:00 — —' }], HOURS_HEADERS), 'b.xlsx', 'daily')
+    const d = await board.orderDetails('79-4-26')
+    expect([d.order.loadDate, d.order.loadTime, d.order.loadAtManual]).toEqual(['2026-09-27', '20:00', true])
+    const before = await board.weekView('2026-09-21')
+    expect(before.kpis.orders).toBe(1)
+    expect(before.trucks.find(t => t.plate === 'AA1001A')!.totals.revenue).toBe(1400)
+    expect((await board.weekView('2026-09-28')).kpis.orders).toBe(0)
+  })
+
+  it('truck totals: our revenue and the carrier revenue (amounts without ferries), on the board and the set page', async () => {
+    await board.importFile(
+      await xlsx([{ no: '79-5-26', from: 'Warszawa', ld: '2026-09-21', to: 'Vecsés', ud: '2026-09-22', rev: 2000, cost: 1500, sub: 'AA1001A', trailer: 'TR100', notes: 'PROM 300' }]),
+      'a.xlsx',
+      'daily',
+    )
+    const t = (await board.weekView('2026-09-21')).trucks.find(x => x.plate === 'AA1001A')!.totals
+    expect([t.revenue, t.carrier, t.cost, t.margin]).toEqual([2000, 1500, 1800, 200])
+    const page = await board.truckView(await truckId('AA1001A'), '2026-09-21', '2026-09-21')
+    expect(page.totals.carrier).toBe(1500)
+    expect(page.orders[0]).toMatchObject({ amount: 1800, carrierAmount: 1500 })
+  })
+
+  it('order panel route: every place but the last unloading before the arrow', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-6-26', from: 'Warszawa', ld: '2026-09-21', to: 'Pyrzowice + Vecsés', ud: '2026-09-22', rev: 1400, cost: 1300, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-7-26', from: 'Gdańsk + Łódź', ld: '2026-09-23', to: 'Ożarowice', ud: '2026-09-24', rev: 2120, cost: 1620, sub: 'AA1002A', trailer: 'TR200' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    expect((await board.orderDetails('79-6-26')).order.route).toBe('Warszawa + Katowice (Pyrzowice) → Budapeszt (Vecsés)')
+    expect((await board.orderDetails('79-7-26')).order.route).toBe('Gdańsk + Łódź → Katowice (Pyrzowice)')
+    // The bar keeps the short title with the destination first.
+    const bar = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!.bars[0]!
+    expect(bar.title).toBe('Warszawa → Budapeszt (Vecsés) (przez Katowice (Pyrzowice))')
+  })
+
+  it('"zniknęło" is told only in the order panel, not on the bar', async () => {
+    const a: Row = { no: '79-8-26', from: 'Warszawa', ld: '2026-09-21', to: 'Vecsés', ud: '2026-09-22', rev: 1400, cost: 1300, sub: 'AA1001A', trailer: 'TR100' }
+    const b: Row = { no: '79-9-26', from: 'Vecsés', ld: '2026-09-23', to: 'Warszawa', ud: '2026-09-24', rev: 1400, cost: 1300, sub: 'AA1001A', trailer: 'TR100' }
+    await board.importFile(await xlsx([a, b]), 'a.xlsx', 'daily')
+    await board.importFile(await xlsx([b, { ...a, no: '79-10-26', ld: '2026-09-21' }]), 'b.xlsx', 'daily')
+    const bar = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!.bars.find(x => x.orderNo === '79-8-26')!
+    expect(bar.missing).toBe(true)
+    expect(bar.noteLines.join(' ')).not.toContain('Zniknęło')
+    expect((await board.orderDetails('79-8-26')).order.missing).toBe(true)
+  })
+})
+
+describe('preliminary orders (zlecenia wstępne, 12.10.2026)', () => {
+  const truckId = async (plate: string) => (await board.fleet()).find(t => t.currentPlate === plate)!.id
+  const draft = async (plate: string, over: Partial<Parameters<BoardService['createDraft']>[0]> = {}) =>
+    board.createDraft({
+      truckId: await truckId(plate),
+      loadPlaces: 'Warszawa',
+      loadDate: '2026-09-28',
+      unloadPlaces: 'Wilno',
+      unloadDate: '2026-09-29',
+      client: 'Klient Testowy',
+      rev: '2 000 €',
+      cost: '1600',
+      ...over,
+    })
+
+  it('is on the board and in the totals like an order; without both rates only its km count', async () => {
+    expect(await draft('AA1001A', { note: 'klient potwierdzi jutro' })).toBe('W-1')
+    const week = await board.weekView('2026-09-28')
+    const truck = week.trucks.find(t => t.plate === 'AA1001A')!
+    expect(truck.bars[0]).toMatchObject({ orderNo: 'W-1', draft: true, title: 'Warszawa → Wilno' })
+    expect([truck.totals.revenue, truck.totals.carrier, truck.totals.margin]).toEqual([2000, 1600, 400])
+    expect([week.kpis.orders, week.kpis.drafts, week.kpis.revenue]).toEqual([1, 1, 2000])
+
+    expect(await draft('AA1002A', { cost: '' })).toBe('W-2')
+    const d = await board.orderDetails('W-2')
+    expect([d.order.draftNoMoney, d.order.margin, d.order.draft?.rev]).toEqual([true, null, 2000])
+    const again = await board.weekView('2026-09-28')
+    expect(again.kpis.revenue).toBe(2000)
+    expect(again.trucks.find(t => t.plate === 'AA1002A')!.totals.revenue).toBe(0)
+    expect(await issuesOf('MISSING_TRAILER')).toEqual([])
+    expect((await board.orderDetails('W-1')).notes.map(n => n.text)).toEqual(['klient potwierdzi jutro'])
+  })
+
+  it('checks the form and logs edits', async () => {
+    await expect(draft('AA1001A', { loadPlaces: ' ' })).rejects.toMatchObject({ code: 'EMPTY_PLACE' })
+    await expect(draft('AA1001A', { unloadDate: '2026-09-27' })).rejects.toMatchObject({ code: 'AT_ORDER' })
+    await expect(draft('AA1001A', { loadTime: '25:00' })).rejects.toMatchObject({ code: 'BAD_TIME' })
+    await expect(draft('AA1001A', { rev: '2000 zł' })).rejects.toMatchObject({ code: 'BAD_NUMBER' })
+    const no = await draft('AA1001A')
+    await board.updateDraft(no, { cost: '1500', unloadTime: '10:00' })
+    const d = await board.orderDetails(no)
+    expect([d.order.draft?.cost, d.order.unloadTime]).toEqual([1500, '10:00'])
+    expect(d.history.map(h => h.text).join('\n')).toMatch(/zmiana zlecenia wstępnego — test: .*kwota dla przewoźnika 1600 → 1500/)
+  })
+
+  it('the imported order on the same truck, loading within a day, replaces it; notes move to the order', async () => {
+    const no = await draft('AA1001A', { note: 'awizacja 2 h wcześniej' })
+    await draft('BB2001B') // other truck: stays
+    const summary = await board.importFile(
+      await xlsx([{ no: '79-60-26', from: 'Warszawa', ld: '2026-09-29', to: 'Vilnius', ud: '2026-09-30', rev: 2100, cost: 1600, sub: 'AA1001A', trailer: 'TR100' }]),
+      'a.xlsx',
+      'daily',
+    )
+    expect(summary.replacedDrafts).toEqual([{ draftNo: no, orderNo: '79-60-26' }])
+    await expect(board.orderDetails(no)).rejects.toMatchObject({ code: 'ORDER_NOT_FOUND' })
+    const d = await board.orderDetails('79-60-26')
+    expect(d.notes.map(n => n.text)).toEqual(['awizacja 2 h wcześniej'])
+    expect(d.history.map(h => h.text)).toContain('zastąpiło zlecenie wstępne W-1 (Warszawa → Wilno, 28.09)')
+    expect((await board.orderDetails('W-2')).order.draft).not.toBeNull()
+    expect(summary.disappeared).toEqual([])
+  })
+
+  it('two possible orders: the same loading place decides, otherwise the review asks', async () => {
+    const a = await draft('AA1001A', { loadPlaces: 'Wien', loadDate: '2026-09-28' })
+    const summary = await board.importFile(
+      await xlsx([
+        { no: '79-61-26', from: 'Warszawa', ld: '2026-09-28', to: 'Vilnius', ud: '2026-09-29', rev: 2100, cost: 1600, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-62-26', from: 'Wien', ld: '2026-09-29', to: 'Vilnius', ud: '2026-09-30', rev: 2100, cost: 1600, sub: 'AA1001A', trailer: 'TR100' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    expect(summary.replacedDrafts).toEqual([{ draftNo: a, orderNo: '79-62-26' }])
+
+    const b = await draft('AA1002A', { loadPlaces: 'Gdańsk', loadDate: '2026-09-28' })
+    const second = await board.importFile(
+      await xlsx([
+        { no: '79-63-26', from: 'Warszawa', ld: '2026-09-28', to: 'Vilnius', ud: '2026-09-29', rev: 2100, cost: 1600, sub: 'AA1002A', trailer: 'TR200' },
+        { no: '79-64-26', from: 'Wien', ld: '2026-09-29', to: 'Vilnius', ud: '2026-09-30', rev: 2100, cost: 1600, sub: 'AA1002A', trailer: 'TR200' },
+      ]),
+      'b.xlsx',
+      'daily',
+    )
+    expect(second.draftQuestions).toEqual([b])
+    const [question] = await issuesOf('DRAFT_MATCH')
+    expect(question?.details['candidates']).toEqual(['79-63-26', '79-64-26'])
+    await expect(board.resolveIssue(question!.id, 'replace', { orderNo: '79-1-26' })).rejects.toMatchObject({ code: 'BAD_ORDER' })
+    await board.resolveIssue(question!.id, 'replace', { orderNo: '79-64-26' })
+    await expect(board.orderDetails(b)).rejects.toMatchObject({ code: 'ORDER_NOT_FOUND' })
+    expect(await issuesOf('DRAFT_MATCH')).toEqual([])
+  })
+
+  it('past its unloading without an order it goes to review (keep or delete); imports never call it "zniknęło"', async () => {
+    const no = await draft('AA1001A', { loadDate: '2026-09-24', unloadDate: '2026-09-25' })
+    await board.importFile(
+      await xlsx([{ no: '79-70-26', from: 'Warszawa', ld: '2026-09-21', to: 'Vilnius', ud: '2026-09-22', rev: 2100, cost: 1600, sub: 'AA1002A', trailer: 'TR200' }, { no: '79-71-26', from: 'Warszawa', ld: '2026-09-27', to: 'Vilnius', ud: '2026-09-28', rev: 2100, cost: 1600, sub: 'AA1002A', trailer: 'TR200' }]),
+      'a.xlsx',
+      'daily',
+    )
+    expect(await issuesOf('DISAPPEARED')).toEqual([])
+    const [stale] = await issuesOf('DRAFT_STALE')
+    expect(stale?.ref).toBe(no)
+    await board.resolveIssue(stale!.id, 'dismiss', {})
+    expect(await issuesOf('DRAFT_STALE')).toEqual([])
+    const other = await draft('AA1002A', { loadDate: '2026-09-23', unloadDate: '2026-09-24' })
+    const [second] = await issuesOf('DRAFT_STALE')
+    await board.resolveIssue(second!.id, 'delete', {})
+    await expect(board.orderDetails(other)).rejects.toMatchObject({ code: 'ORDER_NOT_FOUND' })
   })
 })

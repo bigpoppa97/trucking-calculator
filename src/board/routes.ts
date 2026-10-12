@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { NoteKind } from '../db/schema.js'
 import type { HereGeocodingClient } from '../here/hereGeocodingClient.js'
-import { BoardError, type BoardService, type ServiceInput, type ServicePatch } from './boardService.js'
+import { BoardError, type BoardService, type DraftInput, type DraftPatch, type ServiceInput, type ServicePatch } from './boardService.js'
 import { ExportFormatError } from './exportReader.js'
 import { foldDiacritics } from './normalize.js'
 
@@ -127,6 +127,44 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
           ...(request.body.place !== undefined ? { place: request.body.place } : {}),
         }),
       ),
+  )
+
+  // Preliminary orders (zlecenia wstępne, 12.10.2026): typed on the board, replaced by the imported order.
+  const DRAFT_FIELDS = {
+    loadPlaces: { type: 'string', minLength: 1, maxLength: 200 },
+    loadDate: DATE,
+    loadTime: { type: ['string', 'null'], maxLength: 5 },
+    unloadPlaces: { type: 'string', minLength: 1, maxLength: 200 },
+    unloadDate: DATE,
+    unloadTime: { type: ['string', 'null'], maxLength: 5 },
+    client: { type: 'string', maxLength: 200 },
+    rev: { type: ['string', 'null'], maxLength: 40 },
+    cost: { type: ['string', 'null'], maxLength: 40 },
+  } as const
+
+  app.post<{ Body: DraftInput }>(
+    '/api/board/drafts',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: { truckId: { type: 'integer', minimum: 1 }, ...DRAFT_FIELDS, note: { type: 'string', maxLength: 2000 } },
+          required: ['truckId', 'loadPlaces', 'loadDate', 'unloadPlaces', 'unloadDate'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => handle(reply, async () => ({ orderNo: await as(request).createDraft(request.body) })),
+  )
+
+  app.patch<{ Params: { orderNo: string }; Body: DraftPatch }>(
+    '/api/board/drafts/:orderNo',
+    { schema: { params: ORDER_PARAMS, body: { type: 'object', properties: DRAFT_FIELDS, additionalProperties: false } } },
+    async (request, reply) => handle(reply, () => as(request).updateDraft(request.params.orderNo, request.body)),
+  )
+
+  app.delete<{ Params: { orderNo: string } }>('/api/board/drafts/:orderNo', { schema: { params: ORDER_PARAMS } }, async (request, reply) =>
+    handle(reply, () => as(request).deleteDraft(request.params.orderNo)),
   )
 
   // Set page (strona zestawu): one tractor over whole weeks covering [from, to].

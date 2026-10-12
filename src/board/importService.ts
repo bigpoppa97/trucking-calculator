@@ -5,6 +5,9 @@ import { readExport, type ExportRow } from './exportReader.js'
 import { parsePrz, resolveSwapDate } from './prz.js'
 import { parseFerries } from './ferry.js'
 import { raiseEventIssue } from './issues.js'
+import { matchDrafts, replaceDraft, type MatchDraft, type MatchOrder } from './drafts.js'
+import { splitPlaces } from './normalize.js'
+import { formatAt, parseAtValue } from './times.js'
 
 /**
  * Import of the application's order-list export.
@@ -44,6 +47,10 @@ export interface ImportSummary {
   reappeared: string[]
   supersededOverrides: Array<{ orderNo: string; field: string }>
   newTruckCandidates: Array<{ plate: string; carrier: string; orders: number }>
+  /** Preliminary orders replaced by an order from this file (12.10.2026). */
+  replacedDrafts?: Array<{ draftNo: string; orderNo: string }>
+  /** Preliminary orders with more than one possible order — asked in the review queue. */
+  draftQuestions?: string[]
   warnings: string[]
 }
 
@@ -62,10 +69,15 @@ export const FIELD_LABELS: Record<string, string> = {
   status_sped: 'status zl. spedycyjnego',
   carrier: 'przewoźnik',
   client: 'klient',
+  load_time: 'godzina załadunku',
+  unload_time: 'godzina rozładunku',
 }
 
+/** Hours: the first time a file brings them is not a change in the application. */
+const TIME_FIELDS = new Set(['load_time', 'unload_time'])
+
 /** Fields whose manual correction shadows an application value. */
-const TRACKED_OVERRIDES = new Set(['rev', 'cost', 'trailer', 'prz', 'extra_cost'])
+const TRACKED_OVERRIDES = new Set(['rev', 'cost', 'trailer', 'prz', 'extra_cost', 'load_at', 'unload_at'])
 
 /**
  * The application value a manual correction of `field` shadows. "Koszt dodatkowy"
@@ -74,9 +86,22 @@ const TRACKED_OVERRIDES = new Set(['rev', 'cost', 'trailer', 'prz', 'extra_cost'
  */
 export function overrideAppValue(
   field: string,
-  v: { rev_eur: number | null; cost_eur: number | null; trailer_raw: string; notes_app: string },
+  v: {
+    rev_eur: number | null
+    cost_eur: number | null
+    trailer_raw: string
+    notes_app: string
+    load_date: string
+    load_time?: string | null | undefined
+    unload_date: string
+    unload_time?: string | null | undefined
+  },
 ): string | number | null {
   switch (field) {
+    case 'load_at':
+      return formatAt({ date: v.load_date, time: v.load_time ?? null })
+    case 'unload_at':
+      return formatAt({ date: v.unload_date, time: v.unload_time ?? null })
     case 'rev':
       return v.rev_eur
     case 'cost':
@@ -90,6 +115,21 @@ export function overrideAppValue(
     default:
       return null
   }
+}
+
+/**
+ * Did the application change the value a manual correction shadows? For loading/unloading
+ * a correction made before the file had hours compares the day only (the hour appearing
+ * for the first time is not a change).
+ */
+export function appValueChanged(field: string, stored: string, now: string | number | null): boolean {
+  const current = String(now ?? '')
+  if (field === 'load_at' || field === 'unload_at') {
+    const a = parseAtValue(stored)
+    const b = parseAtValue(current)
+    if (a && b && a.time === null) return a.date !== b.date
+  }
+  return current !== stored
 }
 
 export async function importExportFile(
@@ -247,6 +287,9 @@ export async function importRows(
         rev_eur: r.revEur,
         cost_eur: r.costEur,
         notes_app: r.notes,
+        // No hours column in the file → keep what the board already knows.
+        load_time: r.loadTime === undefined ? (existing.get(r.orderNo)?.load_time ?? null) : r.loadTime,
+        unload_time: r.unloadTime === undefined ? (existing.get(r.orderNo)?.unload_time ?? null) : r.unloadTime,
       }
       const prev = existing.get(r.orderNo)
       if (!prev) {
@@ -274,6 +317,7 @@ export async function importRows(
       for (const field of Object.keys(FIELD_LABELS) as Array<keyof typeof values>) {
         const before = prev[field]
         const after = values[field]
+        if (TIME_FIELDS.has(field) && (before === null || before === undefined)) continue
         if (String(before ?? '') !== String(after ?? '')) {
           changes.push({ field, from: before === null ? null : String(before), to: after === null ? null : String(after) })
         }
@@ -305,7 +349,7 @@ export async function importRows(
       for (const o of overrides) {
         if (!TRACKED_OVERRIDES.has(o.field)) continue
         const appNow = overrideAppValue(o.field, values)
-        if (o.app_value !== null && String(appNow ?? '') !== o.app_value) {
+        if (o.app_value !== null && appValueChanged(o.field, o.app_value, appNow)) {
           await trx
             .updateTable('board_overrides')
             .set({
@@ -330,6 +374,7 @@ export async function importRows(
         .selectFrom('board_orders')
         .select(['order_no', 'missing_since_import_id'])
         .where('history', '=', 0)
+        .where('draft', '=', 0) // preliminary orders are never in the export
         .where('load_date', '>=', rangeFrom)
         .where('load_date', '<=', rangeTo)
         .execute()
@@ -362,6 +407,7 @@ export async function importRows(
       .selectFrom('board_orders')
       .select(['order_no'])
       .where('history', '=', 0)
+      .where('draft', '=', 0)
       .where('missing_since_import_id', 'is', null)
       .where('last_import_id', '<', importId)
       .where('order_no', 'in', [...byNo.keys()])
@@ -375,6 +421,11 @@ export async function importRows(
         .execute()
       summary.disappeared.push(o.order_no)
     }
+  }
+
+  // Preliminary orders replaced by new orders of this file.
+  if (options.mode === 'daily' && summary.created.length > 0) {
+    await replaceDraftsFromImport(db, ctx, inScope, summary, importId, now)
   }
 
   // Event issues.
@@ -409,7 +460,7 @@ export async function importRows(
           key: `OVERRIDE_SUPERSEDED:${s.orderNo}:${s.field}:${importId}`,
           kind: 'OVERRIDE_SUPERSEDED',
           ref: s.orderNo,
-          message: `Aplikacja zmieniła wartość, którą poprawiłeś ręcznie (${s.field}). Obowiązuje teraz wartość z aplikacji.`,
+          message: `Aplikacja zmieniła wartość, którą poprawiłeś ręcznie (${OVERRIDE_FIELD_LABELS[s.field] ?? s.field}). Obowiązuje teraz wartość z aplikacji.`,
           details: { field: s.field },
           fingerprint: String(importId),
         },
@@ -438,4 +489,93 @@ export async function importRows(
     .where('id', '=', importId)
     .execute()
   return summary
+}
+
+/** Names of manual corrections in messages and the order history. */
+export const OVERRIDE_FIELD_LABELS: Record<string, string> = {
+  rev: 'stawka klienta',
+  cost: 'koszt przewoźnika',
+  extra_cost: 'koszt dodatkowy',
+  trailer: 'naczepa',
+  prz: 'przepinka',
+  exclude: 'wyłączenie z wyników',
+  km_loaded: 'km z ładunkiem',
+  km_empty: 'km puste',
+  'km_loaded:1': 'km z ładunkiem, 2. odcinek',
+  'km_empty:1': 'km puste, 2. odcinek',
+  driver: 'kierowca',
+  'driver:1': 'kierowca, 2. odcinek',
+  load_at: 'załadunek',
+  unload_at: 'rozładunek',
+}
+
+/** Short label of an order for history lines: "W-3 (Wiedeń → Wilno, 13.10)". */
+export function draftLabel(orderNo: string, loadPlaces: string, unloadPlaces: string, loadDate: string, ctx: BoardContext): string {
+  const name = (raw: string) => {
+    const code = ctx.places.resolve(raw)
+    return code ? ctx.places.name(code) : raw
+  }
+  const loads = splitPlaces(loadPlaces).map(name)
+  const unloads = splitPlaces(unloadPlaces).map(name)
+  return `${orderNo} (${loads[0] ?? '?'} → ${unloads[unloads.length - 1] ?? '?'}, ${loadDate.slice(8, 10)}.${loadDate.slice(5, 7)})`
+}
+
+async function replaceDraftsFromImport(
+  db: Kysely<DB>,
+  ctx: BoardContext,
+  inScope: ExportRow[],
+  summary: ImportSummary,
+  importId: number,
+  now: string,
+): Promise<void> {
+  const draftRows = await db
+    .selectFrom('board_orders')
+    .select(['order_no', 'draft_truck_id', 'load_date', 'load_places', 'unload_places'])
+    .where('draft', '=', 1)
+    .execute()
+  if (draftRows.length === 0) return
+  const firstPlace = (raw: string) => {
+    const first = splitPlaces(raw)[0]
+    return first ? ctx.places.resolve(first) : null
+  }
+  const created = new Set(summary.created)
+  const orders: MatchOrder[] = inScope
+    .filter(r => created.has(r.orderNo))
+    .map(r => {
+      const trucks = new Set<number>()
+      const sub = ctx.fleet.truckFor(r.subPlate, r.loadDate)
+      if (sub) trucks.add(sub.id)
+      const prz = parsePrz(r.notes).entries[0]
+      if (prz) {
+        const a = ctx.fleet.truckFor(prz.from, r.loadDate)
+        const b = ctx.fleet.truckFor(prz.to, resolveSwapDate(prz.day, prz.month, r.loadDate))
+        if (a) trucks.add(a.id)
+        if (b) trucks.add(b.id)
+      }
+      return { orderNo: r.orderNo, truckIds: [...trucks], loadDate: r.loadDate, firstPlace: firstPlace(r.loadPlaces) }
+    })
+  const drafts: MatchDraft[] = draftRows.map(d => ({ orderNo: d.order_no, truckId: d.draft_truck_id, loadDate: d.load_date, firstPlace: firstPlace(d.load_places) }))
+  const matches = matchDrafts(orders, drafts)
+  summary.replacedDrafts = []
+  summary.draftQuestions = []
+  for (const m of matches.auto) {
+    const d = draftRows.find(x => x.order_no === m.draftNo)!
+    await replaceDraft(db, m.draftNo, m.orderNo, draftLabel(m.draftNo, d.load_places, d.unload_places, d.load_date, ctx), now)
+    summary.replacedDrafts.push(m)
+  }
+  for (const q of matches.ambiguous) {
+    await raiseEventIssue(
+      db,
+      {
+        key: `DRAFT_MATCH:${q.draftNo}`,
+        kind: 'DRAFT_MATCH',
+        ref: q.draftNo,
+        message: `Zlecenie wstępne ${q.draftNo} pasuje do kilku nowych zleceń z aplikacji (${q.candidates.join(', ')}). Które je zastępuje?`,
+        details: { candidates: q.candidates, importId },
+        fingerprint: q.candidates.join(','),
+      },
+      now,
+    )
+    summary.draftQuestions.push(q.draftNo)
+  }
 }

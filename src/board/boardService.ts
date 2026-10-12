@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Kysely } from 'kysely'
-import type { DB, ImportMode, NoteKind, ServiceTarget } from '../db/schema.js'
-import { computeOrders, placesLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
+import type { Kysely, Selectable } from 'kysely'
+import type { BoardOrdersTable, DB, ImportMode, NoteKind, ServiceTarget } from '../db/schema.js'
+import { computeOrders, routeLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
 import { parseNumberInput } from './amount.js'
 import { loadBoardContext, type BoardContext, type TruckRecord } from './context.js'
 import type { DistanceService } from './distances.js'
-import { importExportFile, FIELD_LABELS, overrideAppValue, type ImportSummary } from './importService.js'
+import { importExportFile, draftLabel, FIELD_LABELS, OVERRIDE_FIELD_LABELS, overrideAppValue, type ImportSummary } from './importService.js'
+import { DRAFT_PREFIX, replaceDraft } from './drafts.js'
+import { atKey, displayAt, formatAt, normTime, parseAtInput, parseAtValue } from './times.js'
 import { DEFAULT_THRESHOLDS, deriveIssues, fmtDate, syncDerivedIssues, type IssueThresholds } from './issues.js'
 import { planFleetSync, type FleetPlan } from './fleetList.js'
 import {
@@ -22,7 +24,7 @@ import {
   type DriverRecord,
   type LegDrivers,
 } from './drivers.js'
-import { addDays, aliasKey, isoWeekNumber, normalizePlate, weekStart } from './normalize.js'
+import { addDays, aliasKey, isoWeekNumber, normalizePlate, splitPlaces, weekStart } from './normalize.js'
 import {
   dm as dmDay,
   fullyCoveredDays,
@@ -55,7 +57,24 @@ export class BoardError extends Error {
   }
 }
 
-export const OVERRIDE_FIELDS = ['rev', 'cost', 'extra_cost', 'trailer', 'prz', 'exclude', 'km_loaded', 'km_empty', 'km_loaded:1', 'km_empty:1', 'driver', 'driver:1'] as const
+export const OVERRIDE_FIELDS = [
+  'rev',
+  'cost',
+  'extra_cost',
+  'trailer',
+  'prz',
+  'exclude',
+  'km_loaded',
+  'km_empty',
+  'km_loaded:1',
+  'km_empty:1',
+  'driver',
+  'driver:1',
+  'load_at',
+  'unload_at',
+] as const
+/** Loading / unloading date and hour typed on the board (12.10.2026). */
+const AT_OVERRIDES = new Set(['load_at', 'unload_at'])
 export type OverrideField = (typeof OVERRIDE_FIELDS)[number]
 const NUMERIC_OVERRIDES = new Set(['rev', 'cost', 'extra_cost', 'km_loaded', 'km_empty'])
 
@@ -70,6 +89,9 @@ export interface WeekBar {
   title: string
   startDate: string
   endDate: string
+  /** Hours at the start / end of the leg ("HH:MM", null = unknown) — two orders sharing a day can share a row. */
+  startTime: string | null
+  endTime: string | null
   /** Day index in the week, clipped: -1 = started before Monday, 7 = ends after Sunday. */
   startDay: number
   endDay: number
@@ -84,6 +106,8 @@ export interface WeekBar {
   excluded: string | null
   missing: boolean
   noCarrier: boolean
+  /** Preliminary order typed on the board (12.10.2026). */
+  draft: boolean
   inWeek: boolean
   noteLines: string[]
   /** Set when the truck is in service all day on a day of this leg (red outline on the board). */
@@ -127,7 +151,8 @@ export interface WeekTruck {
   services: ServiceDto[]
   /** Required services (no date yet) of the tractor and of the trailer currently behind it. */
   required: ServiceDto[]
-  totals: { revenue: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean }
+  /** revenue = ours; carrier = what the carrier gets (sum of the truck's amounts, without ferries). */
+  totals: { revenue: number; carrier: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean }
 }
 
 export interface TruckOrderRow {
@@ -138,7 +163,10 @@ export interface TruckOrderRow {
   startDate: string
   endDate: string
   revAlloc: number | null
+  /** Amount for the truck including a ferry on the first leg (column "Koszt"). */
   amount: number | null
+  /** What the carrier gets for this leg (without ferries) — "€/km przewoźnika". */
+  carrierAmount: number | null
   margin: number | null
   km: number | null
   kmEstimated: boolean
@@ -146,6 +174,7 @@ export interface TruckOrderRow {
   excluded: string | null
   noCarrier: boolean
   missing: boolean
+  draft: boolean
   /** "A → B (zmiana 11.10)"; manual = corrected in the order panel. */
   driver: string
   driverManual: boolean
@@ -173,7 +202,7 @@ export interface TruckView {
   to: string
   today: string
   weeks: Array<{ weekStart: string; weekEnd: string; weekNumber: number; days: string[]; row: WeekTruck }>
-  totals: { revenue: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean; services: number }
+  totals: { revenue: number; carrier: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean; services: number }
   orders: TruckOrderRow[]
   services: ServiceDto[]
   activeOrder: { orderNo: string; title: string; startDate: string; endDate: string; upcoming: boolean } | null
@@ -240,6 +269,24 @@ export interface ServicePatch {
   endTime?: string | null | undefined
 }
 
+/** A preliminary order as typed in its form (rates as typed: "2350", "2 350 €"; empty = not known yet). */
+export interface DraftInput {
+  truckId: number
+  loadPlaces: string
+  loadDate: string
+  loadTime?: string | null | undefined
+  unloadPlaces: string
+  unloadDate: string
+  unloadTime?: string | null | undefined
+  client?: string | undefined
+  rev?: string | null | undefined
+  cost?: string | null | undefined
+  /** Board note added with a new draft (moves to the order that replaces it). */
+  note?: string | undefined
+}
+
+export type DraftPatch = Partial<Omit<DraftInput, 'truckId' | 'note'>>
+
 export interface WeekView {
   weekStart: string
   weekEnd: string
@@ -252,6 +299,8 @@ export interface WeekView {
     revenue: number
     cost: number
     orders: number
+    /** Preliminary orders among `orders`. */
+    drafts: number
     km: number
     kmEmpty: number
     revenuePerKm: number | null
@@ -331,12 +380,12 @@ export class BoardService {
 
   async refreshIssues(): Promise<void> {
     const ctx = await loadBoardContext(this.db)
-    const today = this.now().slice(0, 10)
+    const today = this.today()
     const orders = await computeOrders(this.db, ctx, this.distances, {
       from: addDays(today, -45),
       to: addDays(today, 60),
     })
-    await syncDerivedIssues(this.db, deriveIssues(orders, ctx, await this.thresholds()), this.now())
+    await syncDerivedIssues(this.db, deriveIssues(orders, ctx, await this.thresholds(), today), this.now())
   }
 
   async listIssues(status: 'open' | 'all' = 'open') {
@@ -354,6 +403,8 @@ export class BoardService {
    *  - NEW_TRUCK:        new-plate {truckId, validFrom} | add-truck {carrier?} | ignore
    *  - MISSING_TRAILER:  set {trailer}
    *  - DISAPPEARED:      keep | delete
+   *  - DRAFT_MATCH:      replace {orderNo} | keep (none of them)
+   *  - DRAFT_STALE:      delete (the preliminary order); dismiss = keep it
    */
   async resolveIssue(id: number, action: string, payload: Record<string, unknown>): Promise<void> {
     const issue = await this.db.selectFrom('board_issues').selectAll().where('id', '=', id).executeTakeFirst()
@@ -456,6 +507,25 @@ export class BoardService {
         await this.db.deleteFrom('board_orders').where('order_no', '=', issue.ref).execute()
         await done('deleted')
         break
+      case 'DRAFT_MATCH:replace': {
+        const orderNo = str('orderNo')
+        const candidates = Array.isArray(details['candidates']) ? (details['candidates'] as string[]) : []
+        if (!candidates.includes(orderNo)) throw new BoardError('BAD_ORDER', 'Wybierz jedno z zaproponowanych zleceń.')
+        const draft = await this.db.selectFrom('board_orders').selectAll().where('order_no', '=', issue.ref).where('draft', '=', 1).executeTakeFirst()
+        if (draft) {
+          const ctx = await loadBoardContext(this.db)
+          await replaceDraft(this.db, issue.ref, orderNo, draftLabel(issue.ref, draft.load_places, draft.unload_places, draft.load_date, ctx), now)
+        }
+        await done(`replaced:${orderNo}`)
+        break
+      }
+      case 'DRAFT_MATCH:keep':
+        await done('keep')
+        break
+      case 'DRAFT_STALE:delete':
+        await this.deleteDraft(issue.ref)
+        await done('deleted')
+        break
       default:
         if (action !== 'dismiss') throw new BoardError('UNKNOWN_ACTION', 'Nieznana akcja.')
         await done('dismissed', issue.kind.startsWith('DISAPPEARED') || issue.kind === 'OVERRIDE_SUPERSEDED' ? 'resolved' : 'ignored')
@@ -474,6 +544,7 @@ export class BoardService {
 
     // Department KPIs: whole-order margins for orders loaded this week; km from fleet legs.
     const weekOrders = orders.filter(o => o.hasFleetLeg && !o.excluded && !o.noCarrier && o.loadDate >= start && o.loadDate <= end)
+    const drafts = weekOrders.filter(o => o.draft).length
     const revenue = weekOrders.reduce((s, o) => s + (o.rev ?? 0), 0)
     const cost = weekOrders.reduce((s, o) => s + (o.amountsTotal ?? 0), 0)
     const legRevenue = trucks.reduce((s, t) => s + t.totals.revenue, 0)
@@ -498,6 +569,7 @@ export class BoardService {
         revenue: round2(revenue),
         cost: round2(cost),
         orders: weekOrders.length,
+        drafts,
         km,
         kmEmpty,
         revenuePerKm: km > 0 ? round2(legRevenue / km) : null,
@@ -650,7 +722,8 @@ export class BoardService {
 
         const counted = legs.filter(x => !x.o.excluded && !x.o.noCarrier && x.l.startDate >= start && x.l.startDate <= end)
         const revenue = counted.reduce((s, x) => s + (x.l.revAlloc ?? 0), 0)
-        const cost = counted.reduce((s, x) => s + (x.l.amount ?? 0) + (x.l.index === 0 ? x.o.extraCost : 0), 0)
+        const carrier = counted.reduce((s, x) => s + (x.l.amount ?? 0), 0)
+        const cost = counted.reduce((s, x) => s + (x.l.amount ?? 0) + (x.l.index === 0 && !x.o.draftNoMoney ? x.o.extraCost : 0), 0)
         const km = counted.reduce((s, x) => s + (x.l.kmLoaded ?? 0) + (x.l.kmEmpty ?? 0), 0)
         const kmEmpty = counted.reduce((s, x) => s + (x.l.kmEmpty ?? 0), 0)
 
@@ -696,6 +769,7 @@ export class BoardService {
           required,
           totals: {
             revenue: round2(revenue),
+            carrier: round2(carrier),
             cost: round2(cost),
             margin: round2(revenue - cost),
             km,
@@ -726,7 +800,7 @@ export class BoardService {
     const noteLines: string[] = []
     const serviceConflict = serviceDays.length > 0 ? `Auto w serwisie cały dzień ${serviceDays.map(dmDay).join(', ')}.` : null
     if (serviceConflict) noteLines.push(serviceConflict)
-    if (o.missing) noteLines.push('Zniknęło z ostatniego eksportu.')
+    // "Zniknęło" shows only in the order panel (12.10.2026), not on the board.
     if (o.excluded === 'cancelled') noteLines.push('Zlecenie anulowane (status A).')
     if (o.excluded === 'unconfirmed') noteLines.push('Zlecenie niezatwierdzone (status N).')
     if (o.noCarrier) noteLines.push('Zlecenie spedycyjne anulowane — auto go nie wiezie.')
@@ -740,6 +814,8 @@ export class BoardService {
       title: legTitle(l, ctx),
       startDate: l.startDate,
       endDate: l.endDate,
+      startTime: l.startTime,
+      endTime: l.endTime,
       startDay: Math.max(-1, Math.min(7, s)),
       endDay: Math.max(-1, Math.min(7, e)),
       revAlloc: l.revAlloc,
@@ -753,6 +829,7 @@ export class BoardService {
       excluded: o.excluded,
       missing: o.missing,
       noCarrier: o.noCarrier,
+      draft: o.draft,
       inWeek: l.startDate >= weekStartIso,
       noteLines,
       serviceConflict,
@@ -781,6 +858,7 @@ export class BoardService {
     const shownServices = new Set(rows.flatMap(w => w.row.services.map(sv => sv.id)))
     const totals = {
       revenue: round2(sum(r => r.totals.revenue)),
+      carrier: round2(sum(r => r.totals.carrier)),
       cost: round2(sum(r => r.totals.cost)),
       margin: round2(sum(r => r.totals.margin)),
       km: sum(r => r.totals.km),
@@ -802,6 +880,7 @@ export class BoardService {
         endDate: l.endDate,
         revAlloc: l.revAlloc,
         amount: l.amount === null ? null : round2(l.amount + (l.index === 0 ? o.extraCost : 0)),
+        carrierAmount: l.amount,
         margin: legMargin(o, l),
         km: l.kmLoaded === null && l.kmEmpty === null ? null : (l.kmLoaded ?? 0) + (l.kmEmpty ?? 0),
         kmEstimated: l.kmEstimated,
@@ -809,6 +888,7 @@ export class BoardService {
         excluded: o.excluded,
         noCarrier: o.noCarrier,
         missing: o.missing,
+        draft: o.draft,
         ...((): { driver: string; driverManual: boolean } => {
           const d = legDriversOf(o, l, ctx)
           return { driver: d.text, driverManual: d.manual }
@@ -1113,17 +1193,25 @@ export class BoardService {
       this.db.selectFrom('board_overrides').selectAll().where('order_no', '=', orderNo).orderBy('id').execute(),
       this.db.selectFrom('board_issues').selectAll().where('ref', '=', orderNo).where('status', '=', 'open').execute(),
     ])
+    const overrideDisplay = (field: string, value: string) =>
+      field.startsWith('driver') ? ctx.drivers.name(Number(value) || null) : AT_OVERRIDES.has(field) ? displayAt(value) : value
     const history = [
       ...changes.map(c => ({
         at: c.created_at,
         text:
           c.field === 'created'
             ? 'dodano z importu'
-            : `${FIELD_LABELS[c.field] ?? c.field}: ${c.old_value ?? '—'} → ${c.new_value ?? '—'} (zmiana w aplikacji)`,
+            : c.field === 'draft_created'
+              ? `dodano jako zlecenie wstępne (${c.new_value ?? ''})`
+              : c.field === 'draft_updated'
+                ? `zmiana zlecenia wstępnego — ${c.new_value ?? ''}`
+                : c.field === 'draft_replaced'
+                  ? `zastąpiło zlecenie wstępne ${c.new_value ?? c.old_value ?? ''}`
+                  : `${FIELD_LABELS[c.field] ?? c.field}: ${c.old_value ?? '—'} → ${c.new_value ?? '—'} (zmiana w aplikacji)`,
       })),
       ...overrides.map(ov => ({
         at: ov.created_at,
-        text: `ręczna poprawka (${ov.field}): ${ov.field.startsWith('driver') ? ctx.drivers.name(Number(ov.value) || null) : ov.value}${ov.active ? '' : ` — zastąpiona: ${ov.superseded_note ?? ''}`}`,
+        text: `ręczna poprawka (${OVERRIDE_FIELD_LABELS[ov.field] ?? ov.field}): ${overrideDisplay(ov.field, ov.value)}${ov.active ? '' : ` — zastąpiona: ${ov.superseded_note ?? ''}`}`,
       })),
     ].sort((a, b) => a.at.localeCompare(b.at))
 
@@ -1137,7 +1225,27 @@ export class BoardService {
         statusSped: o.statusSped,
         loadDate: o.loadDate,
         unloadDate: o.unloadDate,
-        route: `${placesLabel(o.loadPlaces, ctx)} → ${placesLabel(o.unloadPlaces, ctx)}`,
+        loadTime: o.loadTime,
+        unloadTime: o.unloadTime,
+        loadAtManual: o.loadAtManual,
+        unloadAtManual: o.unloadAtManual,
+        route: routeLabel(o.loadPlaces, o.unloadPlaces, ctx),
+        draftNoMoney: o.draftNoMoney,
+        /** The preliminary order as typed (for "Edytuj"); null for orders from the application. */
+        draft: o.draft
+          ? {
+              truckId: row.draft_truck_id,
+              loadPlaces: row.load_places,
+              loadDate: row.load_date,
+              loadTime: row.load_time,
+              unloadPlaces: row.unload_places,
+              unloadDate: row.unload_date,
+              unloadTime: row.unload_time,
+              client: row.client,
+              rev: row.rev_eur,
+              cost: row.cost_eur,
+            }
+          : null,
         rev: o.rev,
         costApp: o.costApp,
         amountsTotal: o.amountsTotal,
@@ -1186,7 +1294,7 @@ export class BoardService {
         .map(ov => ({
           field: ov.field,
           value: ov.value,
-          display: ov.field.startsWith('driver') ? ctx.drivers.name(Number(ov.value) || null) : ov.value,
+          display: overrideDisplay(ov.field, ov.value),
           createdAt: ov.created_at,
         })),
       issues: issues.map(i => ({ id: i.id, kind: i.kind, message: i.message })),
@@ -1234,6 +1342,175 @@ export class BoardService {
       .execute()
   }
 
+  // ---------------------------------------------------------------- preliminary orders (zlecenia wstępne)
+
+  private draftFields(input: Omit<DraftInput, 'truckId' | 'note'>) {
+    const places = (raw: string) => raw.replace(/\s+/g, ' ').trim()
+    const loadPlaces = places(input.loadPlaces)
+    const unloadPlaces = places(input.unloadPlaces)
+    if (!loadPlaces) throw new BoardError('EMPTY_PLACE', 'Podaj miejsce załadunku.')
+    if (!unloadPlaces) throw new BoardError('EMPTY_PLACE', 'Podaj miejsce rozładunku.')
+    if (!isRealDay(input.loadDate) || !isRealDay(input.unloadDate)) throw new BoardError('BAD_DATE', 'Podaj daty załadunku i rozładunku.')
+    const time = (raw: string | null | undefined, what: string) => {
+      if (raw === null || raw === undefined || !raw.trim()) return null
+      const t = normTime(raw)
+      if (!t) throw new BoardError('BAD_TIME', `Godzina ${what} w formacie GG:MM, np. 14:30.`)
+      return t
+    }
+    const loadTime = time(input.loadTime, 'załadunku')
+    const unloadTime = time(input.unloadTime, 'rozładunku')
+    if (atKey({ date: input.loadDate, time: loadTime }, '00:00') > atKey({ date: input.unloadDate, time: unloadTime }, '23:59')) {
+      throw new BoardError('AT_ORDER', 'Rozładunek nie może być przed załadunkiem.')
+    }
+    const money = (raw: string | null | undefined, what: string) => {
+      if (raw === null || raw === undefined || !raw.trim()) return null
+      const n = parseNumberInput(raw)
+      if (n === null) throw new BoardError('BAD_NUMBER', `Wpisz ${what} w EUR liczbą, np. 2350 albo 2350,50 — albo zostaw puste.`)
+      return n
+    }
+    return {
+      load_places: loadPlaces,
+      load_date: input.loadDate,
+      load_time: loadTime,
+      unload_places: unloadPlaces,
+      unload_date: input.unloadDate,
+      unload_time: unloadTime,
+      client: (input.client ?? '').trim(),
+      rev_eur: money(input.rev, 'stawkę klienta'),
+      cost_eur: money(input.cost, 'kwotę dla przewoźnika'),
+    }
+  }
+
+  private async nextDraftNo(): Promise<string> {
+    const row = await this.db.selectFrom('config').select('value').where('key', '=', 'board_draft_seq').executeTakeFirst()
+    let n = (Number(row?.value) || 0) + 1
+    while (await this.db.selectFrom('board_orders').select('order_no').where('order_no', '=', `${DRAFT_PREFIX}${n}`).executeTakeFirst()) n++
+    await this.db
+      .insertInto('config')
+      .values({ key: 'board_draft_seq', value: String(n) })
+      .onConflict(oc => oc.column('key').doUpdateSet({ value: String(n) }))
+      .execute()
+    return `${DRAFT_PREFIX}${n}`
+  }
+
+  /** New preliminary order on a fleet truck; returns its number ("W-3"). */
+  async createDraft(input: DraftInput): Promise<string> {
+    const ctx = await loadBoardContext(this.db)
+    const truck = ctx.fleet.byId(input.truckId)
+    if (!truck) throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
+    const fields = this.draftFields(input)
+    const orderNo = await this.nextDraftNo()
+    const now = this.now()
+    const note = (input.note ?? '').trim()
+    await this.db.transaction().execute(async trx => {
+      await trx
+        .insertInto('board_orders')
+        .values({
+          order_no: orderNo,
+          ...fields,
+          client_ref: '',
+          status_client: '',
+          status_sped: '',
+          own_plate: '',
+          trailer_raw: '',
+          load_country: '',
+          unload_country: '',
+          notes_app: '',
+          carrier: truck.carrier,
+          sub_plate: ctx.fleet.plateOn(truck, fields.load_date),
+          draft: 1,
+          draft_truck_id: truck.id,
+          first_import_id: 0,
+          last_import_id: 0,
+          updated_at: now,
+        })
+        .execute()
+      await trx
+        .insertInto('board_order_changes')
+        .values({ order_no: orderNo, import_id: null, field: 'draft_created', old_value: null, new_value: this.actor(), created_at: now })
+        .execute()
+      if (note) {
+        await trx
+          .insertInto('board_notes')
+          .values({ scope: 'order', order_no: orderNo, kind: 'note', text: note, created_by: this.actor(), created_at: now })
+          .execute()
+      }
+    })
+    await this.refreshIssues()
+    return orderNo
+  }
+
+  async updateDraft(orderNo: string, patch: DraftPatch): Promise<void> {
+    const row = await this.db.selectFrom('board_orders').selectAll().where('order_no', '=', orderNo).where('draft', '=', 1).executeTakeFirst()
+    if (!row) throw new BoardError('DRAFT_NOT_FOUND', 'Nie ma takiego zlecenia wstępnego.', 404)
+    const ctx = await loadBoardContext(this.db)
+    const money = (n: number | null) => (n === null ? '' : String(n))
+    const fields = this.draftFields({
+      loadPlaces: patch.loadPlaces ?? row.load_places,
+      loadDate: patch.loadDate ?? row.load_date,
+      loadTime: patch.loadTime !== undefined ? patch.loadTime : row.load_time,
+      unloadPlaces: patch.unloadPlaces ?? row.unload_places,
+      unloadDate: patch.unloadDate ?? row.unload_date,
+      unloadTime: patch.unloadTime !== undefined ? patch.unloadTime : row.unload_time,
+      client: patch.client ?? row.client,
+      rev: patch.rev !== undefined ? patch.rev : money(row.rev_eur),
+      cost: patch.cost !== undefined ? patch.cost : money(row.cost_eur),
+    })
+    const show = (v: string | number | null) => (v === null || v === '' ? '—' : String(v))
+    const labels: Record<string, string> = {
+      load_places: 'załadunek',
+      load_date: 'data załadunku',
+      load_time: 'godzina załadunku',
+      unload_places: 'rozładunek',
+      unload_date: 'data rozładunku',
+      unload_time: 'godzina rozładunku',
+      client: 'klient',
+      rev_eur: 'stawka klienta',
+      cost_eur: 'kwota dla przewoźnika',
+    }
+    const changed = (Object.keys(labels) as Array<keyof typeof fields>).filter(k => String(fields[k] ?? '') !== String(row[k] ?? ''))
+    if (changed.length === 0) return
+    const truck = row.draft_truck_id !== null ? ctx.fleet.byId(row.draft_truck_id) : undefined
+    const now = this.now()
+    await this.db.transaction().execute(async trx => {
+      await trx
+        .updateTable('board_orders')
+        .set({ ...fields, ...(truck ? { sub_plate: ctx.fleet.plateOn(truck, fields.load_date) } : {}), updated_at: now })
+        .where('order_no', '=', orderNo)
+        .execute()
+      await trx
+        .insertInto('board_order_changes')
+        .values({
+          order_no: orderNo,
+          import_id: null,
+          field: 'draft_updated',
+          old_value: null,
+          new_value: `${this.actor()}: ${changed.map(k => `${labels[k]} ${show(row[k])} → ${show(fields[k])}`).join('; ')}`,
+          created_at: now,
+        })
+        .execute()
+    })
+    await this.refreshIssues()
+  }
+
+  /** Removes a preliminary order with its notes (the client did not send it, or it was a mistake). */
+  async deleteDraft(orderNo: string): Promise<void> {
+    const row = await this.db.selectFrom('board_orders').select('order_no').where('order_no', '=', orderNo).where('draft', '=', 1).executeTakeFirst()
+    if (!row) throw new BoardError('DRAFT_NOT_FOUND', 'Nie ma takiego zlecenia wstępnego.', 404)
+    const now = this.now()
+    await this.db.transaction().execute(async trx => {
+      await trx.deleteFrom('board_notes').where('scope', '=', 'order').where('order_no', '=', orderNo).execute()
+      await trx
+        .updateTable('board_issues')
+        .set({ status: 'resolved', resolution: 'draft-deleted', resolved_by: this.actor(), updated_at: now })
+        .where('ref', '=', orderNo)
+        .where('status', '=', 'open')
+        .execute()
+      await trx.deleteFrom('board_orders').where('order_no', '=', orderNo).execute()
+    })
+    await this.refreshIssues()
+  }
+
   async deleteNote(id: number) {
     await this.db.updateTable('board_notes').set({ deleted: 1 }).where('id', '=', id).execute()
   }
@@ -1256,6 +1533,7 @@ export class BoardService {
       if (!driver) throw new BoardError('DRIVER_NOT_FOUND', 'Wybierz kierowcę z listy.')
     }
     const row = await this.requireOrder(orderNo)
+    if (AT_OVERRIDES.has(field)) value = await this.resolveAtOverride(row, field as 'load_at' | 'unload_at', value)
     const appValue = overrideAppValue(field, row)
     const now = this.now()
     await this.db.transaction().execute(async trx => {
@@ -1290,6 +1568,35 @@ export class BoardService {
       .where('active', '=', 1)
       .execute()
     await this.refreshIssues()
+  }
+
+  /**
+   * Loading / unloading typed in the order panel ("07.10 12:00", "12:00", "07.10") →
+   * "YYYY-MM-DD[ HH:MM]". Missing parts keep the current value; loading may not be
+   * after unloading.
+   */
+  private async resolveAtOverride(row: Selectable<BoardOrdersTable>, field: 'load_at' | 'unload_at', input: string): Promise<string> {
+    const active = await this.db
+      .selectFrom('board_overrides')
+      .select(['field', 'value'])
+      .where('order_no', '=', row.order_no)
+      .where('field', 'in', ['load_at', 'unload_at'])
+      .where('active', '=', 1)
+      .execute()
+    const current = (f: 'load_at' | 'unload_at') =>
+      parseAtValue(active.find(a => a.field === f)?.value) ??
+      (f === 'load_at' ? { date: row.load_date, time: row.load_time } : { date: row.unload_date, time: row.unload_time })
+    const parsed = parseAtInput(input, current(field))
+    if (!parsed) throw new BoardError('BAD_AT', 'Wpisz datę i godzinę, np. 07.10 12:00, albo samą godzinę, np. 12:00.')
+    const load = field === 'load_at' ? parsed : current('load_at')
+    const unload = field === 'unload_at' ? parsed : current('unload_at')
+    if (atKey(load, '00:00') > atKey(unload, '23:59')) {
+      throw new BoardError(
+        'AT_ORDER',
+        field === 'load_at' ? 'Załadunek nie może być po rozładunku — popraw najpierw rozładunek.' : 'Rozładunek nie może być przed załadunkiem.',
+      )
+    }
+    return formatAt(parsed)
   }
 
   private async requireOrder(orderNo: string) {

@@ -237,6 +237,11 @@ export interface BoardOrdersTable {
   cost_eur: number | null
   notes_app: string
   history: ColumnType<number, number | undefined, number>
+  // Migration 0013: hours ("HH:MM", null = not given) and preliminary orders (zlecenia wstępne).
+  load_time: Nullable<string>
+  unload_time: Nullable<string>
+  draft: ColumnType<number, number | undefined, number>
+  draft_truck_id: Nullable<number>
   first_import_id: number
   last_import_id: number
   missing_since_import_id: Nullable<number>

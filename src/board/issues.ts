@@ -35,10 +35,12 @@ export const DERIVED_KINDS = [
   // kept so open items from before resolve themselves.
   'NO_CARRIER',
   'FERRY_PARSE',
+  // 12.10.2026: a preliminary order whose unloading day has passed without an order from the application.
+  'DRAFT_STALE',
 ] as const
 
 export type DerivedKind = (typeof DERIVED_KINDS)[number]
-export type EventKind = 'DISAPPEARED' | 'OVERRIDE_SUPERSEDED' | 'NEW_TRUCK'
+export type EventKind = 'DISAPPEARED' | 'OVERRIDE_SUPERSEDED' | 'NEW_TRUCK' | 'DRAFT_MATCH'
 export type IssueKind = DerivedKind | EventKind
 
 export interface IssueDraft {
@@ -60,8 +62,8 @@ export const DEFAULT_THRESHOLDS: IssueThresholds = { marginWarnPct: 40, revPerKm
 
 const eur = (n: number) => `${Math.round(n).toLocaleString('pl-PL').replace(/ /g, ' ')} €`
 
-/** Derived issues for the given computed orders. */
-export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: IssueThresholds): IssueDraft[] {
+/** Derived issues for the given computed orders; `today` = the Polish date (preliminary orders past their unloading). */
+export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: IssueThresholds, today: string): IssueDraft[] {
   const out: IssueDraft[] = []
   const unknownPlaces = new Map<string, { raw: string; orders: Set<string> }>()
   const unknownTrailers = new Map<string, { raw: string; orders: Set<string>; carriers: Set<string> }>()
@@ -71,6 +73,17 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
     if (o.history || !o.hasFleetLeg || o.noCarrier) continue
     const ref = o.orderNo
     const counted = o.excluded === null
+
+    if (o.draft && today > o.unloadDate) {
+      out.push({
+        key: `DRAFT_STALE:${ref}`,
+        kind: 'DRAFT_STALE',
+        ref,
+        message: `Zlecenie wstępne ${ref} (rozładunek ${fmtDate(o.unloadDate)}) nadal nie ma zlecenia z aplikacji. Zostawić je czy usunąć?`,
+        details: { unloadDate: o.unloadDate },
+        fingerprint: o.unloadDate,
+      })
+    }
 
     for (const raw of o.przErrors) {
       out.push({
@@ -230,7 +243,8 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
     }
 
     const fleetLeg = o.legs.find(l => l.kind === 'fleet')
-    if (fleetLeg && counted) {
+    // A preliminary order has no trailer yet — nothing to check.
+    if (fleetLeg && counted && !o.draft) {
       if (!o.legs[0]?.trailerRaw) {
         const truck = fleetLeg.truckId !== null ? ctx.fleet.byId(fleetLeg.truckId) : undefined
         out.push({

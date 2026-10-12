@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { boardApi, errorMessage, type Driver, type OrderDetails } from './boardApi.js'
-import { OVERRIDE_LABELS, dm, eur, km, signedEur, stamp } from './format.js'
+import { OVERRIDE_LABELS, dm, dmTime, eur, km, signedEur, stamp } from './format.js'
 import { Icon } from './Icon.js'
+import { DraftDialog } from './DraftDialog.js'
 
 /**
  * Order panel: legs, money, km, notes from the app (read-only), board-only
@@ -28,6 +29,8 @@ export function OrderPanel({
   const [fixValue, setFixValue] = useState('')
   const [busy, setBusy] = useState(false)
   const [drivers, setDrivers] = useState<Driver[] | null>(null)
+  const [editDraft, setEditDraft] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -100,7 +103,16 @@ export function OrderPanel({
           <div className="flex flex-col gap-0.5">
             <span className="text-lg font-bold">{o.route}</span>
             <span className="text-[13px] text-[#545B63]">
-              {dm(o.loadDate)} → {dm(o.unloadDate)} · naczepa <span className="font-mono">{o.trailer ?? '—'}</span> · {o.carrier}
+              {dmTime(o.loadDate, o.loadTime)}
+              {o.loadAtManual && <span title="Poprawione ręcznie na tablicy"> (popr.)</span>} → {dmTime(o.unloadDate, o.unloadTime)}
+              {o.unloadAtManual && <span title="Poprawione ręcznie na tablicy"> (popr.)</span>}
+              {!o.draft && (
+                <>
+                  {' '}
+                  · naczepa <span className="font-mono">{o.trailer ?? '—'}</span>
+                </>
+              )}{' '}
+              · {o.carrier}
             </span>
             {(o.excluded || o.noCarrier || o.missing) && (
               <span className="mt-1 rounded bg-[#F1F2F0] px-2 py-1 text-[13px] text-[#3D444C]">
@@ -113,6 +125,58 @@ export function OrderPanel({
             )}
           </div>
 
+          {o.draft && (
+            <div className="flex flex-col gap-2 rounded-lg bg-[#F4F6FA] px-3 py-2.5 outline-2 -outline-offset-2 outline-dashed outline-[#7C8794]">
+              <span className="text-[11.5px] font-bold uppercase tracking-wider text-[#3D444C]">Zlecenie wstępne</span>
+              <span className="text-[13px]">
+                Czeka na zlecenie z aplikacji — import zastąpi je zleceniem na tym aucie z załadunkiem w ciągu doby.
+                {o.draftNoMoney && ' Bez obu kwot nie liczy się w sumach marży i przychodu (kilometry tak).'}
+              </span>
+              {confirmDelete ? (
+                <div className="flex flex-wrap items-center gap-2 text-[13px]">
+                  <span className="font-semibold">Usunąć zlecenie wstępne {orderNo} razem z notatkami?</span>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        await boardApi.deleteDraft(orderNo)
+                        onClose()
+                      })
+                    }
+                    className="h-10 rounded-lg bg-[#B42318] px-3 font-semibold text-white disabled:opacity-50"
+                  >
+                    Usuń
+                  </button>
+                  <button type="button" onClick={() => setConfirmDelete(false)} className="h-10 rounded-lg border border-[#C9CEC6] bg-white px-3 font-semibold">
+                    Anuluj
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setEditDraft(true)} className="h-10 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white">
+                    Edytuj
+                  </button>
+                  <button type="button" onClick={() => setConfirmDelete(true)} className="h-10 rounded-lg border border-[#C9CEC6] bg-white px-3.5 font-semibold">
+                    Usuń
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {editDraft && o.draft && (
+            <DraftDialog
+              truck={{ id: o.draft.truckId ?? 0, plate: data.legs[0]?.plate ?? '' }}
+              draft={o.draft}
+              orderNo={orderNo}
+              onClose={() => setEditDraft(false)}
+              onSaved={() => {
+                setEditDraft(false)
+                void load()
+                onChanged()
+              }}
+            />
+          )}
           {o.prz && (
             <div className="flex flex-col gap-1 rounded-lg bg-[#EEF2FA] px-3 py-2.5 outline-2 -outline-offset-2 outline-dashed outline-[#1E4E9C]">
               <span className="text-[11.5px] font-bold uppercase tracking-wider text-[#1E4E9C]">Przepinka z uwag</span>
@@ -197,12 +261,14 @@ export function OrderPanel({
             </p>
           ))}
 
-          <div className="flex flex-col gap-1">
-            <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">
-              Uwagi z aplikacji <span className="font-medium normal-case tracking-normal">· tylko do odczytu</span>
-            </span>
-            <span className="whitespace-pre-line break-words font-mono text-[13px]">{o.notesApp || '—'}</span>
-          </div>
+          {!o.draft && (
+            <div className="flex flex-col gap-1">
+              <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">
+                Uwagi z aplikacji <span className="font-medium normal-case tracking-normal">· tylko do odczytu</span>
+              </span>
+              <span className="whitespace-pre-line break-words font-mono text-[13px]">{o.notesApp || '—'}</span>
+            </div>
+          )}
 
           <div className="flex flex-col gap-2">
             <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">
@@ -254,106 +320,117 @@ export function OrderPanel({
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Ręczne poprawki</span>
-            {data.overrides.length === 0 && <span className="text-[13px] text-[#545B63]">Brak — liczby pochodzą z aplikacji.</span>}
-            {data.overrides.map(ov => (
-              <div key={ov.field} className="flex items-center justify-between gap-2 rounded-lg bg-[#E6E9EE] px-3 py-2 text-[13px]">
-                <span>
-                  {OVERRIDE_LABELS[ov.field] ?? ov.field}: <span className="font-mono font-semibold">{ov.display}</span>
-                </span>
-                <button type="button" onClick={() => void run(() => boardApi.clearOverride(orderNo, ov.field))} className="text-[13px] font-semibold text-[#1E4E9C] underline">
-                  Usuń
-                </button>
-              </div>
-            ))}
-            {fixField === null ? (
-              <div>
-                <button type="button" onClick={() => setFixField('cost')} className="h-11 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white">
-                  Popraw ręcznie
-                </button>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2 rounded-lg border border-[#C9CEC6] p-3">
-                <label className="flex flex-col gap-1 text-[13px] font-semibold">
-                  Co poprawić
-                  <select
-                    value={fixField}
-                    onChange={e => {
-                      const field = e.target.value
-                      setFixField(field)
-                      setFixValue('')
-                      if (field.startsWith('driver') && drivers === null) {
-                        boardApi
-                          .drivers()
-                          .then(setDrivers)
-                          .catch(err => setError(errorMessage(err, 'Nie udało się wczytać kierowców.')))
-                      }
-                    }}
-                    className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal"
-                  >
-                    {Object.entries(OVERRIDE_LABELS)
-                      .filter(([k]) => k !== 'driver:1' || data.legs.length > 1)
-                      .map(([k, label]) => (
-                        <option key={k} value={k}>
-                          {label}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                {fixField.startsWith('driver') ? (
+          {/* A preliminary order is changed with "Edytuj", not with corrections. */}
+          {!o.draft && (
+            <div className="flex flex-col gap-2">
+              <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Ręczne poprawki</span>
+              {data.overrides.length === 0 && <span className="text-[13px] text-[#545B63]">Brak — liczby pochodzą z aplikacji.</span>}
+              {data.overrides.map(ov => (
+                <div key={ov.field} className="flex items-center justify-between gap-2 rounded-lg bg-[#E6E9EE] px-3 py-2 text-[13px]">
+                  <span>
+                    {OVERRIDE_LABELS[ov.field] ?? ov.field}: <span className="font-mono font-semibold">{ov.display}</span>
+                  </span>
+                  <button type="button" onClick={() => void run(() => boardApi.clearOverride(orderNo, ov.field))} className="text-[13px] font-semibold text-[#1E4E9C] underline">
+                    Usuń
+                  </button>
+                </div>
+              ))}
+              {fixField === null ? (
+                <div>
+                  <button type="button" onClick={() => setFixField('cost')} className="h-11 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white">
+                    Popraw ręcznie
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2 rounded-lg border border-[#C9CEC6] p-3">
                   <label className="flex flex-col gap-1 text-[13px] font-semibold">
-                    Kto jechał
-                    <select value={fixValue} onChange={e => setFixValue(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal" disabled={!drivers}>
-                      <option value="">{drivers ? '— wybierz kierowcę —' : 'wczytywanie…'}</option>
-                      {(drivers ?? [])
-                        .filter(d => d.active)
-                        .map(d => (
-                          <option key={d.id} value={d.id}>
-                            {d.name}
-                            {d.carrier ? ` · ${d.carrier}` : ''}
+                    Co poprawić
+                    <select
+                      value={fixField}
+                      onChange={e => {
+                        const field = e.target.value
+                        setFixField(field)
+                        setFixValue('')
+                        if (field.startsWith('driver') && drivers === null) {
+                          boardApi
+                            .drivers()
+                            .then(setDrivers)
+                            .catch(err => setError(errorMessage(err, 'Nie udało się wczytać kierowców.')))
+                        }
+                      }}
+                      className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal"
+                    >
+                      {Object.entries(OVERRIDE_LABELS)
+                        .filter(([k]) => k !== 'driver:1' || data.legs.length > 1)
+                        .map(([k, label]) => (
+                          <option key={k} value={k}>
+                            {label}
                           </option>
                         ))}
                     </select>
                   </label>
-                ) : (
-                  <label className="flex flex-col gap-1 text-[13px] font-semibold">
-                    Nowa wartość
-                    <input
-                      value={fixValue}
-                      onChange={e => setFixValue(e.target.value)}
-                      placeholder={fixField === 'prz' ? 'PRZ WAW 22.09 AB123CD>AB456CD 1400/900' : ''}
-                      className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal"
-                    />
-                  </label>
-                )}
-                <p className="text-xs text-[#545B63]">
-                  {fixField.startsWith('driver')
-                    ? 'Kierowca zlecenia liczy się sam ze zmian kierowców na tablicy — poprawiaj tylko wyjątki.'
-                    : 'Poprawka zostaje, dopóki aplikacja nie zmieni tej samej wartości — wtedy obowiązuje wartość z aplikacji.'}
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    disabled={busy || !fixValue.trim()}
-                    onClick={() =>
-                      void run(async () => {
-                        await boardApi.setOverride(orderNo, fixField, fixField === 'prz' || fixField.startsWith('driver') ? fixValue.trim() : fixValue.trim().replace(',', '.'))
-                        setFixField(null)
-                        setFixValue('')
-                      })
-                    }
-                    className="h-11 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white disabled:opacity-50"
-                  >
-                    Zapisz poprawkę
-                  </button>
-                  <button type="button" onClick={() => setFixField(null)} className="h-11 rounded-lg border border-[#C9CEC6] px-3.5 font-semibold">
-                    Anuluj
-                  </button>
+                  {fixField.startsWith('driver') ? (
+                    <label className="flex flex-col gap-1 text-[13px] font-semibold">
+                      Kto jechał
+                      <select value={fixValue} onChange={e => setFixValue(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal" disabled={!drivers}>
+                        <option value="">{drivers ? '— wybierz kierowcę —' : 'wczytywanie…'}</option>
+                        {(drivers ?? [])
+                          .filter(d => d.active)
+                          .map(d => (
+                            <option key={d.id} value={d.id}>
+                              {d.name}
+                              {d.carrier ? ` · ${d.carrier}` : ''}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <label className="flex flex-col gap-1 text-[13px] font-semibold">
+                      Nowa wartość
+                      <input
+                        value={fixValue}
+                        onChange={e => setFixValue(e.target.value)}
+                        placeholder={
+                          fixField === 'prz'
+                            ? 'PRZ WAW 22.09 AB123CD>AB456CD 1400/900'
+                            : fixField === 'load_at' || fixField === 'unload_at'
+                              ? 'np. 07.10 12:00 albo sama godzina 12:00'
+                              : ''
+                        }
+                        className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal"
+                      />
+                    </label>
+                  )}
+                  <p className="text-xs text-[#545B63]">
+                    {fixField.startsWith('driver')
+                      ? 'Kierowca zlecenia liczy się sam ze zmian kierowców na tablicy — poprawiaj tylko wyjątki.'
+                      : 'Poprawka zostaje, dopóki aplikacja nie zmieni tej samej wartości — wtedy obowiązuje wartość z aplikacji.'}
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={busy || !fixValue.trim()}
+                      onClick={() =>
+                        void run(async () => {
+                          const raw = fixValue.trim()
+                          const asText = fixField === 'prz' || fixField.startsWith('driver') || fixField === 'load_at' || fixField === 'unload_at'
+                          await boardApi.setOverride(orderNo, fixField, asText ? raw : raw.replace(',', '.'))
+                          setFixField(null)
+                          setFixValue('')
+                        })
+                      }
+                      className="h-11 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white disabled:opacity-50"
+                    >
+                      Zapisz poprawkę
+                    </button>
+                    <button type="button" onClick={() => setFixField(null)} className="h-11 rounded-lg border border-[#C9CEC6] px-3.5 font-semibold">
+                      Anuluj
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
           <div className="flex flex-col gap-0.5">
             <span className="pb-0.5 text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Historia</span>

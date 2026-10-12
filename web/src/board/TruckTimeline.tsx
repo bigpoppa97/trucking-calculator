@@ -1,5 +1,5 @@
 import type { Service, WeekBar, WeekEvent, WeekTruck } from './boardApi.js'
-import { EVENT_LABELS, dm, km, signedEur } from './format.js'
+import { EVENT_LABELS, dm, dmTime, km, signedEur } from './format.js'
 import { EVENT_ICON, Icon } from './Icon.js'
 import { SERVICE_COLORS, ServiceStrip } from './serviceUi.js'
 
@@ -9,37 +9,71 @@ import { SERVICE_COLORS, ServiceStrip } from './serviceUi.js'
  * row per truck) and the set page (one row per week).
  */
 
+/** Columns are half days (14 per week): day d = columns 2d+1 … 2d+2. */
 export interface PlacedBar extends WeekBar {
   colStart: number
   colEnd: number
   lane: number
 }
 
+/**
+ * Rows ("lanes") for the bars of one truck-week. Bars cover whole days; two
+ * orders that share a day go in one row when the first is unloaded before
+ * the second is loaded (both hours known, 12.10.2026) — the shared day is
+ * then split in half between them.
+ */
 export function placeBars(bars: WeekBar[]): PlacedBar[] {
-  const laneEnds: number[] = []
-  return [...bars]
-    .sort((a, b) => a.startDay - b.startDay || a.endDay - b.endDay)
-    .map(b => {
-      const s = Math.max(0, b.startDay)
-      const e = Math.min(6, b.endDay)
-      let lane = laneEnds.findIndex(end => end < s)
-      if (lane === -1) {
-        lane = laneEnds.length
-        laneEnds.push(e)
-      } else laneEnds[lane] = e
-      return { ...b, colStart: s + 1, colEnd: e + 2, lane: lane + 1 }
-    })
+  const lanes: Array<{ end: number; last: PlacedBar }> = []
+  const placed: PlacedBar[] = []
+  const sorted = [...bars].sort(
+    (a, b) => a.startDay - b.startDay || (a.startTime ?? '00:00').localeCompare(b.startTime ?? '00:00') || a.endDay - b.endDay,
+  )
+  for (const b of sorted) {
+    const s = Math.max(0, b.startDay)
+    const e = Math.min(6, b.endDay)
+    const bar: PlacedBar = { ...b, colStart: 2 * s + 1, colEnd: 2 * e + 3, lane: 0 }
+    const shares = (lane: { end: number; last: PlacedBar }) =>
+      b.startDay >= 0 &&
+      lane.end === s &&
+      lane.last.endDay === b.startDay &&
+      lane.last.endDate === b.startDate &&
+      lane.last.endTime !== null &&
+      b.startTime !== null &&
+      lane.last.endTime <= b.startTime &&
+      // a one-day bar that already starts at noon cannot also end at noon
+      lane.last.colStart < 2 * s + 2
+    let index = lanes.findIndex(lane => lane.end < s)
+    const shared = lanes.findIndex(shares)
+    if (shared !== -1 && (index === -1 || shared < index)) {
+      index = shared
+      const prev = lanes[shared]!.last
+      prev.colEnd = 2 * s + 2
+      bar.colStart = 2 * s + 2
+    }
+    if (index === -1) {
+      index = lanes.length
+      lanes.push({ end: e, last: bar })
+    } else lanes[index] = { end: e, last: bar }
+    bar.lane = index + 1
+    placed.push(bar)
+  }
+  return placed
 }
 
 export function barColors(b: WeekBar, selected: boolean): { bg: string; fg: string; outline: string } {
-  if (selected) return { bg: '#1E4E9C', fg: '#FFFFFF', outline: b.serviceConflict ? `2px solid #FCA5A5` : b.prz ? '2px dashed #FFFFFF' : 'none' }
+  if (selected) return { bg: '#1E4E9C', fg: '#FFFFFF', outline: b.serviceConflict ? `2px solid #FCA5A5` : b.prz || b.draft ? '2px dashed #FFFFFF' : 'none' }
   let bg = '#DCE5F2'
   let fg = '#15181C'
   if (!b.inWeek) {
     bg = '#ECEEF0'
     fg = '#545B63'
   }
-  if (b.excluded || b.noCarrier || b.missing) {
+  if (b.draft) {
+    bg = '#F4F6FA'
+    fg = '#2B3440'
+  }
+  // "Zniknęło" is told only in the order panel (12.10.2026).
+  if (b.excluded || b.noCarrier) {
     bg = '#F1F2F0'
     fg = '#6B7178'
   }
@@ -47,7 +81,13 @@ export function barColors(b: WeekBar, selected: boolean): { bg: string; fg: stri
     bg = '#F4C77A'
     fg = '#3A2400'
   }
-  const outline = b.serviceConflict ? `2px ${b.prz ? 'dashed' : 'solid'} ${SERVICE_COLORS.conflict}` : b.prz ? '2px dashed #1E4E9C' : 'none'
+  const outline = b.serviceConflict
+    ? `2px ${b.prz || b.draft ? 'dashed' : 'solid'} ${SERVICE_COLORS.conflict}`
+    : b.prz
+      ? '2px dashed #1E4E9C'
+      : b.draft
+        ? '2px dashed #7C8794'
+        : 'none'
   return { bg, fg, outline }
 }
 
@@ -71,17 +111,17 @@ export function TruckTimeline({ row, weekStart, days, showMoney, selected, tip, 
   const bars = placeBars(row.bars)
   return (
     <div className="relative min-w-0 p-2">
-      <div className="grid grid-cols-7 gap-x-1 gap-y-1.5" style={{ gridAutoRows: '50px' }}>
+      <div className="grid gap-x-1 gap-y-1.5" style={{ gridAutoRows: '50px', gridTemplateColumns: 'repeat(14, minmax(0, 1fr))' }}>
         {bars.map(b => {
           const isSel = selected === b.orderNo
           const c = barColors(b, isSel)
           const sub = [
             b.serviceConflict ? 'serwis!' : null,
+            b.draft ? 'wstępne' : null,
             b.prz ? 'PRZ' : null,
             b.issue ? 'Sprawdź' : null,
             b.excluded === 'cancelled' ? 'anulowane' : b.excluded === 'unconfirmed' ? 'niezatwierdzone' : b.excluded === 'manual' ? 'wyłączone' : null,
             b.noCarrier ? 'anulowane u przewoźnika' : null,
-            b.missing ? 'zniknęło' : null,
             showMoney && !b.excluded ? signedEur(b.margin) : null,
             km(b.kmLoaded === null && b.kmEmpty === null ? null : (b.kmLoaded ?? 0) + (b.kmEmpty ?? 0), b.kmEstimated),
           ]
@@ -105,7 +145,8 @@ export function TruckTimeline({ row, weekStart, days, showMoney, selected, tip, 
               <button
                 type="button"
                 onClick={() => onSelect(b.orderNo)}
-                aria-label={`${b.orderNo}, ${b.title}, ${dm(b.startDate)}–${dm(b.endDate)}${b.serviceConflict ? `. ${b.serviceConflict}` : ''}`}
+                title={`${b.orderNo}${b.draft ? ' (wstępne)' : ''} · ${b.title}\n${dmTime(b.startDate, b.startTime)} → ${dmTime(b.endDate, b.endTime)}`}
+                aria-label={`${b.orderNo}${b.draft ? ', zlecenie wstępne' : ''}, ${b.title}, ${dmTime(b.startDate, b.startTime)}–${dmTime(b.endDate, b.endTime)}${b.serviceConflict ? `. ${b.serviceConflict}` : ''}`}
                 className="flex min-w-0 flex-1 cursor-pointer flex-col justify-center gap-0.5 px-2 py-1 text-left text-[13px]"
               >
                 <span className="block w-full truncate font-semibold">
