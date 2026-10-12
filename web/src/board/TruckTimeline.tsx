@@ -1,5 +1,5 @@
 import type { Service, WeekBar, WeekEvent, WeekTruck } from './boardApi.js'
-import { EVENT_LABELS, dm, dmTime, km, signedEur } from './format.js'
+import { EVENT_LABELS, dm, dmTime, km, signedEur, stamp } from './format.js'
 import { EVENT_ICON, Icon } from './Icon.js'
 import { SERVICE_COLORS, ServiceStrip } from './serviceUi.js'
 
@@ -105,9 +105,30 @@ export interface TruckTimelineProps {
   onOpenService: (s: Service) => void
   /** Driver change chip clicked (edit / delete the change). */
   onOpenDriverChange?: ((e: WeekEvent) => void) | undefined
+  /** Board day event (note, pause, trailer, position) clicked — edit or delete it. */
+  onOpenEvent?: ((e: WeekEvent) => void) | undefined
 }
 
-export function TruckTimeline({ row, weekStart, days, showMoney, selected, tip, nowFraction, onSelect, onTip, onAddEvent, onOpenService, onOpenDriverChange }: TruckTimelineProps) {
+/** Chip text of a day event: "POZ: TEST" when it has a place. */
+export function eventChipText(e: WeekEvent): string {
+  return `${e.place && !e.auto ? `${e.place}: ` : ''}${e.text}`
+}
+
+export function TruckTimeline({
+  row,
+  weekStart,
+  days,
+  showMoney,
+  selected,
+  tip,
+  nowFraction,
+  onSelect,
+  onTip,
+  onAddEvent,
+  onOpenService,
+  onOpenDriverChange,
+  onOpenEvent,
+}: TruckTimelineProps) {
   const bars = placeBars(row.bars)
   return (
     <div className="relative min-w-0 p-2">
@@ -201,6 +222,18 @@ export function TruckTimeline({ row, weekStart, days, showMoney, selected, tip, 
                     <Icon name="driver" size={12} />
                     <span className="truncate">→ {e.text.split(' → ').pop()?.replace(/^Kierowca: /, '')}</span>
                   </button>
+                ) : !e.auto && e.id !== null && onOpenEvent ? (
+                  <button
+                    key={`n${e.id}`}
+                    type="button"
+                    onClick={() => onOpenEvent(e)}
+                    aria-label={`${EVENT_LABELS[e.kind] ?? 'Zdarzenie'}: ${eventChipText(e)}`}
+                    title={`${EVENT_LABELS[e.kind] ?? 'Zdarzenie'}${e.placeName ? ` · ${e.placeName}` : ''}${e.createdBy ? ` · ${e.createdBy}` : ''}${e.createdAt ? `, ${stamp(e.createdAt)}` : ''}\n${e.text}\nKliknij, żeby poprawić albo usunąć.`}
+                    className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#D5D9D3] bg-white px-2 py-0.5 text-[11.5px] text-[#3D444C] hover:border-[#9AA3AC]"
+                  >
+                    <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
+                    <span className="truncate">{eventChipText(e)}</span>
+                  </button>
                 ) : (
                   <span
                     key={`${e.id ?? 'auto'}-${i}`}
@@ -208,7 +241,7 @@ export function TruckTimeline({ row, weekStart, days, showMoney, selected, tip, 
                     className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] ${e.auto ? 'border-dashed border-[#9AA3AC] bg-[#F7F8F6]' : 'border-[#D5D9D3] bg-white'} text-[#3D444C]`}
                   >
                     <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
-                    <span className="truncate">{e.text}</span>
+                    <span className="truncate">{eventChipText(e)}</span>
                   </span>
                 ),
               )}

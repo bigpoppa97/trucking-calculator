@@ -816,3 +816,43 @@ describe('paczka 12.10.2026', () => {
     expect(api.resolveIssue).toHaveBeenCalledWith(7, 'replace', { orderNo: '79-2-26' })
   })
 })
+
+describe('day events (12.10.2026 bug)', () => {
+  const withNote = (): WeekView => ({
+    ...WEEK,
+    trucks: [
+      {
+        ...WEEK.trucks[0]!,
+        events: [{ id: 2, day: '2026-09-24', kind: 'note', text: 'TEST', auto: false, place: 'POZ', placeName: 'Poznań', createdBy: 'Wojciech', createdAt: '2026-10-12T13:37:47Z' }],
+      },
+    ],
+  })
+
+  it('shows the place on the chip and opens it for correcting', async () => {
+    api.week.mockResolvedValue(withNote())
+    api.updateEvent.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Notatka: POZ: TEST' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(/dodał Wojciech/)).toBeInTheDocument()
+    const place = within(dialog).getByLabelText(/Miejsce/)
+    expect(place).toHaveValue('POZ')
+    await userEvent.clear(place)
+    await userEvent.type(within(dialog).getByLabelText('Opis'), ' — klient w Poznaniu')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Zapisz' }))
+    expect(api.updateEvent).toHaveBeenCalledWith(2, { text: 'TEST — klient w Poznaniu', place: '' })
+    expect(await screen.findByRole('status')).toHaveTextContent('Zapisano zdarzenie.')
+  })
+
+  it('deletes after a confirmation', async () => {
+    api.week.mockResolvedValue(withNote())
+    api.deleteNote.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Notatka: POZ: TEST' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Usuń' }))
+    expect(api.deleteNote).not.toHaveBeenCalled()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Usuń' }))
+    expect(api.deleteNote).toHaveBeenCalledWith(2)
+  })
+})

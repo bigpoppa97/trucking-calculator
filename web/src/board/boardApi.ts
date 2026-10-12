@@ -98,6 +98,11 @@ export interface WeekEvent {
   /** Set for a driver change — opens its edit dialog. */
   driverChangeId?: number
   driverId?: number | null
+  /** Board day events: place (code + name) and author — clicking opens the edit dialog. */
+  place?: string | null
+  placeName?: string | null
+  createdBy?: string
+  createdAt?: string
 }
 
 export type CertStatus = 'ok' | 'expiring' | 'expired' | 'none'
@@ -477,6 +482,7 @@ export const boardApi = {
   clearOverride: (orderNo: string, field: string) =>
     call('DELETE', `/api/board/orders/${encodeURIComponent(orderNo)}/overrides/${encodeURIComponent(field)}`),
   addEvent: (input: { truckId: number; day: string; kind: NoteKind; text: string; place?: string }) => call('POST', '/api/board/events', input),
+  updateEvent: (id: number, patch: { day?: string; kind?: NoteKind; text?: string; place?: string | null }) => call('PATCH', `/api/board/events/${id}`, patch),
   createDraft: async (input: DraftForm & { truckId: number; note?: string }) => (await call<{ orderNo: string }>('POST', '/api/board/drafts', input)).orderNo,
   updateDraft: (orderNo: string, patch: Partial<DraftForm>) => call('PATCH', `/api/board/drafts/${encodeURIComponent(orderNo)}`, patch),
   deleteDraft: (orderNo: string) => call('DELETE', `/api/board/drafts/${encodeURIComponent(orderNo)}`),

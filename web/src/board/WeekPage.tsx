@@ -65,6 +65,7 @@ export function WeekPage({
   const [eventTarget, setEventTarget] = useState<{ truck: WeekTruck; day: string } | null>(null)
   const [serviceTarget, setServiceTarget] = useState<{ truck: WeekTruck; service: Service } | null>(null)
   const [driverChange, setDriverChange] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
+  const [eventEdit, setEventEdit] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => {
@@ -252,6 +253,7 @@ export function WeekPage({
                   {...(onOpenTruck ? { onOpenTruck: () => onOpenTruck(truck.id, view.weekStart) } : {})}
                   {...(onOpenDriver ? { onOpenDriver } : {})}
                   onOpenDriverChange={event => setDriverChange({ truck, event })}
+                  onOpenEvent={event => setEventEdit({ truck, event })}
                 />
               ))}
             </div>
@@ -275,6 +277,18 @@ export function WeekPage({
           onClose={() => setEventTarget(null)}
           onSaved={message => {
             setEventTarget(null)
+            setNotice(message ?? null)
+            void load()
+          }}
+        />
+      )}
+      {eventEdit && (
+        <EventEditDialog
+          plate={eventEdit.truck.plate}
+          event={eventEdit.event}
+          onClose={() => setEventEdit(null)}
+          onSaved={message => {
+            setEventEdit(null)
             setNotice(message ?? null)
             void load()
           }}
@@ -376,6 +390,7 @@ interface TruckRowProps {
   onOpenTruck?: () => void
   onOpenDriver?: (driverId: number) => void
   onOpenDriverChange: (e: WeekEvent) => void
+  onOpenEvent: (e: WeekEvent) => void
 }
 
 function TruckRow({
@@ -395,6 +410,7 @@ function TruckRow({
   onOpenTruck,
   onOpenDriver,
   onOpenDriverChange,
+  onOpenEvent,
 }: TruckRowProps) {
   const openDriver = onOpenDriver && truck.driverId !== null ? () => onOpenDriver(truck.driverId!) : undefined
   const t = truck.totals
@@ -469,6 +485,7 @@ function TruckRow({
         onAddEvent={onAddEvent}
         onOpenService={onOpenService}
         onOpenDriverChange={onOpenDriverChange}
+        onOpenEvent={onOpenEvent}
       />
 
       <div className="flex flex-col gap-1.5 border-l border-[#E3E6E1] px-3.5 py-3 text-[13px]">
@@ -585,7 +602,7 @@ export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck
             />
           </label>
           <label className="flex flex-col gap-1 font-semibold">
-            Miejsce {needsPlace ? '(od niego liczy się następny pusty dojazd)' : '(opcjonalnie)'}
+            Miejsce {needsPlace ? '(od niego liczy się następny pusty dojazd)' : '(opcjonalnie, tylko informacja — km nie zmienia)'}
             <input
               value={place}
               onChange={e => setPlace(e.target.value)}
@@ -606,6 +623,133 @@ export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck
               Zapisz
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Kinds a board day event can be changed to (a service and a driver change have their own forms). */
+const EDIT_KINDS: NoteKind[] = ['note', 'pause', 'trailer', 'position']
+
+/** A day event on the board (note, pause, trailer, position): correct it or delete it (12.10.2026). */
+export function EventEditDialog({ plate, event, onClose, onSaved }: { plate: string; event: WeekEvent; onClose: () => void; onSaved: (message?: string) => void }) {
+  const [kind, setKind] = useState<NoteKind>(event.kind)
+  const [day, setDay] = useState(event.day)
+  const [text, setText] = useState(event.text)
+  const [place, setPlace] = useState(event.place ?? '')
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const kinds = EDIT_KINDS.includes(event.kind) ? EDIT_KINDS : [event.kind, ...EDIT_KINDS]
+  const id = event.id
+
+  const run = async (fn: () => Promise<unknown>, message: string) => {
+    if (id === null) return
+    setSaving(true)
+    try {
+      await fn()
+      onSaved(message)
+    } catch (e) {
+      setError(errorMessage(e, 'Nie udało się zapisać zdarzenia.'))
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby="event-edit-title" className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+      <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h2 id="event-edit-title" className="text-lg font-bold">
+              {EVENT_LABELS[event.kind] ?? 'Zdarzenie'} · {plate}
+            </h2>
+            <p className="text-sm text-[#545B63]">
+              {dm(event.day)}
+              {event.createdBy ? ` · dodał ${event.createdBy}` : ''}
+              {event.createdAt ? `, ${stamp(event.createdAt)}` : ''}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Zamknij" className="flex h-11 w-11 items-center justify-center rounded-lg border border-[#D5D9D3]">
+            <Icon name="close" size={18} />
+          </button>
+        </div>
+        <div className="flex flex-col gap-3 text-sm">
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex flex-col gap-1 font-semibold">
+              Rodzaj
+              <select value={kind} onChange={e => setKind(e.target.value as NoteKind)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal">
+                {kinds.map(k => (
+                  <option key={k} value={k}>
+                    {EVENT_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 font-semibold">
+              Dzień
+              <input type="date" value={day} onChange={e => setDay(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal" />
+            </label>
+          </div>
+          <label className="flex flex-col gap-1 font-semibold">
+            Opis
+            <input value={text} onChange={e => setText(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal" />
+          </label>
+          <label className="flex flex-col gap-1 font-semibold">
+            Miejsce {kind === 'position' ? '(od niego liczy się następny pusty dojazd)' : '(opcjonalnie, tylko informacja — km nie zmienia)'}
+            <input value={place} onChange={e => setPlace(e.target.value)} placeholder="np. Kraków albo KRK; puste = bez miejsca" className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal" />
+          </label>
+          {error && (
+            <p role="alert" className="rounded bg-red-50 px-3 py-2 text-red-800">
+              {error}
+            </p>
+          )}
+          {confirmDelete ? (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <span className="font-semibold">Usunąć to zdarzenie?</span>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void run(() => boardApi.deleteNote(id!), 'Usunięto zdarzenie.')}
+                className="h-11 rounded-lg bg-[#B42318] px-4 font-semibold text-white disabled:opacity-60"
+              >
+                Usuń
+              </button>
+              <button type="button" onClick={() => setConfirmDelete(false)} className="h-11 rounded-lg border border-[#C9CEC6] px-4 font-semibold">
+                Anuluj
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap justify-between gap-2">
+              <button type="button" onClick={() => setConfirmDelete(true)} className="h-11 rounded-lg border border-[#C9CEC6] px-4 font-semibold text-[#B42318]">
+                Usuń
+              </button>
+              <div className="flex gap-2">
+                <button type="button" onClick={onClose} className="h-11 rounded-lg border border-[#C9CEC6] px-4 font-semibold">
+                  Anuluj
+                </button>
+                <button
+                  type="button"
+                  disabled={saving || !text.trim()}
+                  onClick={() =>
+                    void run(
+                      () =>
+                        boardApi.updateEvent(id!, {
+                          ...(kind !== event.kind ? { kind } : {}),
+                          ...(day !== event.day ? { day } : {}),
+                          ...(text.trim() !== event.text ? { text: text.trim() } : {}),
+                          ...(place.trim() !== (event.place ?? '') ? { place: place.trim() } : {}),
+                        }),
+                      'Zapisano zdarzenie.',
+                    )
+                  }
+                  className="h-11 rounded-lg bg-[#1E4E9C] px-4 font-semibold text-white disabled:opacity-60"
+                >
+                  Zapisz
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -53,6 +53,9 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
    kilka pasujących zleceń → pytanie w „Do sprawdzenia”. Dzień po rozładunku bez zlecenia → „Do sprawdzenia”
    (Zostaw / Usuń). Edycja i usuwanie: panel zlecenia.
 
+9. Zdarzenia dnia (notatka, pauza, naczepa, pozycja auta): „+” pod dniem; kliknięcie w znaczek → popraw albo usuń.
+   Miejsce przesuwa początek pustego dojazdu tylko w „Pozycji auta” — w innych zdarzeniach jest tylko informacją.
+
 Ręczne poprawki (panel zlecenia → „Popraw ręcznie”) obowiązują, dopóki aplikacja nie zmieni tej samej wartości —
 wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
 

@@ -123,6 +123,11 @@ export interface WeekEvent {
   /** Set for a driver change (board_driver_changes) — opens its edit dialog. */
   driverChangeId?: number
   driverId?: number | null
+  /** Board day events (notes, pauses, trailer, position): place code and name, author — open for editing. */
+  place?: string | null
+  placeName?: string | null
+  createdBy?: string
+  createdAt?: string
 }
 
 export interface CertWarning {
@@ -697,7 +702,17 @@ export class BoardService {
           if (l.trailer) prevTrailer = l.trailer
         }
         for (const n of dayNotes.filter(n => n.truck_id === truck.id && n.day !== null && n.day >= start && n.day <= end)) {
-          events.push({ id: n.id, day: n.day ?? start, kind: n.kind, text: n.text, auto: false })
+          events.push({
+            id: n.id,
+            day: n.day ?? start,
+            kind: n.kind,
+            text: n.text,
+            auto: false,
+            place: n.place_code,
+            placeName: n.place_code ? ctx.places.name(n.place_code) : null,
+            createdBy: n.created_by,
+            createdAt: n.created_at,
+          })
         }
         // Driver changes (the "from the beginning" entry is never in a week).
         const changes = ctx.drivers.changesOf(truck.id)
@@ -1509,6 +1524,42 @@ export class BoardService {
       await trx.deleteFrom('board_orders').where('order_no', '=', orderNo).execute()
     })
     await this.refreshIssues()
+  }
+
+  /**
+   * Edit a day event (note, pause, trailer, position) from the board. `place` '' clears it.
+   * Only "Pozycja auta" moves the empty run — the place of other kinds is information only.
+   */
+  async updateTruckEvent(id: number, patch: { day?: string | undefined; kind?: NoteKind | undefined; text?: string | undefined; place?: string | null | undefined }) {
+    const row = await this.db.selectFrom('board_notes').selectAll().where('id', '=', id).where('scope', '=', 'truck_day').where('deleted', '=', 0).executeTakeFirst()
+    if (!row) throw new BoardError('EVENT_NOT_FOUND', 'Nie ma takiego zdarzenia.', 404)
+    const set: Record<string, unknown> = {}
+    if (patch.day !== undefined) {
+      if (!isRealDay(patch.day)) throw new BoardError('BAD_DATE', 'Podaj poprawną datę.')
+      set['day'] = patch.day
+    }
+    if (patch.kind !== undefined) {
+      if (patch.kind === 'service') throw new BoardError('USE_SERVICE_FORM', 'Serwis dodaje się formularzem serwisu.')
+      if (!NOTE_KINDS.includes(patch.kind)) throw new BoardError('BAD_KIND', 'Nieznany rodzaj zdarzenia.')
+      set['kind'] = patch.kind
+    }
+    if (patch.text !== undefined) {
+      const text = patch.text.trim()
+      if (!text) throw new BoardError('EMPTY_NOTE', 'Opis jest pusty.')
+      set['text'] = text
+    }
+    if (patch.place !== undefined) {
+      const raw = (patch.place ?? '').trim()
+      if (!raw) set['place_code'] = null
+      else {
+        const ctx = await loadBoardContext(this.db)
+        const code = ctx.places.resolve(raw)
+        if (!code) throw new BoardError('PLACE_UNKNOWN', `Nie znam miejsca „${raw}”. Dodaj je w słowniku miejsc.`)
+        set['place_code'] = code
+      }
+    }
+    if (Object.keys(set).length === 0) return
+    await this.db.updateTable('board_notes').set(set).where('id', '=', id).execute()
   }
 
   async deleteNote(id: number) {

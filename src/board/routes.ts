@@ -167,6 +167,26 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     handle(reply, () => as(request).deleteDraft(request.params.orderNo)),
   )
 
+  app.patch<{ Params: { id: string }; Body: { day?: string; kind?: NoteKind; text?: string; place?: string | null } }>(
+    '/api/board/events/:id',
+    {
+      schema: {
+        params: ID_PARAMS,
+        body: {
+          type: 'object',
+          properties: {
+            day: DATE,
+            kind: { type: 'string', enum: ['note', 'pause', 'driver', 'trailer', 'position'] },
+            text: { type: 'string', minLength: 1, maxLength: 500 },
+            place: { type: ['string', 'null'], maxLength: 100 },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => handle(reply, () => as(request).updateTruckEvent(Number(request.params.id), request.body)),
+  )
+
   // Set page (strona zestawu): one tractor over whole weeks covering [from, to].
   app.get<{ Params: { id: string }; Querystring: { from: string; to?: string } }>(
     '/api/board/trucks/:id/view',

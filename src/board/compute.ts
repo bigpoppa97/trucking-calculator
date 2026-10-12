@@ -385,14 +385,15 @@ async function attachKilometres(
   orders: ComputedOrder[],
   window: ComputeWindow,
 ): Promise<void> {
-  // Day events with a place (e.g. "Pozycja auta: Kraków") move the start of the next empty run.
-  // Services never do (decision of 08.10.2026 — km corrections are manual).
+  // Only "Pozycja auta" with a place moves the start of the next empty run (spec §6). A place
+  // on a note, pause or trailer event is information only (12.10.2026: a test note "TEST · POZ"
+  // had silently added ~1500 empty km); services never move it (08.10.2026).
   const positionNotes = await db
     .selectFrom('board_notes')
     .select(['truck_id', 'day', 'place_code'])
     .where('scope', '=', 'truck_day')
     .where('deleted', '=', 0)
-    .where('kind', '!=', 'service')
+    .where('kind', '=', 'position')
     .where('place_code', 'is not', null)
     .where('day', '>=', window.from)
     .where('day', '<=', window.to)

@@ -1173,3 +1173,35 @@ describe('preliminary orders (zlecenia wstępne, 12.10.2026)', () => {
     await expect(board.orderDetails(other)).rejects.toMatchObject({ code: 'ORDER_NOT_FOUND' })
   })
 })
+
+describe('day events on the board (12.10.2026 bug: place hidden, no edit, km moved by a note)', () => {
+  it('a note keeps its place as information only; only "Pozycja auta" moves the empty run; events can be corrected and deleted', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-90-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-91-26', from: 'Wien', ld: '2026-09-23', to: 'Warszawa', ud: '2026-09-24', rev: 1200, cost: 1000, sub: 'AA1001A', trailer: 'TR100' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const truck = (await board.fleet()).find(t => t.currentPlate === 'AA1001A')!
+    await board.addTruckEvent({ truckId: truck.id, day: '2026-09-22', kind: 'note', text: 'TEST', place: 'POZ' })
+    expect((await board.orderDetails('79-91-26')).legs[0]?.kmEmptyFrom).toBe('Budapeszt (Vecsés)')
+
+    const event = (await board.weekView('2026-09-21')).trucks.find(t => t.id === truck.id)!.events.find(e => e.text === 'TEST')!
+    expect(event).toMatchObject({ kind: 'note', place: 'POZ', placeName: 'Poznań', createdBy: 'test', auto: false })
+
+    await board.updateTruckEvent(event.id!, { kind: 'position', place: 'Bratislava' })
+    expect((await board.orderDetails('79-91-26')).legs[0]?.kmEmptyFrom).toBe('Bratysława')
+    await expect(board.updateTruckEvent(event.id!, { place: 'Nibylandia' })).rejects.toMatchObject({ code: 'PLACE_UNKNOWN' })
+    await expect(board.updateTruckEvent(event.id!, { kind: 'service' })).rejects.toMatchObject({ code: 'USE_SERVICE_FORM' })
+    await board.updateTruckEvent(event.id!, { place: '', text: 'stoi na bazie', day: '2026-09-21' })
+    const changed = (await board.weekView('2026-09-21')).trucks.find(t => t.id === truck.id)!.events.find(e => e.id === event.id)!
+    expect(changed).toMatchObject({ day: '2026-09-21', text: 'stoi na bazie', place: null })
+    expect((await board.orderDetails('79-91-26')).legs[0]?.kmEmptyFrom).toBe('Budapeszt (Vecsés)')
+
+    await board.deleteNote(event.id!)
+    expect((await board.weekView('2026-09-21')).trucks.find(t => t.id === truck.id)!.events.some(e => e.id === event.id)).toBe(false)
+    await expect(board.updateTruckEvent(event.id!, { text: 'x' })).rejects.toMatchObject({ code: 'EVENT_NOT_FOUND' })
+  })
+})
