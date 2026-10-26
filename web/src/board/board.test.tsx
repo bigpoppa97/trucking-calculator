@@ -76,7 +76,7 @@ const WEEK: WeekView = {
     },
   ],
   kpis: { margin: 200, revenue: 1500, cost: 1300, orders: 1, drafts: 0, km: 680, kmEmpty: 0, revenuePerKm: 2.21, costPerKm: 1.91, kmEstimated: true, openIssues: 2 },
-  lastImport: { importedAt: '2026-09-23T08:00:00Z', filename: 'export.xlsx' },
+  lastImport: { importedAt: '2026-09-23T08:00:00Z', filename: 'export.xlsx', supplement: null },
 }
 
 const ORDER: OrderDetails = {
@@ -111,6 +111,7 @@ const ORDER: OrderDetails = {
     missing: false,
     notesApp: '',
     prz: null,
+    przManual: null,
     przErrors: [],
     trailer: 'TR1111P',
   },
@@ -131,6 +132,7 @@ const ORDER: OrderDetails = {
       kmEmpty: 0,
       kmEmptyFrom: 'Warszawa',
       kmEstimated: true,
+      kmManual: false,
       driver: 'Kierowca A → Kierowca B (zmiana 23.09)',
       driverManual: false,
       drivers: [
@@ -157,6 +159,7 @@ const FLEET: FleetTruck[] = [
     sortOrder: 1,
     plates: [{ id: 1, plate: 'AA1050H', validFrom: '2024-01-01', validTo: null }],
     currentPlate: 'AA1050H',
+    retiredOn: null,
   },
 ]
 
@@ -273,7 +276,7 @@ describe('FleetPage', () => {
     api.drivers.mockResolvedValue([])
     render(<FleetPage />)
     await userEvent.click(screen.getByRole('button', { name: 'Ciągniki' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Nowy numer' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Nowy numer / nowy ciągnik' }))
     await userEvent.type(screen.getByLabelText('Nowy numer'), 'aa2222h')
     await userEvent.clear(screen.getByLabelText('Obowiązuje od'))
     await userEvent.type(screen.getByLabelText('Obowiązuje od'), '2026-10-01')
@@ -453,6 +456,7 @@ const TRUCK_VIEW = (): TruckView => {
       trailer: 'TR1111P',
       trailerTypePl: 'chłodnia 2,61 m · rolki',
       active: true,
+      retiredOn: null,
       copyText: 'Truck AA1050H',
       required: [REQUIRED_TRUCK],
       driverChanges: [
@@ -854,5 +858,121 @@ describe('day events (12.10.2026 bug)', () => {
     expect(api.deleteNote).not.toHaveBeenCalled()
     await userEvent.click(within(dialog).getByRole('button', { name: 'Usuń' }))
     expect(api.deleteNote).toHaveBeenCalledWith(2)
+  })
+})
+
+describe('paczka 26.10.2026', () => {
+  it('"Popraw ręcznie" offers one "Km razem" instead of four km fields; corrected km are marked', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue({
+      ...ORDER,
+      legs: [{ ...ORDER.legs[0]!, kmLoaded: 1100, kmEmpty: 150, kmEstimated: false, kmManual: true }],
+      overrides: [
+        { field: 'km_total', value: '1250', display: '1250', createdAt: '2026-10-26T10:00:00Z' },
+        { field: 'km_loaded', value: '590', display: '590', createdAt: '2026-10-09T10:00:00Z' },
+      ],
+    })
+    api.setOverride.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText(/razem 1\D?250 km \(poprawione\)/)).toBeInTheDocument()
+    expect(within(panel).getByText(/Km razem:/)).toBeInTheDocument()
+    expect(within(panel).getByText(/Km z ładunkiem:/)).toBeInTheDocument() // an older correction stays visible
+    await userEvent.click(within(panel).getByRole('button', { name: 'Popraw ręcznie' }))
+    const select = within(panel).getByLabelText('Co poprawić')
+    const options = within(select).getAllByRole('option').map(o => o.textContent)
+    expect(options).toContain('Km razem')
+    expect(options.some(o => o?.startsWith('Km z ładunkiem') || o?.startsWith('Km puste'))).toBe(false)
+    await userEvent.selectOptions(select, 'km_total')
+    await userEvent.type(within(panel).getByLabelText('Nowa wartość'), '1300')
+    await userEvent.click(within(panel).getByRole('button', { name: 'Zapisz poprawkę' }))
+    expect(api.setOverride).toHaveBeenCalledWith('79-1000-26', 'km_total', '1300')
+  })
+
+  it('a relay typed on the board is labelled as a manual correction', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue({
+      ...ORDER,
+      order: {
+        ...ORDER.order,
+        prz: { place: 'ŁÓDŹ', placeCode: 'LCJ', date: '2026-09-22', from: 'AA1050H', to: 'AA2050H', amountFrom: 700, amountTo: 600, raw: 'PRZ ŁÓDŹ 22.09 AA1050H>AA2050H 700/600' },
+        przManual: { createdBy: 'Wojciech', createdAt: '2026-10-12T09:31:00Z' },
+      },
+    })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText('Przepinka (ręczna poprawka)')).toBeInTheDocument()
+    expect(within(panel).queryByText('Przepinka z uwag')).not.toBeInTheDocument()
+    expect(within(panel).getByText(/Wpisana na tablicy: Wojciech/)).toBeInTheDocument()
+  })
+
+  it('"Czy była przepinka?" opens both orders; a withdrawn tractor with a later order can be brought back', async () => {
+    api.issues.mockResolvedValue([
+      issue({ id: 7, kind: 'ROUTE_GAP', ref: '79-9018-26', message: 'Czy była przepinka? KN0000X: …', details: { orders: ['79-9013-26', '79-9018-26'] } }),
+      issue({ id: 8, kind: 'NEW_TRUCK', ref: 'AA1050H', message: 'Ciągnik AA1050H jest wycofany z działu…', details: { retiredTruckId: 1, retiredOn: '2026-10-14' } }),
+    ])
+    api.fleet.mockResolvedValue(FLEET)
+    api.imports.mockResolvedValue([])
+    api.resolveIssue.mockResolvedValue({ ok: true })
+    const open = vi.fn()
+    render(<ReviewPage onOpenOrder={open} onIssuesChanged={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Otwórz 79-9013-26' }))
+    expect(open).toHaveBeenCalledWith('79-9013-26')
+    expect(screen.getByRole('button', { name: 'Otwórz 79-9018-26' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'W porządku' })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: 'Dodaj jako nowe auto' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Przywróć AA1050H do działu' }))
+    expect(api.resolveIssue).toHaveBeenCalledWith(8, 'restore', {})
+  })
+
+  it('the import card tells a partial export apart', async () => {
+    api.issues.mockResolvedValue([])
+    api.fleet.mockResolvedValue(FLEET)
+    api.imports.mockResolvedValue([
+      {
+        id: 15,
+        filename: 'export (27).xlsx',
+        imported_at: '2026-10-26T13:49:47Z',
+        summary: {
+          importId: 15, filename: 'export (27).xlsx', mode: 'daily', importedAt: '2026-10-26T13:49:47Z', rowsTotal: 2, rowsInScope: 2, rowsOwnFleet: 0, rowsOtherCarriers: 0,
+          rangeFrom: '2026-10-26', rangeTo: '2026-10-26', created: ['79-9040-26'], updated: [], unchanged: 1, disappeared: [], reappeared: [], supersededOverrides: [],
+          newTruckCandidates: [], warnings: [], partial: { found: 2, missing: 3 },
+        },
+      },
+    ])
+    render(<ReviewPage onOpenOrder={() => {}} onIssuesChanged={() => {}} />)
+    expect(await screen.findByText(/Niepełny eksport: w pliku 2 z 5 zleceń, które tablica ma w dniu 26\.10\. Tablica dodała nowe/)).toBeInTheDocument()
+  })
+
+  it('withdraws a tractor with its last day and moves the driver; lists it under "Wycofane z działu"', async () => {
+    const second: FleetTruck = { ...FLEET[0]!, id: 2, currentPlate: 'AA2050H', plates: [{ id: 2, plate: 'AA2050H', validFrom: '2024-01-01', validTo: null }], driver: 'Kierowca B', driverId: 6, sortOrder: 2 }
+    api.fleet.mockResolvedValueOnce([...FLEET, second]).mockResolvedValue([{ ...FLEET[0]!, retiredOn: '2026-10-14', plates: [{ id: 1, plate: 'AA1050H', validFrom: '2024-01-01', validTo: '2026-10-14' }] }, second])
+    api.retireTruck.mockResolvedValue({ plate: 'AA1050H', driverMovedTo: 'AA2050H' })
+    api.restoreTruck.mockResolvedValue({ plate: 'AA1050H' })
+    api.drivers.mockResolvedValue([])
+    render(<FleetPage />)
+    await userEvent.click(screen.getByRole('button', { name: 'Ciągniki' }))
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Wycofaj' }))[0]!)
+    const day = screen.getByLabelText('Ostatni dzień w dziale')
+    await userEvent.clear(day)
+    await userEvent.type(day, '2026-10-14')
+    await userEvent.selectOptions(screen.getByLabelText('Kierowca Kierowca A od następnego dnia'), '2')
+    await userEvent.click(screen.getByRole('button', { name: 'Wycofaj AA1050H' }))
+    expect(api.retireTruck).toHaveBeenCalledWith(1, '2026-10-14', 2)
+    expect(await screen.findByRole('status')).toHaveTextContent('AA1050H wycofany — ostatni dzień 14.10.2026. Kierowca A od 15.10.2026 jeździ AA2050H.')
+    expect(screen.getByText('Wycofane z działu (1)')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Przywróć' }))
+    expect(api.restoreTruck).toHaveBeenCalledWith(1)
+  })
+
+  it('the footer names the last full export and a later partial one', async () => {
+    api.week.mockResolvedValue({
+      ...WEEK,
+      lastImport: { importedAt: '2026-10-26T10:07:00Z', filename: 'export (26).xlsx', supplement: { importedAt: '2026-10-26T13:49:00Z', filename: 'export (27).xlsx', orders: 2 } },
+    })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    expect(await screen.findByText(/Dane z importu .*\(export \(26\)\.xlsx\) · uzupełnienie .*\(2 zlecenia z export \(27\)\.xlsx\)\./)).toBeInTheDocument()
   })
 })

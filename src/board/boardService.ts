@@ -5,7 +5,7 @@ import type { Kysely, Selectable } from 'kysely'
 import type { BoardOrdersTable, DB, ImportMode, NoteKind, ServiceTarget } from '../db/schema.js'
 import { computeOrders, routeLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
 import { parseNumberInput } from './amount.js'
-import { loadBoardContext, type BoardContext, type TruckRecord } from './context.js'
+import { loadBoardContext, retiredOn, servesBetween, type BoardContext, type TruckRecord } from './context.js'
 import type { DistanceService } from './distances.js'
 import { importExportFile, draftLabel, FIELD_LABELS, OVERRIDE_FIELD_LABELS, overrideAppValue, type ImportSummary } from './importService.js'
 import { DRAFT_PREFIX, replaceDraft } from './drafts.js'
@@ -64,6 +64,10 @@ export const OVERRIDE_FIELDS = [
   'trailer',
   'prz',
   'exclude',
+  // "Km razem" (26.10.2026) — the only km correction offered from now on.
+  'km_total',
+  'km_total:1',
+  // Older km corrections: still read and removable, no longer offered in the panel.
   'km_loaded',
   'km_empty',
   'km_loaded:1',
@@ -76,7 +80,7 @@ export const OVERRIDE_FIELDS = [
 /** Loading / unloading date and hour typed on the board (12.10.2026). */
 const AT_OVERRIDES = new Set(['load_at', 'unload_at'])
 export type OverrideField = (typeof OVERRIDE_FIELDS)[number]
-const NUMERIC_OVERRIDES = new Set(['rev', 'cost', 'extra_cost', 'km_loaded', 'km_empty'])
+const NUMERIC_OVERRIDES = new Set(['rev', 'cost', 'extra_cost', 'km_total', 'km_loaded', 'km_empty'])
 
 /** Free-form day events; a service has its own record (board_services). */
 const NOTE_KINDS: NoteKind[] = ['note', 'pause', 'driver', 'trailer', 'position']
@@ -198,6 +202,8 @@ export interface TruckView {
     trailer: string | null
     trailerTypePl: string
     active: boolean
+    /** Last day in the department of a withdrawn tractor, null = still in it (26.10.2026). */
+    retiredOn: string | null
     copyText: string
     required: ServiceDto[]
     /** Driver changes of this tractor, newest first (the first entry may be "from the beginning"). */
@@ -313,7 +319,8 @@ export interface WeekView {
     kmEstimated: boolean
     openIssues: number
   }
-  lastImport: { importedAt: string; filename: string } | null
+  /** Last full export; `supplement` = a partial one imported after it (a few last-minute orders). */
+  lastImport: { importedAt: string; filename: string; supplement: { importedAt: string; filename: string; orders: number } | null } | null
 }
 
 export interface BoardServiceOptions {
@@ -405,7 +412,7 @@ export class BoardService {
    *  - any:              dismiss (derived → ignored until the values change)
    *  - UNKNOWN_TRAILER:  alias {trailer} | new {plate?, typePl?, typeEn?}
    *  - UNKNOWN_PLACE / PRZ_PLACE_UNKNOWN: alias {code} | new {code, name, lat, lon, country}
-   *  - NEW_TRUCK:        new-plate {truckId, validFrom} | add-truck {carrier?} | ignore
+   *  - NEW_TRUCK:        new-plate {truckId, validFrom} | add-truck {carrier?} | restore (withdrawn tractor) | ignore
    *  - MISSING_TRAILER:  set {trailer}
    *  - DISAPPEARED:      keep | delete
    *  - DRAFT_MATCH:      replace {orderNo} | keep (none of them)
@@ -490,6 +497,14 @@ export class BoardService {
         await done('added')
         break
       }
+      case 'NEW_TRUCK:restore': {
+        // An order on a withdrawn tractor (26.10.2026): bring it back to the department.
+        const truckId = Number(details['retiredTruckId'])
+        if (!truckId) throw new BoardError('UNKNOWN_ACTION', 'To auto nie jest wycofane.')
+        await this.restoreTruck(truckId)
+        await done('restored')
+        break
+      }
       case 'NEW_TRUCK:ignore': {
         await this.db
           .insertInto('board_ignored_plates')
@@ -543,7 +558,8 @@ export class BoardService {
   async weekView(anyDayInWeek: string): Promise<WeekView> {
     const start = weekStart(anyDayInWeek)
     const end = addDays(start, 6)
-    const { orders, weeks, today } = await this.loadWeeks([start], t => t.active)
+    // A withdrawn truck stays in the weeks up to its last day (26.10.2026); a truck appears from its first plate.
+    const { orders, weeks, today } = await this.loadWeeks([start], t => t.active && servesBetween(t, start, end))
     const week = weeks[0]!
     const trucks = week.trucks
 
@@ -556,7 +572,23 @@ export class BoardService {
     const legCost = trucks.reduce((s, t) => s + t.totals.cost, 0)
     const km = trucks.reduce((s, t) => s + t.totals.km, 0)
     const kmEmpty = trucks.reduce((s, t) => s + t.totals.kmEmpty, 0)
-    const lastImport = await this.db.selectFrom('board_imports').select(['imported_at', 'filename']).orderBy('id', 'desc').executeTakeFirst()
+    // The last full export, and a partial one after it ("uzupełnienie", 26.10.2026).
+    const lastFull = await this.db.selectFrom('board_imports').select(['id', 'imported_at', 'filename']).where('partial', '=', 0).orderBy('id', 'desc').executeTakeFirst()
+    const lastPartial = await this.db
+      .selectFrom('board_imports')
+      .select(['id', 'imported_at', 'filename', 'rows_in_scope'])
+      .where('partial', '=', 1)
+      .orderBy('id', 'desc')
+      .executeTakeFirst()
+    const supplement =
+      lastPartial && (!lastFull || lastPartial.id > lastFull.id)
+        ? { importedAt: lastPartial.imported_at, filename: lastPartial.filename, orders: lastPartial.rows_in_scope }
+        : null
+    const lastImport = lastFull
+      ? { importedAt: lastFull.imported_at, filename: lastFull.filename, supplement }
+      : supplement
+        ? { importedAt: supplement.importedAt, filename: supplement.filename, supplement: null }
+        : null
     const openIssues = await this.db
       .selectFrom('board_issues')
       .select(eb => eb.fn.countAll<number>().as('n'))
@@ -582,7 +614,7 @@ export class BoardService {
         kmEstimated: trucks.some(t => t.totals.kmEstimated),
         openIssues: Number(openIssues?.n ?? 0),
       },
-      lastImport: lastImport ? { importedAt: lastImport.imported_at, filename: lastImport.filename } : null,
+      lastImport,
     }
   }
 
@@ -976,6 +1008,7 @@ export class BoardService {
         trailer: headerRow.trailer,
         trailerTypePl: headerRow.trailerTypePl,
         active: truck.active,
+        retiredOn: retiredOn(truck),
         copyText: headerRow.copyText,
         required: headerRow.required,
         driverChanges: [...ctx.drivers.changesOf(truckId)].reverse().map(c => ({
@@ -1276,6 +1309,8 @@ export class BoardService {
         missing: o.missing,
         notesApp: o.notesApp,
         prz: o.prz,
+        /** The PRZ entry was typed on the board ("Popraw ręcznie → Wpis przepinki"), not in the application's notes. */
+        przManual: o.prz && o.overrides['prz'] ? { createdBy: o.overrides['prz'].createdBy, createdAt: o.overrides['prz'].createdAt } : null,
         przErrors: o.przErrors,
         trailer: o.legs[0]?.trailer ?? null,
       },
@@ -1298,6 +1333,7 @@ export class BoardService {
         kmEmpty: l.kmEmpty,
         kmEmptyFrom: l.kmEmptyFrom ? ctx.places.name(l.kmEmptyFrom) : null,
         kmEstimated: l.kmEstimated,
+        kmManual: l.kmManual,
         ...((): { driver: string; driverManual: boolean; drivers: Array<{ id: number | null; name: string }> } => {
           const d = legDriversOf(o, l, ctx)
           return { driver: d.text, driverManual: d.manual, drivers: d.drivers.map(x => ({ id: x.id, name: x.name })) }
@@ -2060,8 +2096,83 @@ export class BoardService {
     return ctx.fleet.trucks.map(truck => {
       const { driver: _legacyDriver, phone: _legacyPhone, ...t } = truck
       const d = ctx.drivers.driverOn(t.id, today)
-      return { ...t, currentPlate: ctx.fleet.plateOn(truck, today), driverId: d?.id ?? null, driver: d?.name ?? '' }
+      return { ...t, currentPlate: ctx.fleet.plateOn(truck, today), driverId: d?.id ?? null, driver: d?.name ?? '', retiredOn: retiredOn(truck) }
     })
+  }
+
+  /**
+   * Withdraw a tractor from the department with its last day (26.10.2026). Up to that day
+   * it stays in the weeks, totals and history; its plate stops matching orders after it.
+   * The driver leaves it the next day — onto another tractor (`moveDriverTo`) or none.
+   */
+  async retireTruck(truckId: number, lastDay: string, opts: { moveDriverTo?: number | null | undefined } = {}): Promise<{ plate: string; driverMovedTo: string | null }> {
+    if (!isRealDay(lastDay)) throw new BoardError('BAD_DATE', 'Podaj poprawną datę.')
+    const ctx = await loadBoardContext(this.db)
+    const truck = ctx.fleet.byId(truckId)
+    if (!truck) throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
+    const open = truck.plates.filter(p => p.validTo === null)
+    if (open.length === 0) throw new BoardError('ALREADY_RETIRED', `Auto ${ctx.fleet.plateOn(truck, lastDay)} jest już wycofane.`)
+    for (const p of open) {
+      if (p.validFrom > lastDay) {
+        throw new BoardError('BAD_DATE', `Numer ${p.plate} obowiązuje od ${fmtDate(p.validFrom)} — ostatni dzień nie może być wcześniejszy.`)
+      }
+    }
+    const plate = ctx.fleet.plateOn(truck, lastDay)
+    const nextDay = addDays(lastDay, 1)
+    const driver = ctx.drivers.driverOn(truckId, lastDay)
+    let target: TruckRecord | null = null
+    if (opts.moveDriverTo) {
+      target = ctx.fleet.byId(opts.moveDriverTo) ?? null
+      if (!target || target.id === truckId || retiredOn(target) !== null) throw new BoardError('BAD_TRUCK', 'Wybierz auto, które zostaje w dziale.')
+    }
+    await this.db.transaction().execute(async trx => {
+      await trx.updateTable('board_truck_plates').set({ valid_to: lastDay }).where('truck_id', '=', truckId).where('valid_to', 'is', null).execute()
+      if (driver) {
+        await trx
+          .insertInto('board_driver_changes')
+          .values({ truck_id: truckId, driver_id: null, day: nextDay, created_by: this.actor(), created_at: this.now() })
+          .onConflict(oc => oc.columns(['truck_id', 'day']).doUpdateSet({ driver_id: null, created_by: this.actor(), created_at: this.now() }))
+          .execute()
+      }
+    })
+    if (driver && target) await this.setDriverChange({ truckId: target.id, day: nextDay, driverId: driver.id })
+    await this.refreshIssues()
+    return { plate, driverMovedTo: driver && target ? ctx.fleet.plateOn(target, nextDay) : null }
+  }
+
+  /** Bring a withdrawn tractor back: its last plate is valid again (orders after the withdrawal match it). */
+  async restoreTruck(truckId: number): Promise<{ plate: string }> {
+    const ctx = await loadBoardContext(this.db)
+    const truck = ctx.fleet.byId(truckId)
+    if (!truck) throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
+    const last = retiredOn(truck)
+    const latest = [...truck.plates].sort((a, b) => b.validFrom.localeCompare(a.validFrom))[0]
+    if (last === null || !latest) throw new BoardError('NOT_RETIRED', 'To auto nie jest wycofane.')
+    const clash = ctx.fleet.trucks.find(t => t.id !== truckId && t.plates.some(p => p.plate === latest.plate && p.validTo === null))
+    if (clash) throw new BoardError('PLATE_TAKEN', `Numer ${latest.plate} ma teraz inne auto we flocie.`)
+    await this.db.transaction().execute(async trx => {
+      await trx.updateTable('board_truck_plates').set({ valid_to: null }).where('id', '=', latest.id).execute()
+      // The "no driver" entry made by the withdrawal goes away with it.
+      await trx
+        .deleteFrom('board_driver_changes')
+        .where('truck_id', '=', truckId)
+        .where('day', '=', addDays(last, 1))
+        .where('driver_id', 'is', null)
+        .execute()
+    })
+    await this.resolveNewTruckIssue(latest.plate, 'restored')
+    await this.refreshIssues()
+    return { plate: latest.plate }
+  }
+
+  /** "New tractor of a fleet carrier" asked about a plate that is now in the fleet — answered. */
+  private async resolveNewTruckIssue(plate: string, resolution: string): Promise<void> {
+    await this.db
+      .updateTable('board_issues')
+      .set({ status: 'resolved', resolution, resolved_by: this.actor(), updated_at: this.now() })
+      .where('key', '=', `NEW_TRUCK:${plate}`)
+      .where('status', '=', 'open')
+      .execute()
   }
 
   /** The board's "today": the Polish date. */
@@ -2086,6 +2197,7 @@ export class BoardService {
       .executeTakeFirstOrThrow()
     await this.db.insertInto('board_truck_plates').values({ truck_id: truck.id, plate, valid_from: input.validFrom, valid_to: null }).execute()
     await this.db.deleteFrom('board_ignored_plates').where('plate', '=', plate).execute()
+    await this.resolveNewTruckIssue(plate, 'added')
     if (input.driver?.trim()) {
       const driverId = await this.findOrCreateDriver({ name: input.driver, phone: input.phone ?? '', carrier: input.carrier ?? '' })
       await this.setDriverChange({ truckId: truck.id, day: FROM_THE_BEGINNING, driverId })
@@ -2126,6 +2238,7 @@ export class BoardService {
         .execute()
       await trx.deleteFrom('board_ignored_plates').where('plate', '=', plate).execute()
     })
+    await this.resolveNewTruckIssue(plate, `plate:${truckId}`)
     await this.refreshIssues()
   }
 

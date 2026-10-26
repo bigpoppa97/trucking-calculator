@@ -1,7 +1,7 @@
 import type { Kysely } from 'kysely'
 import type { DB } from '../db/schema.js'
 import { sameCarrier, type BoardContext } from './context.js'
-import type { ComputedOrder } from './compute.js'
+import { legSort, type ComputedLeg, type ComputedOrder } from './compute.js'
 import { aliasKey, normalizePlate } from './normalize.js'
 
 /**
@@ -37,6 +37,8 @@ export const DERIVED_KINDS = [
   'FERRY_PARSE',
   // 12.10.2026: a preliminary order whose unloading day has passed without an order from the application.
   'DRAFT_STALE',
+  // 26.10.2026: two consecutive orders of a truck too far apart for the time between them — a relay?
+  'ROUTE_GAP',
 ] as const
 
 export type DerivedKind = (typeof DERIVED_KINDS)[number]
@@ -300,7 +302,92 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
       fingerprint: k,
     })
   }
+  out.push(...routeGaps(orders, ctx))
   return out
+}
+
+/**
+ * Continuity of a truck's route ("Czy była przepinka?", 26.10.2026). For two consecutive
+ * orders A → B of a truck, the empty run from A's last unloading to B's first loading
+ * must fit in the time between them: with both hours known at ROUTE_GAP_SPEED km/h plus
+ * ROUTE_GAP_SLACK_H of slack (the export's unloading hour is the END of the window, so the
+ * truck is often free hours earlier — with 1 h the data of 09–10.2026 gave three such false
+ * alarms, with 4 h none); without hours, an empty run over ROUTE_GAP_SAME_DAY_KM on the
+ * same day (or overlapping days) is suspicious. Typical cause: a relay (PRZ) nobody typed
+ * in — the truck really left A or joined B somewhere else. Uses the legs after PRZ, so an
+ * entered relay clears it; an empty run started by "Pozycja auta" is not checked.
+ */
+export const ROUTE_GAP_SPEED = 70
+export const ROUTE_GAP_SLACK_H = 4
+export const ROUTE_GAP_SAME_DAY_KM = 500
+export const ROUTE_GAP_MIN_KM = 150
+
+export function routeGaps(orders: ComputedOrder[], ctx: BoardContext): IssueDraft[] {
+  const out: IssueDraft[] = []
+  const byTruck = new Map<number, ComputedLeg[]>()
+  const orderOf = new Map<ComputedLeg, ComputedOrder>()
+  for (const o of orders) {
+    // Same set of legs as the empty-run computation (compute.ts).
+    if (o.excluded !== null || o.noCarrier) continue
+    for (const leg of o.legs) {
+      if (leg.kind !== 'fleet' || leg.truckId === null) continue
+      const list = byTruck.get(leg.truckId) ?? []
+      list.push(leg)
+      byTruck.set(leg.truckId, list)
+      orderOf.set(leg, o)
+    }
+  }
+  for (const legs of byTruck.values()) {
+    legs.sort(legSort)
+    for (let i = 1; i < legs.length; i++) {
+      const a = legs[i - 1]!
+      const b = legs[i]!
+      const oa = orderOf.get(a)!
+      const ob = orderOf.get(b)!
+      if (oa.history || ob.history || oa.orderNo === ob.orderNo) continue
+      const aEnd = a.stops[a.stops.length - 1]?.code ?? null
+      const bStart = b.stops[0]?.code ?? null
+      const km = b.kmEmpty
+      // Only the empty run from A's unloading (not from a "Pozycja auta" in between).
+      if (km === null || !aEnd || !bStart || b.kmEmptyFrom !== aEnd) continue
+      let hours: number | null = null
+      let suspicious = false
+      if (a.endTime && b.startTime) {
+        hours = (Date.parse(`${b.startDate}T${b.startTime}:00Z`) - Date.parse(`${a.endDate}T${a.endTime}:00Z`)) / 3_600_000
+        suspicious = km >= ROUTE_GAP_MIN_KM && km / ROUTE_GAP_SPEED > hours + ROUTE_GAP_SLACK_H
+      } else {
+        suspicious = km > ROUTE_GAP_SAME_DAY_KM && b.startDate <= a.endDate
+      }
+      if (!suspicious) continue
+      const at = (date: string, time: string | null) => `${fmtDate(date)}${time ? ` ${time}` : ''}`
+      const before = hours !== null ? hours < 0 : b.startDate < a.endDate
+      const span = before
+        ? ', a załadunek wypada przed rozładunkiem poprzedniego zlecenia'
+        : hours === null
+          ? ' tego samego dnia'
+          : hours === 0
+            ? ' bez czasu na dojazd'
+            : ` w ${formatHours(hours)} h`
+      const plate = b.plate || a.plate
+      out.push({
+        key: `ROUTE_GAP:${oa.orderNo}>${ob.orderNo}`,
+        kind: 'ROUTE_GAP',
+        ref: ob.orderNo,
+        message:
+          `Czy była przepinka? ${plate}: rozładunek ${oa.orderNo} — ${ctx.places.name(aEnd)} ${at(a.endDate, a.endTime)}, ` +
+          `załadunek ${ob.orderNo} — ${ctx.places.name(bStart)} ${at(b.startDate, b.startTime)}: ok. ${km} km pustych${span}. ` +
+          'Jeśli auto przepięło się w trasie, wpisz przepinkę (PRZ) w jednym z tych zleceń; jeśli data albo godzina jest zła — popraw ją.',
+        details: { orders: [oa.orderNo, ob.orderNo], truckId: b.truckId, km, hours },
+        // Dates, hours and places only: km filled in later by HERE must not reopen a dismissed item.
+        fingerprint: `${a.endDate} ${a.endTime ?? ''}|${b.startDate} ${b.startTime ?? ''}|${aEnd}|${bStart}`,
+      })
+    }
+  }
+  return out
+}
+
+function formatHours(h: number): string {
+  return (Math.round(h * 10) / 10).toString().replace('.', ',')
 }
 
 /** Upsert derived issues and auto-resolve the ones whose condition is gone. */

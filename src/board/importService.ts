@@ -1,10 +1,10 @@
 import type { Kysely } from 'kysely'
 import type { DB, ImportMode } from '../db/schema.js'
-import { carrierKey, loadBoardContext, sameCarrier, type BoardContext } from './context.js'
+import { carrierKey, loadBoardContext, retiredOn, sameCarrier, type BoardContext } from './context.js'
 import { readExport, type ExportRow } from './exportReader.js'
 import { parsePrz, resolveSwapDate } from './prz.js'
 import { parseFerries } from './ferry.js'
-import { raiseEventIssue } from './issues.js'
+import { fmtDate, raiseEventIssue } from './issues.js'
 import { matchDrafts, replaceDraft, type MatchDraft, type MatchOrder } from './drafts.js'
 import { splitPlaces } from './normalize.js'
 import { formatAt, parseAtValue } from './times.js'
@@ -16,7 +16,9 @@ import { formatAt, parseAtValue } from './times.js'
  * date from 7 days back + future). Orders are matched by order number:
  * new ones are added, changed ones updated with a change log, and fleet
  * orders inside the file's date range that are missing from it are flagged
- * "zniknęło" (never deleted silently).
+ * "zniknęło" (never deleted silently) — unless the file is a partial export
+ * (a few last-minute orders, a filtered view: at most half of the board's
+ * orders of its days), which only adds and updates (26.10.2026).
  *
  * Scope: an order belongs on the board when its subcontractor tractor is a
  * fleet truck on the loading day, or when its PRZ entry names a fleet truck
@@ -51,6 +53,11 @@ export interface ImportSummary {
   replacedDrafts?: Array<{ draftNo: string; orderNo: string }>
   /** Preliminary orders with more than one possible order — asked in the review queue. */
   draftQuestions?: string[]
+  /**
+   * Not a full export of its days (26.10.2026): `found` of the board's orders of those days
+   * are in the file, `missing` are not — and were not flagged "zniknęło".
+   */
+  partial?: { found: number; missing: number }
   warnings: string[]
 }
 
@@ -175,7 +182,7 @@ export async function importRows(
   let ownFleet = 0
   let other = 0
   const ownPlatesSeen = new Set<string>()
-  const candidates = new Map<string, { carrier: string; orders: number; firstDate: string }>()
+  const candidates = new Map<string, { carrier: string; orders: number; firstDate: string; retiredTruckId?: number; retiredOn?: string }>()
 
   for (const r of byNo.values()) {
     if (r.ownPlate) ownPlatesSeen.add(r.ownPlate)
@@ -194,10 +201,19 @@ export async function importRows(
     if (!r.subPlate) ownFleet++
     else {
       other++
-      // A carrier we work with runs a tractor that is not in the fleet registry.
+      // A carrier we work with runs a tractor that is not in the fleet registry — or a
+      // tractor withdrawn from the department gets an order after its last day (26.10.2026).
       const known = [...carrierKeys].some(k => sameCarrier(k, carrierKey(r.carrier)))
-      if (known && !ctx.ignoredPlates.has(r.subPlate) && !ctx.fleet.isFleetPlate(r.subPlate)) {
-        const c = candidates.get(r.subPlate) ?? { carrier: r.carrier, orders: 0, firstDate: r.loadDate }
+      const owner = ctx.fleet.trucks.find(t => t.plates.some(p => p.plate === r.subPlate))
+      const ownerRetired = owner ? retiredOn(owner) : null
+      const retiredAfter = owner !== undefined && ownerRetired !== null && r.loadDate > ownerRetired
+      if (!ctx.ignoredPlates.has(r.subPlate) && ((known && !owner) || retiredAfter)) {
+        const c = candidates.get(r.subPlate) ?? {
+          carrier: r.carrier,
+          orders: 0,
+          firstDate: r.loadDate,
+          ...(retiredAfter ? { retiredTruckId: owner.id, retiredOn: ownerRetired } : {}),
+        }
         c.orders++
         if (r.loadDate < c.firstDate) c.firstDate = r.loadDate
         candidates.set(r.subPlate, c)
@@ -370,7 +386,7 @@ export async function importRows(
     // Disappeared: live fleet orders inside the file's date range that the file no longer has.
     if (options.mode === 'daily' && rangeFrom && rangeTo) {
       const present = new Set(byNo.keys())
-      const candidatesMissing = await trx
+      const inRange = await trx
         .selectFrom('board_orders')
         .select(['order_no', 'missing_since_import_id'])
         .where('history', '=', 0)
@@ -378,9 +394,13 @@ export async function importRows(
         .where('load_date', '>=', rangeFrom)
         .where('load_date', '<=', rangeTo)
         .execute()
-      for (const o of candidatesMissing) {
-        if (present.has(o.order_no)) continue
-        // Still in the file but no longer ours (e.g. reassigned to another carrier) is also "gone".
+      const missing = inRange.filter(o => !present.has(o.order_no))
+      const found = inRange.length - missing.length
+      // A small file (a few last-minute orders) or one filtered to a carrier is not the
+      // whole picture of its days (26.10.2026): when it has at most half of the board's
+      // orders of those days, nothing is flagged — the next full export does the check.
+      if (missing.length > 0 && missing.length >= found) summary.partial = { found, missing: missing.length }
+      for (const o of summary.partial ? [] : missing) {
         if (o.missing_since_import_id === null) {
           await trx
             .updateTable('board_orders')
@@ -468,14 +488,23 @@ export async function importRows(
       )
     }
     for (const [plate, c] of candidates) {
+      const count = `${c.orders} ${c.orders === 1 ? 'zlecenie' : 'zleceń'} w pliku`
       await raiseEventIssue(
         db,
         {
           key: `NEW_TRUCK:${plate}`,
           kind: 'NEW_TRUCK',
           ref: plate,
-          message: `Przewoźnik „${c.carrier}” jedzie ciągnikiem spoza bazy floty (${c.orders} ${c.orders === 1 ? 'zlecenie' : 'zleceń'} w pliku).`,
-          details: { plate, carrier: c.carrier, orders: c.orders, firstDate: c.firstDate },
+          message: c.retiredOn
+            ? `Ciągnik ${plate} jest wycofany z działu (ostatni dzień ${fmtDate(c.retiredOn)}), a ma zlecenia po tym dniu (${count}, od ${fmtDate(c.firstDate)}). Te zlecenia nie są na tablicy.`
+            : `Przewoźnik „${c.carrier}” jedzie ciągnikiem spoza bazy floty (${count}).`,
+          details: {
+            plate,
+            carrier: c.carrier,
+            orders: c.orders,
+            firstDate: c.firstDate,
+            ...(c.retiredOn ? { retiredTruckId: c.retiredTruckId, retiredOn: c.retiredOn } : {}),
+          },
           fingerprint: plate,
         },
         now,
@@ -485,7 +514,7 @@ export async function importRows(
 
   await db
     .updateTable('board_imports')
-    .set({ summary: JSON.stringify(summary) })
+    .set({ summary: JSON.stringify(summary), partial: summary.partial ? 1 : 0 })
     .where('id', '=', importId)
     .execute()
   return summary
@@ -499,6 +528,8 @@ export const OVERRIDE_FIELD_LABELS: Record<string, string> = {
   trailer: 'naczepa',
   prz: 'przepinka',
   exclude: 'wyłączenie z wyników',
+  km_total: 'km razem',
+  'km_total:1': 'km razem, 2. odcinek',
   km_loaded: 'km z ładunkiem',
   km_empty: 'km puste',
   'km_loaded:1': 'km z ładunkiem, 2. odcinek',

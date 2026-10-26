@@ -30,7 +30,7 @@ Specs and decisions: `TABLICA.md` (run/usage) and the claude.ai Project doc
   synthetic data; `board:seed` reads the user's local files at runtime. Driver certificate scans live
   only on the PC in `data/pliki` (next to the DB, `FILES_DIR` overrides; git-ignored).
 - Migrations: in-code registry (`src/db/migrations/index.ts`), applied ones are never renamed or edited.
-  Next free number: **0014**.
+  Next free number: **0015**.
 - All `/api/*` routes are behind session auth (`src/server/auth.ts`). Board writes are signed with the
   logged-in user's display name (`BoardService.withActor`).
 - Windows scripts (`.cmd`, `.ps1`): ASCII only (no Polish diacritics), CRLF (see `.gitattributes`).

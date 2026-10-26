@@ -101,3 +101,7 @@ try {
   console.error('Failed to start server:', error instanceof Error ? error.message : error)
   process.exit(1)
 }
+
+// Review items that depend on the day or on new checks (e.g. a preliminary order past its
+// unloading, "Czy była przepinka?" after an update) — recomputed once at start, in the background.
+board.refreshIssues().catch(error => console.warn('Board review items not refreshed at start:', error instanceof Error ? error.message : error))

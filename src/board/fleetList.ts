@@ -1,4 +1,4 @@
-import type { BoardContext } from './context.js'
+import { retiredOn, type BoardContext } from './context.js'
 import { addDays, foldDiacritics, normalizePlate } from './normalize.js'
 
 /**
@@ -108,8 +108,14 @@ export function planFleetSync(text: string, ctx: BoardContext, today: string): F
       const truck = ctx.fleet.truckFor(plate, today) ?? ctx.fleet.trucks.find(t => t.plates.some(tp => tp.plate === plate)) ?? null
       if (!truck) {
         plan.warnings.push(
-          `Ciągnika ${plate} („${block.name}”) nie ma w bazie. Jeśli to nowe tablice istniejącego auta — Ciągniki → „Nowy numer”; jeśli nowe auto — „Dodaj ciągnik do działu”.`,
+          `Ciągnika ${plate} („${block.name}”) nie ma w bazie. Jeśli to nowe tablice albo nowy ciągnik w miejsce auta z działu — Ciągniki → „Nowy numer / nowy ciągnik”; jeśli dodatkowe auto — „Dodaj ciągnik do działu”.`,
         )
+        return []
+      }
+      const retired = retiredOn(truck)
+      if (retired !== null) {
+        // Tractors are only reported (never changed by the list): bringing one back is a decision.
+        plan.warnings.push(`${plate} jest na liście, ale jest wycofany z działu (ostatni dzień ${fmt(retired)}). Jeśli wrócił: Ciągniki → „Wycofane z działu” → Przywróć.`)
         return []
       }
       return [{ plate, truck }]
@@ -169,9 +175,9 @@ export function planFleetSync(text: string, ctx: BoardContext, today: string): F
   }
 
   for (const truck of ctx.fleet.trucks) {
-    if (!truck.active || listedTrucks.has(truck.id)) continue
+    if (!truck.active || retiredOn(truck) !== null || listedTrucks.has(truck.id)) continue
     plan.warnings.push(
-      `${ctx.fleet.plateOn(truck, today)} (${truck.carrier || 'bez przewoźnika'}) jest na tablicy, ale nie ma go na liście. Jeśli wypadł z działu: Ciągniki → Edytuj → odznacz „na tablicy”.`,
+      `${ctx.fleet.plateOn(truck, today)} (${truck.carrier || 'bez przewoźnika'}) jest na tablicy, ale nie ma go na liście. Jeśli odszedł z działu: Ciągniki → „Wycofaj” z ostatnim dniem.`,
     )
   }
   return plan

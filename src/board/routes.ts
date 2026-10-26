@@ -383,6 +383,28 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     async (request, reply) => handle(reply, () => as(request).addTruckPlate(Number(request.params.id), request.body.plate, request.body.validFrom)),
   )
 
+  // Withdrawing a tractor with its last day / bringing it back (26.10.2026).
+  app.post<{ Params: { id: string }; Body: { lastDay: string; moveDriverTo?: number | null } }>(
+    '/api/board/fleet/:id/retire',
+    {
+      schema: {
+        params: ID_PARAMS,
+        body: {
+          type: 'object',
+          properties: { lastDay: DATE, moveDriverTo: { type: ['integer', 'null'] } },
+          required: ['lastDay'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) =>
+      handle(reply, () => as(request).retireTruck(Number(request.params.id), request.body.lastDay, { moveDriverTo: request.body.moveDriverTo ?? null })),
+  )
+
+  app.post<{ Params: { id: string } }>('/api/board/fleet/:id/restore', { schema: { params: ID_PARAMS } }, async (request, reply) =>
+    handle(reply, () => as(request).restoreTruck(Number(request.params.id))),
+  )
+
   // Trailers
   app.get('/api/board/trailers', async (_request, reply) => handle(reply, async () => ({ trailers: await board.trailers() })))
 

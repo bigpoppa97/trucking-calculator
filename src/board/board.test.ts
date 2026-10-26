@@ -1205,3 +1205,251 @@ describe('day events on the board (12.10.2026 bug: place hidden, no edit, km mov
     await expect(board.updateTruckEvent(event.id!, { text: 'x' })).rejects.toMatchObject({ code: 'EVENT_NOT_FOUND' })
   })
 })
+
+describe('paczka 26.10.2026 — withdrawn tractor, "Km razem", manual PRZ label, route continuity, partial exports', () => {
+  const truckId = async (plate: string) => (await board.fleet()).find(t => t.currentPlate === plate || t.plates.some(p => p.plate === plate))!.id
+
+  it('a withdrawn tractor stays in the weeks up to its last day; its driver moves on; a later order asks to bring it back', async () => {
+    const aa2 = await truckId('AA1002A')
+    const bb = await truckId('BB2001B')
+    await expect(board.retireTruck(aa2, '2025-12-31')).rejects.toMatchObject({ code: 'BAD_DATE' })
+    const res = await board.retireTruck(aa2, '2026-09-22', { moveDriverTo: bb })
+    expect(res).toEqual({ plate: 'AA1002A', driverMovedTo: 'BB2001B' })
+    await expect(board.retireTruck(aa2, '2026-09-23')).rejects.toMatchObject({ code: 'ALREADY_RETIRED' })
+    expect((await board.fleet()).find(t => t.id === aa2)?.retiredOn).toBe('2026-09-22')
+    // The pasted fleet list does not miss it, and names it when it is listed again.
+    expect((await board.syncFleetList('Alfa:\nCiągniki: AA1001A\nNaczepy: TR100\nBeta:\nCiągniki: BB2001B\nNaczepy: TR200', false)).warnings).toEqual([])
+    expect((await board.syncFleetList('Alfa:\nCiągniki: AA1001A, AA1002A\nNaczepy: TR100\nBeta:\nCiągniki: BB2001B\nNaczepy: TR200', false)).warnings).toEqual([
+      'AA1002A jest na liście, ale jest wycofany z działu (ostatni dzień 22.09.2026). Jeśli wrócił: Ciągniki → „Wycofane z działu” → Przywróć.',
+    ])
+
+    await board.importFile(
+      await xlsx([
+        { no: '79-6-26', from: 'Warszawa', ld: '2026-09-22', to: 'Budapest', ud: '2026-09-22', rev: 1000, cost: 900, sub: 'AA1002A', trailer: 'TR200' },
+        { no: '79-7-26', from: 'Budapest', ld: '2026-09-24', to: 'Warszawa', ud: '2026-09-25', rev: 1000, cost: 900, sub: 'AA1002A', trailer: 'TR200' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const week = await board.weekView('2026-09-21')
+    expect(week.trucks.find(t => t.id === aa2)?.bars.map(b => b.orderNo)).toEqual(['79-6-26'])
+    expect((await board.weekView('2026-09-28')).trucks.some(t => t.id === aa2)).toBe(false)
+    const nextWeek = await board.weekView('2026-09-28')
+    expect(nextWeek.trucks.find(t => t.id === bb)?.driver).toBe('Ewa L.')
+
+    const [issue] = await issuesOf('NEW_TRUCK')
+    expect(issue).toMatchObject({ ref: 'AA1002A' })
+    expect(issue!.message).toMatch(/wycofany z działu \(ostatni dzień 22\.09\)/)
+    expect(issue!.details['retiredTruckId']).toBe(aa2)
+
+    await board.resolveIssue(issue!.id, 'restore', {})
+    expect((await board.fleet()).find(t => t.id === aa2)?.retiredOn).toBeNull()
+    expect(await issuesOf('NEW_TRUCK')).toEqual([])
+    // Its later orders come with the next import (the file of the import above was not kept).
+    await board.importFile(
+      await xlsx([{ no: '79-7-26', from: 'Budapest', ld: '2026-09-24', to: 'Warszawa', ud: '2026-09-25', rev: 1000, cost: 900, sub: 'AA1002A', trailer: 'TR200' }]),
+      'b.xlsx',
+      'daily',
+    )
+    expect((await board.weekView('2026-09-21')).trucks.find(t => t.id === aa2)?.bars.map(b => b.orderNo)).toEqual(['79-6-26', '79-7-26'])
+  })
+
+  it('adding the plate of a "new tractor" in Flota closes its review item', async () => {
+    await board.importFile(
+      await xlsx([{ no: '79-5-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1000, cost: 900, sub: 'NEW123', carrier: 'Przewoźnik Alfa' }]),
+      'a.xlsx',
+      'daily',
+    )
+    expect((await issuesOf('NEW_TRUCK')).map(i => i.ref)).toEqual(['NEW123'])
+    await board.addTruckPlate(await truckId('AA1002A'), 'NEW123', '2026-09-20')
+    expect(await issuesOf('NEW_TRUCK')).toEqual([])
+  })
+
+  it('"Km razem" replaces all km of the truck on the order: the empty run stays as computed, the rest is loaded; it wins over the older pair', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-90-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-91-26', from: 'Wien', ld: '2026-09-23', to: 'Warszawa', ud: '2026-09-24', rev: 1200, cost: 1000, sub: 'AA1001A', trailer: 'TR100' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const before = (await board.orderDetails('79-91-26')).legs[0]!
+    expect(before.kmManual).toBe(false)
+    const empty = before.kmEmpty!
+    expect(empty).toBeGreaterThan(100)
+
+    await board.setOverride('79-91-26', 'km_loaded', '700')
+    await board.setOverride('79-91-26', 'km_total', '1250 km')
+    let leg = (await board.orderDetails('79-91-26')).legs[0]!
+    expect([leg.kmEmpty, leg.kmLoaded, leg.kmManual, leg.kmEstimated]).toEqual([empty, 1250 - empty, true, false])
+    const row = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!
+    expect(row.bars.find(b => b.orderNo === '79-91-26')).toMatchObject({ kmLoaded: 1250 - empty, kmEmpty: empty })
+
+    await board.setOverride('79-91-26', 'km_total', '100')
+    leg = (await board.orderDetails('79-91-26')).legs[0]!
+    expect([leg.kmEmpty, leg.kmLoaded]).toEqual([100, 0])
+    await expect(board.setOverride('79-91-26', 'km_total', 'dużo')).rejects.toMatchObject({ code: 'BAD_NUMBER' })
+
+    await board.clearOverride('79-91-26', 'km_total')
+    leg = (await board.orderDetails('79-91-26')).legs[0]!
+    expect([leg.kmLoaded, leg.kmManual]).toEqual([700, true]) // the older correction still counts
+  })
+
+  it('a PRZ entry typed on the board is labelled as a manual correction, with who and when', async () => {
+    await board.importFile(
+      await xlsx([{ no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 2000, cost: 1250, sub: 'AA1001A', trailer: 'TR100' }]),
+      'a.xlsx',
+      'daily',
+    )
+    expect((await board.orderDetails('79-1-26')).order.przManual).toBeNull()
+    await board.setOverride('79-1-26', 'prz', 'PRZ BRATISLAVA 21.09 AA1001A>BB2001B 700/600')
+    const d = await board.orderDetails('79-1-26')
+    expect(d.order.prz).toMatchObject({ from: 'AA1001A', to: 'BB2001B' })
+    expect(d.order.przManual).toMatchObject({ createdBy: 'test' })
+  })
+
+  it('"Czy była przepinka?": two orders of a truck too far apart for the time between them', async () => {
+    const rows: Row[] = [
+      { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100', lh: '08:00 — —', uh: '— — 13:00' },
+      { no: '79-2-26', from: 'Warszawa', ld: '2026-09-22', to: 'Wilno', ud: '2026-09-23', rev: 1500, cost: 1200, sub: 'AA1001A', trailer: 'TR100', lh: '16:00 — —', uh: '— — 12:00' },
+    ]
+    await board.importFile(await xlsx(rows, HOURS_HEADERS), 'a.xlsx', 'daily')
+    const [gap] = await issuesOf('ROUTE_GAP')
+    expect(gap).toMatchObject({ ref: '79-2-26' })
+    expect(gap!.details['orders']).toEqual(['79-1-26', '79-2-26'])
+    expect(gap!.message).toMatch(/^Czy była przepinka\? AA1001A: rozładunek 79-1-26 — Budapeszt \(Vecsés\) 22\.09 13:00, załadunek 79-2-26 — Warszawa 22\.09 16:00: ok\. \d+ km pustych w 3 h\./)
+
+    // The truck really handed the first order over in Bratislava: entering the relay clears it.
+    await board.setOverride('79-1-26', 'prz', 'PRZ BRATISLAVA 21.09 AA1001A>BB2001B 700/600')
+    expect(await issuesOf('ROUTE_GAP')).toEqual([])
+    await board.clearOverride('79-1-26', 'prz')
+    expect(await issuesOf('ROUTE_GAP')).toHaveLength(1)
+
+    // A wrong hour corrected on the board clears it too.
+    await board.setOverride('79-2-26', 'load_at', '23.09 08:00')
+    expect(await issuesOf('ROUTE_GAP')).toEqual([])
+  })
+
+  it('without hours: same day and a long empty run is suspicious; a short one is not', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-2-26', from: 'Warszawa', ld: '2026-09-22', to: 'Wilno', ud: '2026-09-23', rev: 1500, cost: 1200, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-3-26', from: 'Warszawa', ld: '2026-09-21', to: 'Łódź', ud: '2026-09-21', rev: 500, cost: 400, sub: 'AA1002A', trailer: 'TR200' },
+        { no: '79-4-26', from: 'Warszawa', ld: '2026-09-21', to: 'Poznań', ud: '2026-09-22', rev: 900, cost: 700, sub: 'AA1002A', trailer: 'TR200' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const gaps = await issuesOf('ROUTE_GAP')
+    expect(gaps.map(g => g.ref)).toEqual(['79-2-26'])
+    expect(gaps[0]!.message).toMatch(/km pustych tego samego dnia/)
+    await board.resolveIssue(gaps[0]!.id, 'dismiss', {})
+    await board.refreshIssues()
+    expect(await issuesOf('ROUTE_GAP')).toEqual([])
+  })
+
+  it('a small export (a few last-minute orders) adds and updates without flagging the rest of its days', async () => {
+    const full: Row[] = [
+      { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100' },
+      { no: '79-2-26', from: 'Warszawa', ld: '2026-09-22', to: 'Budapest', ud: '2026-09-23', rev: 1400, cost: 1200, sub: 'AA1002A', trailer: 'TR200' },
+      { no: '79-3-26', from: 'Warszawa', ld: '2026-09-23', to: 'Budapest', ud: '2026-09-24', rev: 1400, cost: 1200, sub: 'BB2001B', carrier: 'Beta Trans', trailer: 'TR960PE' },
+      { no: '79-4-26', from: 'Budapest', ld: '2026-09-23', to: 'Warszawa', ud: '2026-09-24', rev: 1300, cost: 1100, sub: 'AA1001A', trailer: 'TR100' },
+    ]
+    await board.importFile(await xlsx(full), 'pelny.xlsx', 'daily')
+
+    now = '2026-09-27T19:00:00Z'
+    const small = await board.importFile(
+      await xlsx([
+        { ...full[1]!, cost: 1150 },
+        { no: '79-5-26', from: 'Budapest', ld: '2026-09-23', to: 'Warszawa', ud: '2026-09-24', rev: 1250, cost: 1050, sub: 'AA1002A', trailer: 'TR200' },
+      ]),
+      'maly.xlsx',
+      'daily',
+    )
+    expect(small.created).toEqual(['79-5-26'])
+    expect(small.updated.map(u => u.orderNo)).toEqual(['79-2-26'])
+    expect(small.disappeared).toEqual([])
+    expect(small.partial).toEqual({ found: 2, missing: 2 })
+    expect(await issuesOf('DISAPPEARED')).toEqual([])
+    expect((await board.imports()).map(i => i.partial)).toEqual([1, 0])
+    const week = await board.weekView('2026-09-21')
+    expect(week.lastImport).toMatchObject({ filename: 'pelny.xlsx', supplement: { filename: 'maly.xlsx', orders: 2 } })
+
+    // A full export still finds an order that is really gone.
+    const again = await board.importFile(await xlsx([full[0]!, full[1]!, full[3]!, { no: '79-5-26', from: 'Budapest', ld: '2026-09-23', to: 'Warszawa', ud: '2026-09-24', rev: 1250, cost: 1050, sub: 'AA1002A', trailer: 'TR200' }]), 'pelny2.xlsx', 'daily')
+    expect(again.partial).toBeUndefined()
+    expect(again.disappeared).toEqual(['79-3-26'])
+    expect((await board.weekView('2026-09-21')).lastImport).toMatchObject({ filename: 'pelny2.xlsx', supplement: null })
+  })
+})
+
+describe('migration 0014', () => {
+  it('marks earlier partial imports and takes back their "zniknęło", unless a later full export lacked the order too', async () => {
+    const raw = createTestDatabase()
+    try {
+      const migrator = new Migrator({ db: raw, provider: { getMigrations: async () => migrations } })
+      await migrator.migrateTo('0013_board_hours_drafts')
+      const imp = async (rows: number, from: string, to: string) =>
+        (
+          await raw
+            .insertInto('board_imports')
+            .values({ filename: 'x.xlsx', imported_at: '2026-10-26T10:00:00Z', mode: 'daily', rows_total: rows, rows_in_scope: rows, range_from: from, range_to: to, summary: JSON.stringify({ disappeared: ['79-1-26'] }) })
+            .returning('id')
+            .executeTakeFirstOrThrow()
+        ).id
+      const full = await imp(5, '2026-10-19', '2026-10-25')
+      const small = await imp(1, '2026-10-19', '2026-10-23')
+      const order = (no: string, ld: string, last: number, missing: number | null) =>
+        raw
+          .insertInto('board_orders')
+          .values({
+            order_no: no, client: 'K', client_ref: '', status_client: 'Z', status_sped: 'Z', carrier: 'Alfa', sub_plate: 'AA1001A', own_plate: '', trailer_raw: '',
+            load_places: 'Warszawa', load_country: '', load_date: ld, unload_places: 'Budapest', unload_country: '', unload_date: ld,
+            rev_eur: 1, cost_eur: 1, notes_app: '', first_import_id: full, last_import_id: last, missing_since_import_id: missing,
+            created_at: '2026-10-26T10:00:00Z', updated_at: '2026-10-26T10:00:00Z',
+          })
+          .execute()
+      for (const [no, ld] of [['79-1-26', '2026-10-19'], ['79-2-26', '2026-10-20'], ['79-3-26', '2026-10-21'], ['79-4-26', '2026-10-22']] as const) await order(no, ld, full, small)
+      await order('79-5-26', '2026-10-23', small, null)
+      const later = await imp(4, '2026-10-19', '2026-10-25') // full: 79-1-26 is not in it
+      await raw.updateTable('board_orders').set({ last_import_id: later }).where('order_no', 'in', ['79-2-26', '79-3-26', '79-4-26', '79-5-26']).execute()
+      // …and 79-4-26 was flagged by the small file; a later full one had it (last_import_id = later).
+      for (const no of ['79-1-26', '79-2-26', '79-3-26', '79-4-26']) {
+        await raw
+          .insertInto('board_issues')
+          .values({ key: `DISAPPEARED:${no}`, kind: 'DISAPPEARED', ref: no, message: 'x', details: '{}', fingerprint: String(small), status: 'open', created_at: 'x', updated_at: 'x' })
+          .execute()
+      }
+      await raw.insertInto('board_trucks').values({ carrier: 'Alfa', sort_order: 1 }).execute()
+      await raw.insertInto('board_truck_plates').values({ truck_id: 1, plate: 'NEW123', valid_from: '2026-10-20', valid_to: null }).execute()
+      await raw
+        .insertInto('board_issues')
+        .values({ key: 'NEW_TRUCK:NEW123', kind: 'NEW_TRUCK', ref: 'NEW123', message: 'x', details: '{}', fingerprint: 'NEW123', status: 'open', created_at: 'x', updated_at: 'x' })
+        .execute()
+
+      await migrateToLatest(raw)
+      expect(await raw.selectFrom('board_imports').select(['id', 'partial']).orderBy('id').execute()).toEqual([
+        { id: full, partial: 0 },
+        { id: small, partial: 1 },
+        { id: later, partial: 0 },
+      ])
+      const flags = await raw.selectFrom('board_orders').select(['order_no', 'missing_since_import_id']).orderBy('order_no').execute()
+      expect(flags).toEqual([
+        { order_no: '79-1-26', missing_since_import_id: later },
+        { order_no: '79-2-26', missing_since_import_id: null },
+        { order_no: '79-3-26', missing_since_import_id: null },
+        { order_no: '79-4-26', missing_since_import_id: null },
+        { order_no: '79-5-26', missing_since_import_id: null },
+      ])
+      const open = await raw.selectFrom('board_issues').select(['ref', 'status']).where('status', '=', 'open').orderBy('ref').execute()
+      expect(open).toEqual([{ ref: '79-1-26', status: 'open' }])
+      // The "Ostatni import" card of the partial file: no "zniknęło", told as partial.
+      const summary = JSON.parse((await raw.selectFrom('board_imports').select('summary').where('id', '=', small).executeTakeFirstOrThrow()).summary)
+      expect(summary).toMatchObject({ disappeared: [], partial: { found: 1, missing: 4 } })
+    } finally {
+      await raw.destroy()
+    }
+  })
+})

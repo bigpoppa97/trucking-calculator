@@ -249,6 +249,9 @@ export function TruckPage({
               </details>
             )}
             {!t.active && <span className="self-start rounded bg-[#ECEEEA] px-2 py-0.5 text-xs font-semibold text-[#545B63]">ukryty na tablicy</span>}
+            {t.retiredOn && (
+              <span className="self-start rounded bg-[#ECEEEA] px-2 py-0.5 text-xs font-semibold text-[#545B63]">wycofany z działu — ostatni dzień {fmtDay(t.retiredOn)}</span>
+            )}
             <RequiredBadges services={t.required.filter(s => s.target === 'truck')} onOpen={s => setServiceForm({ service: s })} />
           </div>
           <div className="flex min-w-[200px] flex-col gap-1 text-[13.5px]">

@@ -81,10 +81,25 @@ export class FleetIndex {
     return sorted[0]?.plate ?? '—'
   }
 
-  /** Carrier names of active trucks (alias keys), for "new truck of a fleet carrier" detection. */
+  /** Carrier names of active trucks still in the department (alias keys), for "new truck of a fleet carrier" detection. */
   carrierKeys(): Set<string> {
-    return new Set(this.trucks.filter(t => t.active && t.carrier).map(t => carrierKey(t.carrier)))
+    return new Set(this.trucks.filter(t => t.active && t.carrier && retiredOn(t) === null).map(t => carrierKey(t.carrier)))
   }
+}
+
+/**
+ * Last day of a truck withdrawn from the department (wycofany, 26.10.2026): every plate
+ * has ended. Null = still in the department (a plate without an end).
+ */
+export function retiredOn(t: Pick<TruckRecord, 'plates'>): string | null {
+  if (t.plates.length === 0 || t.plates.some(p => p.validTo === null)) return null
+  return t.plates.reduce((last, p) => (p.validTo! > last ? p.validTo! : last), '')
+}
+
+/** The truck had a valid plate on some day of [from, to] — its row belongs on the board that week. */
+export function servesBetween(t: Pick<TruckRecord, 'plates'>, from: string, to: string): boolean {
+  if (t.plates.length === 0) return true
+  return t.plates.some(p => p.validFrom <= to && (p.validTo === null || p.validTo >= from))
 }
 
 /** Carrier names are compared folded; "ABC Transport Jan Kowalski" matches "ABC Transport" (one is a word-prefix of the other). */

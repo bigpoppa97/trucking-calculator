@@ -28,6 +28,7 @@ const KIND_TAG: Record<string, { label: string; bg: string; fg: string }> = {
   FERRY_PARSE: { label: 'Prom', bg: '#F4C77A', fg: '#3A2400' },
   DRAFT_MATCH: { label: 'Zlecenie wstępne', bg: '#DCE5F2', fg: '#15181C' },
   DRAFT_STALE: { label: 'Zlecenie wstępne', bg: '#E6E9EE', fg: '#15181C' },
+  ROUTE_GAP: { label: 'Przepinka?', bg: '#F4C77A', fg: '#3A2400' },
 }
 
 const ORDER_KINDS = new Set([
@@ -48,6 +49,7 @@ const ORDER_KINDS = new Set([
   'FERRY_PARSE',
   'DRAFT_MATCH',
   'DRAFT_STALE',
+  'ROUTE_GAP',
 ])
 
 export function ReviewPage({ onOpenOrder, onIssuesChanged }: { onOpenOrder: (orderNo: string) => void; onIssuesChanged: () => void }) {
@@ -135,7 +137,8 @@ export function ReviewPage({ onOpenOrder, onIssuesChanged }: { onOpenOrder: (ord
           <Icon name="upload" size={28} className="text-[#545B63]" />
           <span className="text-base font-semibold">{importing ? 'Importuję…' : 'Upuść tutaj plik eksportu (.xlsx)'}</span>
           <span className="max-w-[460px] text-[13px] text-[#545B63]">
-            Zapisany widok w aplikacji: wszyscy klienci, data załadunku od 7 dni wstecz oraz zlecenia przyszłe.
+            Zapisany widok w aplikacji: wszyscy klienci, data załadunku od 7 dni wstecz oraz zlecenia przyszłe. Mały plik z kilkoma zleceniami z ostatniej
+            chwili też można wgrać — tablica sama rozpozna, że to nie pełny eksport, i nie oznaczy reszty jako „zniknęło”.
           </span>
           <div className="flex flex-wrap items-center justify-center gap-3">
             <button
@@ -241,6 +244,17 @@ function ImportCard({ summary, fresh, onOpenOrder }: { summary: ImportSummary; f
           ))}
         </div>
       )}
+      {summary.partial && (
+        <p className="rounded-lg bg-[#DCE5F2] px-3 py-2 text-[13px]">
+          Niepełny eksport: w pliku {summary.partial.found} z {summary.partial.found + summary.partial.missing} zleceń, które tablica ma{' '}
+          {!summary.rangeFrom
+            ? 'w dniach pliku'
+            : summary.rangeTo && summary.rangeTo !== summary.rangeFrom
+              ? `w dniach ${dm(summary.rangeFrom)}–${dm(summary.rangeTo)}`
+              : `w dniu ${dm(summary.rangeFrom)}`}
+          . Tablica dodała nowe i zaktualizowała zmienione, a braków nie sprawdzała — sprawdzi je następny pełny eksport.
+        </p>
+      )}
       {(summary.draftQuestions?.length ?? 0) > 0 && (
         <p className="rounded-lg bg-[#DCE5F2] px-3 py-2 text-[13px]">
           Zlecenia wstępne do rozstrzygnięcia (pasuje kilka zleceń): {summary.draftQuestions!.join(', ')} — zobacz listę „Do sprawdzenia”.
@@ -343,7 +357,23 @@ function IssueCard({
         {(issue.kind === 'UNKNOWN_PLACE' || issue.kind === 'PRZ_PLACE_UNKNOWN') && (
           <PlaceResolver raw={String(d['raw'] ?? issue.ref)} suggestions={suggestions as Array<{ code: string; name: string }>} onResolve={onResolve} />
         )}
-        {issue.kind === 'NEW_TRUCK' && <NewTruckActions fleet={fleet} firstDate={String(d['firstDate'] ?? todayIso())} onResolve={onResolve} />}
+        {issue.kind === 'NEW_TRUCK' &&
+          (typeof d['retiredTruckId'] === 'number' ? (
+            <>
+              <ActionButton primary onClick={() => onResolve('restore')}>
+                Przywróć {issue.ref} do działu
+              </ActionButton>
+              <ActionButton onClick={() => onResolve('ignore')}>Pomiń na stałe</ActionButton>
+            </>
+          ) : (
+            <NewTruckActions fleet={fleet} firstDate={String(d['firstDate'] ?? todayIso())} onResolve={onResolve} />
+          ))}
+        {issue.kind === 'ROUTE_GAP' &&
+          (Array.isArray(d['orders']) ? (d['orders'] as string[]) : []).map(no => (
+            <ActionButton key={no} onClick={() => onOpenOrder(no)}>
+              Otwórz {no}
+            </ActionButton>
+          ))}
         {issue.kind === 'DISAPPEARED' && (
           <>
             <ActionButton primary onClick={() => onResolve('keep')}>
@@ -427,6 +457,7 @@ function NewTruckActions({ fleet, firstDate, onResolve }: { fleet: FleetTruck[];
             {fleet.map(t => (
               <option key={t.id} value={t.id}>
                 {t.currentPlate} · {t.carrier}
+                {t.retiredOn ? ' (wycofany)' : ''}
               </option>
             ))}
           </select>

@@ -171,6 +171,8 @@ export interface TruckView {
     trailer: string | null
     trailerTypePl: string
     active: boolean
+    /** Last day in the department of a withdrawn tractor; null = still in it. */
+    retiredOn: string | null
     copyText: string
     required: Service[]
     driverChanges: Array<{ id: number; day: string; driverId: number | null; driver: string; createdBy: string; createdAt: string }>
@@ -206,7 +208,8 @@ export interface WeekView {
     kmEstimated: boolean
     openIssues: number
   }
-  lastImport: { importedAt: string; filename: string } | null
+  /** Last full export; `supplement` = a partial one (a few orders) imported after it. */
+  lastImport: { importedAt: string; filename: string; supplement: { importedAt: string; filename: string; orders: number } | null } | null
 }
 
 export interface OrderDetails {
@@ -244,6 +247,8 @@ export interface OrderDetails {
     missing: boolean
     notesApp: string
     prz: { place: string; placeCode: string | null; date: string; from: string; to: string; amountFrom: number; amountTo: number; raw: string } | null
+    /** Set when the PRZ entry was typed on the board (manual correction), not in the application's notes. */
+    przManual: { createdBy: string; createdAt: string } | null
     przErrors: string[]
     trailer: string | null
   }
@@ -263,6 +268,8 @@ export interface OrderDetails {
     kmEmpty: number | null
     kmEmptyFrom: string | null
     kmEstimated: boolean
+    /** Km corrected by hand ("Km razem" or an older loaded / empty correction). */
+    kmManual: boolean
     driver: string
     driverManual: boolean
     drivers: Array<{ id: number | null; name: string }>
@@ -320,6 +327,8 @@ export interface ImportSummary {
   /** Missing in summaries from before 12.10.2026. */
   replacedDrafts?: Array<{ draftNo: string; orderNo: string }>
   draftQuestions?: string[]
+  /** Partial export (26.10.2026): `found` of the board's orders of its days are in it, `missing` are not — not flagged. */
+  partial?: { found: number; missing: number }
   warnings: string[]
 }
 
@@ -347,6 +356,8 @@ export interface FleetTruck {
   sortOrder: number
   plates: Array<{ id: number; plate: string; validFrom: string; validTo: string | null }>
   currentPlate: string
+  /** Last day in the department of a withdrawn tractor (26.10.2026); null = still in it. */
+  retiredOn: string | null
 }
 
 export interface Trailer {
@@ -521,6 +532,9 @@ export const boardApi = {
   },
   deleteCertFile: (id: number) => call('DELETE', `/api/board/cert-files/${id}`),
   addPlate: (id: number, plate: string, validFrom: string) => call('POST', `/api/board/fleet/${id}/plates`, { plate, validFrom }),
+  retireTruck: (id: number, lastDay: string, moveDriverTo: number | null) =>
+    call<{ plate: string; driverMovedTo: string | null }>('POST', `/api/board/fleet/${id}/retire`, { lastDay, moveDriverTo }),
+  restoreTruck: (id: number) => call<{ plate: string }>('POST', `/api/board/fleet/${id}/restore`),
   trailers: async () => (await call<{ trailers: Trailer[] }>('GET', '/api/board/trailers')).trailers,
   saveTrailer: (input: { plate: string; typePl?: string; typeEn?: string; carrier?: string; activeTo?: string | null }) => call('POST', '/api/board/trailers', input),
   syncFleet: (text: string, apply: boolean) => call<FleetSyncResult>('POST', '/api/board/fleet/sync', { text, apply }),

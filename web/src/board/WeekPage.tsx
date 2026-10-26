@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { boardApi, errorMessage, type NoteKind, type Service, type WeekEvent, type WeekTruck, type WeekView } from './boardApi.js'
-import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, ordersWithDrafts, pair, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
+import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, ordersLabel, ordersWithDrafts, pair, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
 import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { RequiredBadges, SERVICE_COLORS, ServiceDialog } from './serviceUi.js'
@@ -321,7 +321,10 @@ export function WeekPage({
 
       {view.lastImport && (
         <p className="px-6 pt-3 text-xs text-[#545B63]">
-          Dane z importu {stamp(view.lastImport.importedAt)} ({view.lastImport.filename}).
+          Dane z importu {stamp(view.lastImport.importedAt)} ({view.lastImport.filename})
+          {view.lastImport.supplement &&
+            ` · uzupełnienie ${stamp(view.lastImport.supplement.importedAt)} (${ordersLabel(view.lastImport.supplement.orders)} z ${view.lastImport.supplement.filename})`}
+          .
           {k.kmEstimated && ' Kilometry oznaczone „≈” są szacunkowe — tablica uzupełni je z HERE w tle.'}
         </p>
       )}

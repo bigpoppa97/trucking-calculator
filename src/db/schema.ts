@@ -215,6 +215,8 @@ export interface BoardImportsTable {
   range_from: Nullable<string>
   range_to: Nullable<string>
   summary: string // JSON
+  /** Migration 0014: 1 = partial export (a few orders / filtered view) — nothing flagged "zniknęło". */
+  partial: ColumnType<number, number | undefined, number>
 }
 
 export interface BoardOrdersTable {

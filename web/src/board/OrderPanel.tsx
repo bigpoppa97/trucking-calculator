@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { boardApi, errorMessage, type Driver, type OrderDetails } from './boardApi.js'
-import { OVERRIDE_LABELS, dm, dmTime, eur, km, signedEur, stamp } from './format.js'
+import { dm, dmTime, eur, fixOptions, km, overrideLabel, signedEur, stamp } from './format.js'
 import { Icon } from './Icon.js'
 import { DraftDialog } from './DraftDialog.js'
 
@@ -179,10 +179,17 @@ export function OrderPanel({
           )}
           {o.prz && (
             <div className="flex flex-col gap-1 rounded-lg bg-[#EEF2FA] px-3 py-2.5 outline-2 -outline-offset-2 outline-dashed outline-[#1E4E9C]">
-              <span className="text-[11.5px] font-bold uppercase tracking-wider text-[#1E4E9C]">Przepinka z uwag</span>
+              <span className="text-[11.5px] font-bold uppercase tracking-wider text-[#1E4E9C]">
+                {o.przManual ? 'Przepinka (ręczna poprawka)' : 'Przepinka z uwag'}
+              </span>
               <span className="font-mono text-[13px]">
                 {o.prz.place} · {dm(o.prz.date)} · {o.prz.from} → {o.prz.to} · {o.prz.amountFrom} / {o.prz.amountTo} €
               </span>
+              {o.przManual && (
+                <span className="text-xs text-[#545B63]">
+                  Wpisana na tablicy: {o.przManual.createdBy}, {stamp(o.przManual.createdAt)}. Obowiązuje, dopóki ktoś nie zmieni uwag zlecenia w aplikacji.
+                </span>
+              )}
             </div>
           )}
           {o.przErrors.map(raw => (
@@ -231,6 +238,12 @@ export function OrderPanel({
                   <span className="font-mono text-[12.5px] text-[#545B63]">
                     z ładunkiem {km(l.kmLoaded, l.kmEstimated)} · dojazd pusty {km(l.kmEmpty, l.kmEstimated)}
                     {l.kmEmptyFrom ? ` (z: ${l.kmEmptyFrom})` : ' (brak poprzedniego zlecenia)'}
+                    {l.kmManual && (
+                      <span title="Kilometry poprawione ręcznie w „Popraw ręcznie”">
+                        {' '}
+                        · razem {km((l.kmLoaded ?? 0) + (l.kmEmpty ?? 0), false)} (poprawione)
+                      </span>
+                    )}
                   </span>
                 )}
                 {l.kind === 'fleet' && (
@@ -328,7 +341,7 @@ export function OrderPanel({
               {data.overrides.map(ov => (
                 <div key={ov.field} className="flex items-center justify-between gap-2 rounded-lg bg-[#E6E9EE] px-3 py-2 text-[13px]">
                   <span>
-                    {OVERRIDE_LABELS[ov.field] ?? ov.field}: <span className="font-mono font-semibold">{ov.display}</span>
+                    {overrideLabel(ov.field, data.legs)}: <span className="font-mono font-semibold">{ov.display}</span>
                   </span>
                   <button type="button" onClick={() => void run(() => boardApi.clearOverride(orderNo, ov.field))} className="text-[13px] font-semibold text-[#1E4E9C] underline">
                     Usuń
@@ -360,13 +373,11 @@ export function OrderPanel({
                       }}
                       className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal"
                     >
-                      {Object.entries(OVERRIDE_LABELS)
-                        .filter(([k]) => k !== 'driver:1' || data.legs.length > 1)
-                        .map(([k, label]) => (
-                          <option key={k} value={k}>
-                            {label}
-                          </option>
-                        ))}
+                      {fixOptions(data.legs).map(({ field, label }) => (
+                        <option key={field} value={field}>
+                          {label}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   {fixField.startsWith('driver') ? (
@@ -395,7 +406,9 @@ export function OrderPanel({
                             ? 'PRZ WAW 22.09 AB123CD>AB456CD 1400/900'
                             : fixField === 'load_at' || fixField === 'unload_at'
                               ? 'np. 07.10 12:00 albo sama godzina 12:00'
-                              : ''
+                              : fixField.startsWith('km_total')
+                                ? 'np. 1250 — z ładunkiem i pustym dojazdem razem'
+                                : ''
                         }
                         className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal"
                       />
@@ -404,7 +417,9 @@ export function OrderPanel({
                   <p className="text-xs text-[#545B63]">
                     {fixField.startsWith('driver')
                       ? 'Kierowca zlecenia liczy się sam ze zmian kierowców na tablicy — poprawiaj tylko wyjątki.'
-                      : 'Poprawka zostaje, dopóki aplikacja nie zmieni tej samej wartości — wtedy obowiązuje wartość z aplikacji.'}
+                      : fixField.startsWith('km_total')
+                        ? 'Wszystkie km auta na tym zleceniu. Pusty dojazd zostaje wyliczony przez tablicę, reszta liczy się jako km z ładunkiem.'
+                        : 'Poprawka zostaje, dopóki aplikacja nie zmieni tej samej wartości — wtedy obowiązuje wartość z aplikacji.'}
                   </p>
                   <div className="flex gap-2">
                     <button

@@ -12,6 +12,7 @@ import * as m0010 from './0010_trailer_carrier.js'
 import * as m0011 from './0011_board_services.js'
 import * as m0012 from './0012_board_drivers.js'
 import * as m0013 from './0013_board_hours_drafts.js'
+import * as m0014 from './0014_board_partial_imports.js'
 
 /**
  * In-code migration registry (instead of FileMigrationProvider) so migrations
@@ -32,4 +33,5 @@ export const migrations: Record<string, Migration> = {
   '0011_board_services': m0011,
   '0012_board_drivers': m0012,
   '0013_board_hours_drafts': m0013,
+  '0014_board_partial_imports': m0014,
 }

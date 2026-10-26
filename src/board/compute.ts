@@ -59,6 +59,8 @@ export interface ComputedLeg {
   kmEmpty: number | null
   kmEmptyFrom: string | null
   kmEstimated: boolean
+  /** Km corrected by hand ("Km razem", or the older loaded / empty corrections). */
+  kmManual: boolean
   przRole: 'none' | 'from' | 'to'
 }
 
@@ -236,6 +238,7 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     kmEmpty: null,
     kmEmptyFrom: null,
     kmEstimated: false,
+    kmManual: false,
     revAlloc: null,
   }
 
@@ -369,7 +372,7 @@ function round2(n: number): number {
 }
 
 /** Leg order on a truck: by start date, then end date, then order number. */
-function legSort(a: ComputedLeg, b: ComputedLeg): number {
+export function legSort(a: ComputedLeg, b: ComputedLeg): number {
   return (
     a.startDate.localeCompare(b.startDate) ||
     a.endDate.localeCompare(b.endDate) ||
@@ -486,7 +489,10 @@ async function attachKilometres(
     }
   }
 
-  // Manual km corrections per leg: km_loaded / km_empty (leg 0) or km_loaded:1 etc.
+  // Manual km corrections per leg (suffix '' or ':0' = leg 0, ':1' = leg 1):
+  //  - km_total ("Km razem", 26.10.2026): all km of the truck on the order; the empty run
+  //    stays as computed (at most the total), the rest is loaded. Wins over the older pair.
+  //  - km_loaded / km_empty: the older corrections (before 26.10.2026), still honoured.
   for (const order of orders) {
     for (const leg of order.legs) {
       const suffix = leg.index === 0 ? ['', ':0'] : [`:${leg.index}`]
@@ -496,8 +502,21 @@ async function attachKilometres(
         if (l) {
           leg.kmLoaded = num(l.value)
           leg.kmEstimated = false
+          leg.kmManual = true
         }
-        if (e) leg.kmEmpty = num(e.value)
+        if (e) {
+          leg.kmEmpty = num(e.value)
+          leg.kmManual = true
+        }
+      }
+      for (const s of suffix) {
+        const total = order.overrides[`km_total${s}`] ? num(order.overrides[`km_total${s}`]!.value) : null
+        if (total === null) continue
+        const empty = Math.min(Math.max(leg.kmEmpty ?? 0, 0), total)
+        leg.kmEmpty = empty
+        leg.kmLoaded = total - empty
+        leg.kmEstimated = false
+        leg.kmManual = true
       }
     }
   }

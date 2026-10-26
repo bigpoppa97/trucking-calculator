@@ -106,6 +106,9 @@ export const OVERRIDE_LABELS: Record<string, string> = {
   trailer: 'Naczepa',
   prz: 'Wpis przepinki (PRZ)',
   exclude: 'Wyłącz z wyników (1 = tak)',
+  km_total: 'Km razem',
+  'km_total:1': 'Km razem — 2. odcinek',
+  // Older km corrections (before 26.10.2026): still shown and removable, no longer offered.
   km_loaded: 'Km z ładunkiem',
   km_empty: 'Km puste',
   'km_loaded:1': 'Km z ładunkiem — 2. odcinek',
@@ -114,6 +117,41 @@ export const OVERRIDE_LABELS: Record<string, string> = {
   'driver:1': 'Kierowca — 2. odcinek',
   load_at: 'Załadunek (data i godzina)',
   unload_at: 'Rozładunek (data i godzina)',
+}
+
+/** "Km razem" of a leg: km_total (leg 0) or km_total:1 (leg 1). */
+export function kmTotalField(legIndex: number): string {
+  return legIndex === 0 ? 'km_total' : `km_total:${legIndex}`
+}
+
+type LegKindRef = { index: number; kind: 'fleet' | 'own' | 'other' }
+
+/** Label of a correction; "Km razem" names the leg only when two legs are the department's trucks. */
+export function overrideLabel(field: string, legs: LegKindRef[]): string {
+  if (field.startsWith('km_total')) {
+    const fleet = legs.filter(l => l.kind === 'fleet')
+    if (fleet.length > 1) return `Km razem — ${field === 'km_total' ? 1 : Number(field.split(':')[1] ?? 0) + 1}. odcinek`
+    return 'Km razem'
+  }
+  return OVERRIDE_LABELS[field] ?? field
+}
+
+/**
+ * Fields offered in "Popraw ręcznie". Kilometres (26.10.2026): one "Km razem" — all km of
+ * the truck on the order — for the department's leg; a second one only when both legs of a
+ * relay are the department's trucks.
+ */
+export function fixOptions(legs: LegKindRef[]): Array<{ field: string; label: string }> {
+  const opt = (field: string) => ({ field, label: overrideLabel(field, legs) })
+  const km = legs.filter(l => l.kind === 'fleet').map(l => opt(kmTotalField(l.index)))
+  return [
+    ...['rev', 'cost', 'extra_cost', 'trailer', 'prz', 'exclude'].map(opt),
+    ...km,
+    opt('driver'),
+    ...(legs.length > 1 ? [opt('driver:1')] : []),
+    opt('load_at'),
+    opt('unload_at'),
+  ]
 }
 
 /** "2026-10-20" → "20.10.2026" */

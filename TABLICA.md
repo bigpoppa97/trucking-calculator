@@ -30,7 +30,10 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
 ## Codzienna praca
 
 1. W aplikacji: zapisany widok AG Grid (wszyscy klienci, data załadunku od 7 dni wstecz + przyszłe) → eksport .xlsx.
-2. Tablica → „Do sprawdzenia” → upuść plik. Import 2–3 razy dziennie.
+2. Tablica → „Do sprawdzenia” → upuść plik. Import 2–3 razy dziennie. Mały plik z kilkoma zleceniami z ostatniej
+   chwili (albo eksport z dodatkowym filtrem) też można wgrać: gdy jest w nim najwyżej połowa zleceń, które tablica
+   ma w jego dniach, tablica tylko dodaje nowe i aktualizuje zmienione — braków nie oznacza jako „zniknęło”
+   (sprawdzi je następny pełny eksport). Stopka tablicy pokazuje ostatni pełny eksport i późniejsze „uzupełnienie”.
 3. Przejrzyj listę: literówki naczep i miejsc zatwierdza się raz (tablica zapamiętuje), wysoka marża
    zwykle oznacza brak wpisu przepinki, stawka/km poza zakresem — kwotę w PLN.
 4. Przepinka: w uwagach zlecenia klienta w aplikacji `PRZ GORZYCZKI 26.04 WGM4518U>KN1050H 700/400`
@@ -55,6 +58,15 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
 
 9. Zdarzenia dnia (notatka, pauza, naczepa, pozycja auta): „+” pod dniem; kliknięcie w znaczek → popraw albo usuń.
    Miejsce przesuwa początek pustego dojazdu tylko w „Pozycji auta” — w innych zdarzeniach jest tylko informacją.
+10. Kilometry inne niż policzone: panel zlecenia → „Popraw ręcznie” → „Km razem” (wszystkie km auta na zleceniu,
+   z ładunkiem i pustym dojazdem). Pusty dojazd zostaje wyliczony przez tablicę, reszta liczy się jako z ładunkiem.
+   Starsze poprawki „Km z ładunkiem” / „Km puste” działają dalej (widać je w „Ręcznych poprawkach”, można usunąć).
+11. „Czy była przepinka?” w „Do sprawdzenia”: dwa kolejne zlecenia auta są za daleko od siebie jak na czas między nimi
+   (z godzinami: pusty dojazd liczony 70 km/h + 4 h zapasu, bo godzina rozładunku z eksportu to koniec okna; bez godzin:
+   ponad 500 km pustych tego samego dnia albo załadunek przed rozładunkiem poprzedniego). Zwykle to przepinka bez
+   wpisu PRZ — wpisz ją w jednym z dwóch zleceń (z uwag w aplikacji albo „Popraw ręcznie” → „Wpis przepinki (PRZ)”;
+   ręczny wpis panel podpisuje „Przepinka (ręczna poprawka)”), albo popraw datę / godzinę. „W porządku” wycisza
+   pozycję, dopóki nie zmienią się daty, godziny albo miejsca.
 
 Ręczne poprawki (panel zlecenia → „Popraw ręcznie”) obowiązują, dopóki aplikacja nie zmieni tej samej wartości —
 wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
@@ -85,6 +97,13 @@ wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
 - **Kierowca zlecenia** liczy się sam: zmiana między dniem załadunku a rozładunku → obaj („A → B (zmiana dd.mm)”),
   w dniu załadunku → nowy, w dniu rozładunku → stary. Wyjątki: panel zlecenia → „Popraw ręcznie” → Kierowca.
 - **Ciągniki** mają tylko numer, przewoźnika i status; **stały ciągnik naczepy** ustawiasz w zakładce Naczepy.
+  - Nowe tablice albo inny ciągnik przewoźnika w miejsce starego: „Nowy numer / nowy ciągnik” od dnia — ten sam
+    wiersz, kierowca i historia.
+  - Auto odchodzi z działu: „Wycofaj” z ostatnim dniem (i wyborem, czy kierowca przechodzi na inne auto). Do tego
+    dnia zostaje w tygodniach, sumach i na stronie zestawu, później go nie ma. Lista „Wycofane z działu” → Przywróć.
+    Zlecenie na wycofany numer po ostatnim dniu trafia do „Do sprawdzenia” (Przywróć / Pomiń); po przywróceniu
+    wchodzi z najbliższym importem.
+  - Odznaczenie „na tablicy” (Edytuj) chowa auto we wszystkich tygodniach, także przeszłych.
 - Skany leżą tylko na komputerze biurowym w `data\pliki` (obok bazy); `aktualizuj.cmd` kopiuje je do `data\kopie`.
 
 ## Dwa tygodnie równolegle z Excelem

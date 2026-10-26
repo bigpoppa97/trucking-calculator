@@ -319,7 +319,11 @@ function TrucksSection({ onChanged, onOpenTruck }: { onChanged?: () => void; onO
   const [loadError, setLoadError] = useState<string | null>(null)
   const [editing, setEditing] = useState<number | null>(null)
   const [replating, setReplating] = useState<number | null>(null)
+  const [retiring, setRetiring] = useState<number | null>(null)
   const action = useAction()
+  // Withdrawn tractors (26.10.2026) are listed apart, under the table.
+  const inDept = useMemo(() => (trucks ?? []).filter(t => !t.retiredOn), [trucks])
+  const retired = useMemo(() => (trucks ?? []).filter(t => t.retiredOn).sort((a, b) => (b.retiredOn ?? '').localeCompare(a.retiredOn ?? '')), [trucks])
 
   const load = useCallback(async () => {
     try {
@@ -340,10 +344,9 @@ function TrucksSection({ onChanged, onOpenTruck }: { onChanged?: () => void; onO
   }
 
   const move = async (index: number, dir: -1 | 1) => {
-    if (!trucks) return
     const target = index + dir
-    if (target < 0 || target >= trucks.length) return
-    const order = [...trucks]
+    if (target < 0 || target >= inDept.length) return
+    const order = [...inDept]
     const a = order[index]
     const b = order[target]
     if (!a || !b) return
@@ -369,8 +372,9 @@ function TrucksSection({ onChanged, onOpenTruck }: { onChanged?: () => void; onO
             Ciągniki w dziale
           </h2>
           <span className="text-[13px] text-[#545B63]">
-            Kolejność tutaj = kolejność wierszy na tablicy. Numer rejestracyjny zmieniaj przez „Nowy numer” — stare zlecenia zostaną przy tym samym aucie.
-            Kierowców zmieniasz na tablicy („+” pod dniem → Zmiana kierowcy), stałą naczepę w zakładce Naczepy.
+            Kolejność tutaj = kolejność wierszy na tablicy. Nowe tablice albo inny ciągnik przewoźnika w miejsce starego: „Nowy numer / nowy ciągnik” — wiersz,
+            kierowca i historia idą dalej. Auto, które odchodzi z działu: „Wycofaj” z ostatnim dniem. Kierowców zmieniasz na tablicy („+” pod dniem → Zmiana
+            kierowcy), stałą naczepę w zakładce Naczepy.
           </span>
         </div>
         <Alert text={loadError ?? action.error} />
@@ -390,7 +394,7 @@ function TrucksSection({ onChanged, onOpenTruck }: { onChanged?: () => void; onO
                 </tr>
               </thead>
               <tbody>
-                {trucks.map((t, i) =>
+                {inDept.map((t, i) =>
                   editing === t.id ? (
                     <TruckEditRow
                       key={t.id}
@@ -414,17 +418,40 @@ function TrucksSection({ onChanged, onOpenTruck }: { onChanged?: () => void; onO
                       key={t.id}
                       truck={t}
                       first={i === 0}
-                      last={i === trucks.length - 1}
+                      last={i === inDept.length - 1}
                       replating={replating === t.id}
+                      retiring={retiring === t.id}
+                      others={inDept.filter(x => x.id !== t.id)}
                       busy={action.busy}
                       onMove={dir => void move(i, dir)}
                       onEdit={() => {
                         setReplating(null)
+                        setRetiring(null)
                         setEditing(t.id)
                       }}
                       onReplate={() => {
                         setEditing(null)
+                        setRetiring(null)
                         setReplating(replating === t.id ? null : t.id)
+                      }}
+                      onRetire={() => {
+                        setEditing(null)
+                        setReplating(null)
+                        setRetiring(retiring === t.id ? null : t.id)
+                      }}
+                      onSaveRetire={async (lastDay, moveDriverTo) => {
+                        const target = moveDriverTo ? inDept.find(x => x.id === moveDriverTo) : undefined
+                        const ok = await action.run(
+                          async () => {
+                            await boardApi.retireTruck(t.id, lastDay, moveDriverTo)
+                            await changed()
+                          },
+                          `${t.currentPlate} wycofany — ostatni dzień ${fmtDay(lastDay)}.${
+                            t.driver ? (target ? ` ${t.driver} od ${fmtDay(addDaysIso(lastDay, 1))} jeździ ${target.currentPlate}.` : ` ${t.driver} zostaje bez auta.`) : ''
+                          }`,
+                          'Nie udało się wycofać auta.',
+                        )
+                        if (ok) setRetiring(null)
                       }}
                       {...(onOpenTruck ? { onOpen: () => onOpenTruck(t.id) } : {})}
                       onSavePlate={async (plate, validFrom) => {
@@ -445,6 +472,47 @@ function TrucksSection({ onChanged, onOpenTruck }: { onChanged?: () => void; onO
             </table>
           </div>
         )}
+        {retired.length > 0 && (
+          <details className="rounded-lg bg-[#F6F7F4] px-3 py-2">
+            <summary className="cursor-pointer text-sm font-semibold">Wycofane z działu ({retired.length})</summary>
+            <p className="mt-1 text-xs text-[#545B63]">
+              Do ostatniego dnia zostają w tygodniach tablicy, na stronie zestawu i w historii. Zlecenie na taki numer po tym dniu trafi do „Do sprawdzenia”.
+            </p>
+            <ul className="mt-2 flex flex-col">
+              {retired.map(t => (
+                <li key={t.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-[#E3E6E1] py-2 text-sm">
+                  <span className="w-28 font-mono font-semibold">{t.currentPlate}</span>
+                  <span className="min-w-40 text-[#545B63]">{t.carrier || '—'}</span>
+                  <span className="text-xs text-[#545B63]">ostatni dzień {fmtDay(t.retiredOn)}</span>
+                  <span className="ml-auto inline-flex gap-2">
+                    {onOpenTruck && (
+                      <button type="button" onClick={() => onOpenTruck(t.id)} className={`${BTN} h-8`} aria-label={`Szczegóły zestawu ${t.currentPlate}`}>
+                        Szczegóły
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={action.busy}
+                      onClick={() =>
+                        void action.run(
+                          async () => {
+                            await boardApi.restoreTruck(t.id)
+                            await changed()
+                          },
+                          `${t.currentPlate} wrócił do działu — jego zlecenia po ${fmtDay(t.retiredOn)} wejdą z najbliższym importem.`,
+                          'Nie udało się przywrócić auta.',
+                        )
+                      }
+                      className={`${BTN} h-8`}
+                    >
+                      Przywróć
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </div>
       <NewTruckForm
         onCreated={async plate => {
@@ -462,11 +530,16 @@ function TruckRow(props: {
   first: boolean
   last: boolean
   replating: boolean
+  retiring: boolean
+  /** Tractors that stay in the department — where the driver of a withdrawn one may go. */
+  others: FleetTruck[]
   busy: boolean
   onMove: (dir: -1 | 1) => void
   onEdit: () => void
   onReplate: () => void
+  onRetire: () => void
   onSavePlate: (plate: string, validFrom: string) => Promise<void>
+  onSaveRetire: (lastDay: string, moveDriverTo: number | null) => Promise<void>
   onOpen?: () => void
 }) {
   const { truck: t } = props
@@ -514,7 +587,10 @@ function TruckRow(props: {
               <Icon name="pencil" size={14} /> Edytuj
             </button>
             <button type="button" onClick={props.onReplate} aria-expanded={props.replating} className={BTN}>
-              Nowy numer
+              Nowy numer / nowy ciągnik
+            </button>
+            <button type="button" onClick={props.onRetire} aria-expanded={props.retiring} className={BTN}>
+              Wycofaj
             </button>
           </span>
         </td>
@@ -523,6 +599,13 @@ function TruckRow(props: {
         <tr className="border-b border-[#ECEEEA] bg-[#F6F7F4]">
           <td colSpan={5} className="px-3 py-3">
             <ReplateForm current={t.currentPlate} busy={props.busy} onSave={props.onSavePlate} />
+          </td>
+        </tr>
+      )}
+      {props.retiring && (
+        <tr className="border-b border-[#ECEEEA] bg-[#F6F7F4]">
+          <td colSpan={5} className="px-3 py-3">
+            <RetireForm truck={t} others={props.others} busy={props.busy} onSave={props.onSaveRetire} />
           </td>
         </tr>
       )}
@@ -542,8 +625,9 @@ function ReplateForm({ current, busy, onSave }: { current: string; busy: boolean
         if (plate.trim()) void onSave(plate.trim(), from)
       }}
     >
-      <span className="text-sm text-[#545B63]">
-        {current} dostaje nowe tablice. Zlecenia sprzed tej daty zostają przy starym numerze tego samego auta.
+      <span className="max-w-[560px] text-sm text-[#545B63]">
+        {current} dostaje nowe tablice albo przewoźnik wstawia w to miejsce inny ciągnik. Zestaw idzie dalej pod nowym numerem: ten sam wiersz na tablicy,
+        kierowca i historia. Zlecenia sprzed tej daty zostają przy starym numerze.
       </span>
       <label className="flex flex-col gap-1 text-xs font-semibold text-[#545B63]" htmlFor={`${id}-p`}>
         Nowy numer
@@ -556,6 +640,60 @@ function ReplateForm({ current, busy, onSave }: { current: string; busy: boolean
       <button type="submit" disabled={busy || !plate.trim()} className={BTN_PRIMARY}>
         Zapisz numer
       </button>
+    </form>
+  )
+}
+
+function RetireForm({
+  truck,
+  others,
+  busy,
+  onSave,
+}: {
+  truck: FleetTruck
+  others: FleetTruck[]
+  busy: boolean
+  onSave: (lastDay: string, moveDriverTo: number | null) => Promise<void>
+}) {
+  const id = useId()
+  const [lastDay, setLastDay] = useState(todayIso())
+  const [moveTo, setMoveTo] = useState<number | ''>('')
+  return (
+    <form
+      className="flex flex-col gap-3"
+      onSubmit={e => {
+        e.preventDefault()
+        if (lastDay) void onSave(lastDay, moveTo === '' ? null : moveTo)
+      }}
+    >
+      <span className="max-w-[640px] text-sm text-[#545B63]">
+        {truck.currentPlate} odchodzi z działu. Do ostatniego dnia zostaje w tygodniach tablicy (zlecenia, sumy, strona zestawu); w późniejszych tygodniach go nie
+        ma. Zlecenie na ten numer po tym dniu trafi do „Do sprawdzenia”. Jeśli w to miejsce przychodzi inny ciągnik tego samego przewoźnika, użyj raczej „Nowy numer
+        / nowy ciągnik”.
+      </span>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1 text-xs font-semibold text-[#545B63]" htmlFor={`${id}-d`}>
+          Ostatni dzień w dziale
+          <input id={`${id}-d`} type="date" value={lastDay} onChange={e => setLastDay(e.target.value)} className={INPUT} required />
+        </label>
+        {truck.driver && (
+          <label className="flex flex-col gap-1 text-xs font-semibold text-[#545B63]" htmlFor={`${id}-m`}>
+            Kierowca {truck.driver} od następnego dnia
+            <select id={`${id}-m`} value={moveTo} onChange={e => setMoveTo(e.target.value ? Number(e.target.value) : '')} className={`${INPUT} w-72`}>
+              <option value="">zostaje bez auta</option>
+              {others.map(o => (
+                <option key={o.id} value={o.id}>
+                  przechodzi na {o.currentPlate}
+                  {o.carrier ? ` · ${o.carrier}` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <button type="submit" disabled={busy || !lastDay} className={BTN_PRIMARY}>
+          Wycofaj {truck.currentPlate}
+        </button>
+      </div>
     </form>
   )
 }
@@ -588,7 +726,7 @@ function TruckEditRow({
       <td className={TD}>
         <label className="flex h-10 items-center gap-2 text-sm">
           <input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} className="h-4 w-4" />
-          na tablicy
+          <span title="Odznaczone chowa auto we wszystkich tygodniach, także przeszłych. Auto, które odchodzi z działu, wycofaj z dniem („Wycofaj”).">na tablicy</span>
         </label>
       </td>
       <td className={`${TD} whitespace-nowrap text-right`}>
