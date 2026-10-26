@@ -24,6 +24,10 @@ export function hostnameOf(hostHeader: string): string {
   return value.split(':')[0] ?? value
 }
 
+export function isLoopbackHost(hostHeader: string | undefined): boolean {
+  return hostHeader !== undefined && LOOPBACK_HOSTS.has(hostnameOf(hostHeader))
+}
+
 export function isAllowedHost(hostHeader: string | undefined, publicHost: string | null): boolean {
   if (publicHost === null) return true
   if (!hostHeader) return false
@@ -33,11 +37,15 @@ export function isAllowedHost(hostHeader: string | undefined, publicHost: string
 
 export function isSameOrigin(originHeader: string, hostHeader: string | undefined): boolean {
   if (!hostHeader) return false
+  let originHost: string
   try {
-    return new URL(originHeader).host.toLowerCase() === hostHeader.trim().toLowerCase()
+    originHost = new URL(originHeader).host.toLowerCase()
   } catch {
     return false // "null" or garbage
   }
+  if (originHost === hostHeader.trim().toLowerCase()) return true
+  // Dev proxy (Vite on :5173 → :3001): both ends on this machine, ports differ.
+  return LOOPBACK_HOSTS.has(hostnameOf(originHost)) && isLoopbackHost(hostHeader)
 }
 
 export function registerRequestGuards(app: FastifyInstance, options: { publicHost: string | null }): void {

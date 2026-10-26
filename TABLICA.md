@@ -104,10 +104,12 @@ jak w aplikacji), km szacunkowe (≈) zanim HERE policzy dokładne w tle.
 Tablica działa dalej na komputerze biurowym, a Cloudflare wystawia ją pod stałym adresem `https://tablica.<domena>`.
 Zanim ktokolwiek zobaczy tablicę, Cloudflare Access sprawdza, kto to jest (konto Microsoft 365 albo kod na e-mail),
 i wpuszcza tylko adresy z listy. Tablica przyjmuje to logowanie: e-mail z Cloudflare = konto w „Użytkownikach”
-(rola jak dotąd), bez hasła tablicy. Na `localhost` logowanie hasłem działa jak wcześniej.
+(rola jak dotąd), bez hasła tablicy. Hasło tablicy działa wyłącznie na tym komputerze (`localhost`): wejście
+z internetu bez potwierdzonego logowania Cloudflare (brak aplikacji Access, źle ustawiona, brak wpisów w `.env`)
+kończy się komunikatem o zablokowanym dostępie, nigdy formularzem hasła.
 
-Kolejność ma znaczenie: **najpierw aplikacja Access (krok 2), potem adres tunelu (krok 3)** — inaczej przez chwilę
-tablica byłaby w internecie chroniona tylko hasłem. Nazwy w panelu Cloudflare bywają zmieniane; szukaj podobnych.
+Kolejność: najpierw aplikacja Access (krok 2), potem adres tunelu (krok 3). Nazwy w panelu Cloudflare bywają
+zmieniane; szukaj podobnych.
 
 1. **Domena i konto.** Konto Cloudflare na firmowy e-mail, z włączonym logowaniem dwuetapowym. Domena musi mieć DNS
    w Cloudflare: subdomena `zetlogistic.pl` tylko po przeniesieniu DNS całej domeny (to dotyka poczty — decyzja osoby
@@ -116,10 +118,10 @@ tablica byłaby w internecie chroniona tylko hasłem. Nazwy w panelu Cloudflare 
    serwerów nazw u rejestratora. Zero Trust → plan **Free** (do 50 osób) → nazwa zespołu (team name), np. `zet` —
    daje adres `zet.cloudflareaccess.com`.
 2. **Aplikacja Access.** Zero Trust → Access → Applications → Add an application → **Self-hosted**:
-   - nazwa „Tablica floty”, adres `tablica.<domena>`, czas sesji np. 1 tydzień;
+   - nazwa „Tablica floty”, adres `tablica.<domena>` — cały adres, bez ścieżki; czas sesji np. 1 tydzień;
    - polityka **Allow** → Include → **Emails** → `wojciech.zalubski@zetlogistic.pl` (kolejne osoby dopisujesz tutaj
      i zakładasz im konto w „Użytkownikach” — potrzebne jest jedno i drugie);
-   - logowanie: na start **One-time PIN** (kod na e-mail); po kroku 5 — Microsoft (Azure AD) z „Instant Auth”;
+   - logowanie: na start tylko **One-time PIN** (kod na e-mail); po kroku 5 — tylko Microsoft (Azure AD);
    - po zapisaniu skopiuj **Application Audience (AUD) Tag** (ustawienia aplikacji).
 3. **Tunel.** Zero Trust → Networks → Tunnels → Create a tunnel → **Cloudflared** → nazwa `tablica` → Windows.
    Skopiuj **token** (długi ciąg po `service install`) — samego polecenia instalacji nie uruchamiaj (wymaga
@@ -132,6 +134,7 @@ tablica byłaby w internecie chroniona tylko hasłem. Nazwy w panelu Cloudflare 
    PUBLIC_HOST=tablica.<domena>
    TUNNEL_TOKEN=<token z kroku 3>
    ```
+   Bez `PUBLIC_HOST` (przy ustawionych `CF_ACCESS_*`) serwer nie wystartuje — to celowe.
    Zamknij okno serwera i kliknij `scripts\aktualizuj.cmd`. Serwer otworzy drugie zminimalizowane okno
    „Tablica - tunel Cloudflare” (przy pierwszym razie pobierze `cloudflared` z GitHuba). Test: telefon na danych
    komórkowych → `https://tablica.<domena>` → kod z e-maila → tablica od razu, bez hasła.
@@ -144,13 +147,18 @@ tablica byłaby w internecie chroniona tylko hasłem. Nazwy w panelu Cloudflare 
      `Directory.Read.All`, `GroupMember.Read.All` → **Grant admin consent**;
    - Cloudflare: Zero Trust → Integrations (Settings) → Identity providers → Add → **Azure AD**: Application (client) ID,
      client secret, Directory (tenant) ID → Save → Test;
-   - w aplikacji Access (krok 2) zaznacz Azure AD jako metodę logowania, włącz „Instant Auth”, One-time PIN możesz zostawić
-     jako zapasowy.
+   - w aplikacji Access (krok 2) zaznacz Azure AD, odznacz One-time PIN i włącz „Instant Auth” (działa tylko przy jednej
+     metodzie logowania — wtedy strona od razu przechodzi do logowania Microsoft). Gdyby Microsoft kiedyś nie działał
+     (np. wygasł sekret), włącz z powrotem One-time PIN.
 
 Gdy Cloudflare przepuści adres bez konta w tablicy, strona pokaże, który adres przyszedł („Brak dostępu do tablicy”) —
-dodaj konto z dokładnie tym adresem w „Użytkownikach”. „Wyloguj” wylogowuje z Cloudflare. Wyłączenie dostępu
-z internetu: zamknij okno tunelu albo usuń `TUNNEL_TOKEN` z `.env`; w Cloudflare można też wyłączyć aplikację.
-Logi tunelu: `logs\tunel.log`. Komputer biurowy musi być włączony, żeby tablica działała z zewnątrz.
+dodaj konto z dokładnie tym adresem w „Użytkownikach”. „Wyloguj” wylogowuje z Cloudflare.
+
+Wyłączenie dostępu z internetu: zamknij okno „Tablica - tunel Cloudflare” (wraca przy następnym starcie serwera,
+chyba że usuniesz `TUNNEL_TOKEN` z `.env`) albo w Cloudflare usuń adres publiczny tunelu. Aplikacji Access nie
+wyłączaj jako sposobu na odcięcie dostępu — to ona jest zabezpieczeniem. Logi tunelu: `logs\tunel.log`.
+Komputer biurowy musi być włączony, żeby tablica działała z zewnątrz. `cloudflared` odświeża się sam co 60 dni
+(przy starcie tunelu).
 
 ## Ustawienia (`.env`)
 

@@ -174,16 +174,22 @@ describe('request guards', () => {
     expect(isSameOrigin('http://localhost:3001', 'localhost:3001')).toBe(true)
     expect(isSameOrigin('https://evil.com', 'tablica.example.pl')).toBe(false)
     expect(isSameOrigin('null', 'localhost:3001')).toBe(false)
+    // Vite dev proxy: :5173 → 127.0.0.1:3001
+    expect(isSameOrigin('http://localhost:5173', '127.0.0.1:3001')).toBe(true)
+    expect(isSameOrigin('https://evil.com', '127.0.0.1:3001')).toBe(false)
+    expect(isSameOrigin('http://localhost:5173', 'tablica.example.pl')).toBe(false)
   })
 })
 
 describe('server env', () => {
   const base = { HERE_API_KEY: 'k' }
-  it('needs both Access settings or neither', () => {
+  it('needs both Access settings or neither, and PUBLIC_HOST with them', () => {
     expect(loadServerEnv(base).access).toBeNull()
-    expect(loadServerEnv({ ...base, CF_ACCESS_TEAM_DOMAIN: 'zet', CF_ACCESS_AUD: 'a' }).access).toEqual({ teamDomain: 'zet', aud: 'a' })
+    const on = { ...base, CF_ACCESS_TEAM_DOMAIN: 'zet', CF_ACCESS_AUD: 'a', PUBLIC_HOST: 'tablica.example.pl' }
+    expect(loadServerEnv(on).access).toEqual({ teamDomain: 'zet', aud: 'a' })
     expect(() => loadServerEnv({ ...base, CF_ACCESS_TEAM_DOMAIN: 'zet' })).toThrow(/CF_ACCESS_AUD/)
     expect(() => loadServerEnv({ ...base, CF_ACCESS_AUD: 'a' })).toThrow(/CF_ACCESS_TEAM_DOMAIN/)
+    expect(() => loadServerEnv({ ...base, CF_ACCESS_TEAM_DOMAIN: 'zet', CF_ACCESS_AUD: 'a' })).toThrow(/PUBLIC_HOST/)
   })
 
   it('normalizes PUBLIC_HOST', () => {
@@ -278,14 +284,69 @@ describe('sign-in through Cloudflare Access', () => {
     expect(me.json()).toMatchObject({ via: 'session' })
   })
 
-  it('marks the session cookie Secure for HTTPS through the local tunnel', async () => {
+  it('marks the session cookie Secure behind a local HTTPS proxy (no Access)', async () => {
+    const login = await plainApp.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { 'x-forwarded-proto': 'https', 'x-forwarded-for': '10.0.0.5' },
+      payload: { email: 'wojciech@zet.pl', password: 'secret-password' },
+    })
+    expect(login.statusCode).toBe(200)
+    expect(login.cookies.find(c => c.name === 'session')?.secure).toBe(true)
+  })
+
+  it('fails closed: without a valid Access token only a local request may use the password', async () => {
+    const credentials = { email: 'wojciech@zet.pl', password: 'secret-password' }
+    const local = await app.inject({ method: 'POST', url: '/api/auth/login', payload: credentials })
+    const session = local.cookies.find(c => c.name === 'session')!.value
+
+    // Through the tunnel, Access missing in front (app deleted, path-scoped, second hostname, bypass policy)
+    const viaTunnel = [
+      { host: 'tablica.example.pl', 'x-forwarded-proto': 'https', 'cf-ray': '8a1b-WAW', 'cf-connecting-ip': '203.0.113.7' },
+      { host: 'tablica.example.pl' },
+      { host: 'localhost:3001', 'cf-ray': '8a1b-WAW' },
+      { host: '127.0.0.1:3001', 'x-forwarded-for': '203.0.113.7' },
+    ]
+    for (const headers of viaTunnel) {
+      const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers, payload: credentials })
+      expect(login.statusCode).toBe(401)
+      expect(login.json()).toMatchObject({ error: { code: 'ACCESS_REQUIRED' } })
+      expect(login.cookies).toHaveLength(0)
+      const me = await app.inject({ method: 'GET', url: '/api/users', headers, cookies: { session } })
+      expect(me.statusCode).toBe(401)
+      expect(me.json()).toMatchObject({ error: { code: 'ACCESS_REQUIRED' } })
+    }
+    // ...while a valid Access token through the tunnel still works
+    const ok = await app.inject({ method: 'GET', url: '/api/users', headers: { ...viaTunnel[0], ...asAccess() } })
+    expect(ok.statusCode).toBe(200)
+  })
+
+  it('refuses everything that came through Cloudflare while Access is not configured', async () => {
+    const headers = { host: 'tablica.example.pl', 'cf-ray': '8a1b-WAW', 'cf-connecting-ip': '203.0.113.7' }
+    const login = await plainApp.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers,
+      payload: { email: 'wojciech@zet.pl', password: 'secret-password' },
+    })
+    expect(login.statusCode).toBe(403)
+    expect(login.json()).toMatchObject({ error: { code: 'ACCESS_NOT_CONFIGURED' } })
+    const local = await plainApp.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { email: 'wojciech@zet.pl', password: 'secret-password' },
+    })
+    expect(local.statusCode).toBe(200)
+  })
+
+  it('accepts writes from the Vite dev server (localhost:5173 → 127.0.0.1:3001)', async () => {
     const login = await app.inject({
       method: 'POST',
       url: '/api/auth/login',
-      headers: { 'x-forwarded-proto': 'https' },
+      headers: { host: '127.0.0.1:3001', origin: 'http://localhost:5173' },
       payload: { email: 'wojciech@zet.pl', password: 'secret-password' },
     })
-    expect(login.cookies.find(c => c.name === 'session')?.secure).toBe(true)
+    expect(login.statusCode).toBe(200)
   })
 
   it('ignores the Access header when Access is not configured', async () => {

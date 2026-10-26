@@ -114,15 +114,15 @@ export const api = {
   },
 
   /**
-   * Returns null when there is no valid session. Throws ApiError NO_ACCOUNT /
-   * ACCESS_INVALID when Cloudflare Access signed someone in that the board cannot accept.
+   * Returns null when there is no valid session (password login). Throws ApiError
+   * NO_ACCOUNT / ACCESS_* when a request from the internet cannot be accepted.
    */
   async me(): Promise<AuthSessionDto | null> {
     try {
       const session = await request<{ user: UserDto | null; via?: AuthVia | null }>('GET', '/api/auth/me')
       return session.user ? { user: session.user, via: session.via ?? 'session' } : null
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401 && error.code !== 'ACCESS_INVALID') return null
+      if (error instanceof ApiError && error.status === 401 && error.code === 'UNAUTHENTICATED') return null
       throw error
     }
   },

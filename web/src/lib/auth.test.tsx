@@ -86,6 +86,17 @@ describe('AuthProvider with Cloudflare Access', () => {
     expect(await screen.findByRole('heading', { name: 'Nie udało się potwierdzić logowania' })).toBeInTheDocument()
   })
 
+  it('shows a blocked internet request (no Access in front) without the password form', async () => {
+    fetchMock.mockResolvedValue(json(401, { error: { code: 'ACCESS_REQUIRED', message: 'Tablica otwarta z internetu bez logowania Cloudflare Access.' } }))
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    )
+    expect(await screen.findByRole('heading', { name: 'Dostęp z internetu zablokowany' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Zaloguj się innym kontem' })).not.toBeInTheDocument()
+  })
+
   it('keeps the password flow on localhost', async () => {
     fetchMock.mockResolvedValue(json(401, { error: { code: 'UNAUTHENTICATED', message: 'Sign in to continue.' } }))
     render(

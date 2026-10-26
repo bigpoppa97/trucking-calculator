@@ -2,11 +2,20 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { ACCESS_LOGOUT_URL, api, ApiError, setAccessMode, setUnauthenticatedHandler, type AuthVia } from './api.js'
 import type { UserDto } from './types.js'
 
-/** Cloudflare Access let someone in whom the board cannot accept (no account / unverifiable login). */
+/**
+ * Reached from the internet, but the board cannot accept the login: no account for the
+ * Access email, unverifiable Access login, no Access in front, or Access not set up in .env.
+ */
+export const ACCESS_PROBLEM_CODES = ['NO_ACCOUNT', 'ACCESS_INVALID', 'ACCESS_REQUIRED', 'ACCESS_NOT_CONFIGURED'] as const
+export type AccessProblemCode = (typeof ACCESS_PROBLEM_CODES)[number]
+
 export interface AccessProblem {
-  code: 'NO_ACCOUNT' | 'ACCESS_INVALID'
+  code: AccessProblemCode
   message: string
 }
+
+const isAccessProblemCode = (code: string): code is AccessProblemCode =>
+  (ACCESS_PROBLEM_CODES as readonly string[]).includes(code)
 
 export interface AuthState {
   /** undefined = still checking the session, null = signed out. */
@@ -43,7 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(session?.user ?? null)
       })
       .catch((error: unknown) => {
-        if (error instanceof ApiError && (error.code === 'NO_ACCOUNT' || error.code === 'ACCESS_INVALID')) {
+        if (error instanceof ApiError && isAccessProblemCode(error.code)) {
           setProblem({ code: error.code, message: error.message })
         }
         setUser(null)

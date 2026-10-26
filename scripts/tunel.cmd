@@ -26,20 +26,34 @@ set "TUNNEL_TOKEN=%TUNNEL_TOKEN: =%"
 if "%TUNNEL_TOKEN%"=="" goto brak_tokenu
 
 rem Juz dziala? (start serwera po aktualizacji) - nie uruchamiaj drugiej kopii.
-tasklist /fi "imagename eq cloudflared.exe" 2>nul | find /i "cloudflared.exe" >nul && goto juz_dziala
+rem Szukamy tylko naszego tunelu (cloudflared z logiem logs\tunel.log), nie innych.
+powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'cloudflared.exe' -and $_.CommandLine -like '*tunel.log*' }; if ($p) { exit 0 } else { exit 1 }" && goto juz_dziala
 
-rem cloudflared: %USERPROFILE%\.cloudflared, potem PATH, na koncu pobranie z GitHuba.
+rem cloudflared: %USERPROFILE%\.cloudflared (pobierany z GitHuba, odswiezany co 60 dni).
 set "CF=%USERPROFILE%\.cloudflared\cloudflared.exe"
-if not exist "%CF%" for %%N in (cloudflared.exe) do if not "%%~$PATH:N"=="" set "CF=%%~$PATH:N"
+set "URL=https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+if not exist "%USERPROFILE%\.cloudflared" mkdir "%USERPROFILE%\.cloudflared"
 if not exist "%CF%" goto pobierz
+powershell -NoProfile -Command "if ((Get-Item -LiteralPath $env:CF).LastWriteTime -lt (Get-Date).AddDays(-60)) { exit 0 } else { exit 1 }" && goto odswiez
 goto start
 
 :pobierz
 echo Nie ma programu cloudflared - pobieram oficjalne wydanie Cloudflare z GitHuba...
-if not exist "%USERPROFILE%\.cloudflared" mkdir "%USERPROFILE%\.cloudflared"
-set "CF=%USERPROFILE%\.cloudflared\cloudflared.exe"
-curl.exe -L --fail -o "%CF%" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+curl.exe -L --fail -o "%CF%" "%URL%"
 if errorlevel 1 goto blad_pobierania
+goto start
+
+:odswiez
+echo Odswiezam cloudflared (wersja starsza niz 60 dni)...
+curl.exe -L --fail -o "%CF%.nowy" "%URL%"
+if errorlevel 1 goto odswiez_nieudane
+move /y "%CF%.nowy" "%CF%" >nul
+if errorlevel 1 goto odswiez_nieudane
+goto start
+
+:odswiez_nieudane
+if exist "%CF%.nowy" del "%CF%.nowy"
+>>"%LOG%" echo [%date% %time%] Nie udalo sie odswiezyc cloudflared - zostaje poprzednia wersja.
 
 :start
 echo Tablica - tunel Cloudflare

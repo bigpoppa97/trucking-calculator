@@ -5,6 +5,7 @@ import { hashPassword, verifyPassword } from '../auth/password.js'
 import { UserRepository, type User } from '../repositories/userRepository.js'
 import { SessionRepository, SESSION_TTL_MS } from '../repositories/sessionRepository.js'
 import { ACCESS_JWT_HEADER, type AccessVerifier } from './cloudflareAccess.js'
+import { isLoopbackHost } from './requestGuards.js'
 
 /**
  * Session-cookie auth (PRD §5.1: email+password, roles dispatcher/finance/
@@ -16,8 +17,11 @@ import { ACCESS_JWT_HEADER, type AccessVerifier } from './cloudflareAccess.js'
  *
  * Behind Cloudflare Access (optional, CF_ACCESS_* in .env) a request carrying
  * a valid Access JWT is signed in as the account with that email — no board
- * password, and password login is refused for such requests. Requests without
- * the header (localhost) keep the password + session-cookie flow.
+ * password, and password login is refused for such requests. Fail closed:
+ * with Access configured, ONLY a genuinely local request (loopback Host, no
+ * proxy headers) may use the password + session cookie; anything else without
+ * a valid Access token is refused. Without Access configured, requests that
+ * came through Cloudflare are refused outright (tunnel up, .env not done yet).
  */
 
 export type AuthVia = 'access' | 'session'
@@ -38,6 +42,20 @@ const ACCESS_INVALID = {
   error: {
     code: 'ACCESS_INVALID',
     message: 'Nie udało się potwierdzić logowania Cloudflare. Odśwież stronę; jeśli to nie pomoże, sprawdź CF_ACCESS_TEAM_DOMAIN i CF_ACCESS_AUD w .env.',
+  },
+}
+const ACCESS_REQUIRED = {
+  error: {
+    code: 'ACCESS_REQUIRED',
+    message:
+      'Tablica otwarta z internetu bez logowania Cloudflare Access — dostęp zablokowany. Sprawdź w Cloudflare aplikację Access dla tego adresu (TABLICA.md, „Dostęp z internetu”).',
+  },
+}
+const ACCESS_NOT_CONFIGURED = {
+  error: {
+    code: 'ACCESS_NOT_CONFIGURED',
+    message:
+      'Tunel działa, ale tablica nie ma jeszcze ustawień Cloudflare Access (CF_ACCESS_TEAM_DOMAIN i CF_ACCESS_AUD w .env) — dostęp z internetu zablokowany.',
   },
 }
 const noAccount = (email: string) => ({
@@ -66,6 +84,24 @@ function accessAssertion(request: FastifyRequest, deps: AuthDeps): string | null
   return typeof value === 'string' && value !== '' ? value : null
 }
 
+/** Headers a proxy adds (cloudflared/Cloudflare edge, or any reverse proxy). */
+const PROXY_HEADERS = ['cf-ray', 'cf-connecting-ip', 'cf-visitor', 'cdn-loop', 'x-forwarded-for', 'x-forwarded-host']
+
+/** The request came through Cloudflare (tunnel) or another proxy. */
+function viaProxy(request: FastifyRequest): boolean {
+  return PROXY_HEADERS.some(name => request.headers[name] !== undefined)
+}
+
+/** Typed on this machine: loopback Host and nothing added by a proxy. */
+function isLocalRequest(request: FastifyRequest): boolean {
+  return isLoopbackHost(request.headers.host) && !viaProxy(request)
+}
+
+/** Came through Cloudflare (tunnel or edge). */
+function viaCloudflare(request: FastifyRequest): boolean {
+  return request.headers['cf-ray'] !== undefined || request.headers['cf-connecting-ip'] !== undefined
+}
+
 /** Reached over HTTPS through a proxy on this machine (cloudflared → 127.0.0.1). */
 function viaLocalHttpsProxy(request: FastifyRequest): boolean {
   const ip = request.socket.remoteAddress ?? ''
@@ -92,9 +128,14 @@ export function registerAuthHook(app: FastifyInstance, deps: AuthDeps): void {
     }
     const route = request.routeOptions?.url
     if (!path.startsWith('/api/') && !(route ?? '').startsWith('/api/')) return
+
+    // Fail closed before anything else, the public login route included.
+    const assertion = accessAssertion(request, deps)
+    if (!deps.access && viaCloudflare(request)) return reply.status(403).send(ACCESS_NOT_CONFIGURED)
+    if (deps.access && assertion === null && !isLocalRequest(request)) return reply.status(401).send(ACCESS_REQUIRED)
+
     if (PUBLIC_PATHS.has(route ?? path) && PUBLIC_PATHS.has(path)) return
 
-    const assertion = accessAssertion(request, deps)
     if (assertion !== null && deps.access) {
       const identity = await deps.access.verify(assertion)
       if (!identity) return reply.status(401).send(ACCESS_INVALID)

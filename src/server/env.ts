@@ -42,6 +42,11 @@ export function loadServerEnv(env: NodeJS.ProcessEnv = process.env): ServerEnv {
     )
   }
   const publicHost = (env['PUBLIC_HOST'] ?? '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase()
+  if (teamDomain !== '' && publicHost === '') {
+    throw new Error(
+      'Cloudflare Access is on but PUBLIC_HOST is empty — set PUBLIC_HOST to the tunnel address (e.g. tablica.example.com) in .env. Refusing to start.',
+    )
+  }
 
   return {
     hereApiKey,
