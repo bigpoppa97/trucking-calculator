@@ -4,6 +4,7 @@ import type { DB, UserRole } from '../db/schema.js'
 import { hashPassword, verifyPassword } from '../auth/password.js'
 import { UserRepository, type User } from '../repositories/userRepository.js'
 import { SessionRepository, SESSION_TTL_MS } from '../repositories/sessionRepository.js'
+import { ACCESS_JWT_HEADER, type AccessVerifier } from './cloudflareAccess.js'
 
 /**
  * Session-cookie auth (PRD §5.1: email+password, roles dispatcher/finance/
@@ -12,11 +13,19 @@ import { SessionRepository, SESSION_TTL_MS } from '../repositories/sessionReposi
  * Every /api/* route except login requires a valid session; the resolved
  * user is attached to request.user and carries the identity written into
  * all audit fields.
+ *
+ * Behind Cloudflare Access (optional, CF_ACCESS_* in .env) a request carrying
+ * a valid Access JWT is signed in as the account with that email — no board
+ * password, and password login is refused for such requests. Requests without
+ * the header (localhost) keep the password + session-cookie flow.
  */
+
+export type AuthVia = 'access' | 'session'
 
 declare module 'fastify' {
   interface FastifyRequest {
     user: User | null
+    authVia: AuthVia | null
   }
 }
 
@@ -25,14 +34,43 @@ export const SESSION_COOKIE = 'session'
 const CREDENTIALS_MESSAGE = 'Invalid email or password.'
 const UNAUTHENTICATED = { error: { code: 'UNAUTHENTICATED', message: 'Sign in to continue.' } }
 const FORBIDDEN = { error: { code: 'FORBIDDEN', message: 'You do not have permission to perform this action.' } }
+const ACCESS_INVALID = {
+  error: {
+    code: 'ACCESS_INVALID',
+    message: 'Nie udało się potwierdzić logowania Cloudflare. Odśwież stronę; jeśli to nie pomoże, sprawdź CF_ACCESS_TEAM_DOMAIN i CF_ACCESS_AUD w .env.',
+  },
+}
+const noAccount = (email: string) => ({
+  error: {
+    code: 'NO_ACCOUNT',
+    message: `Adres ${email} nie ma aktywnego konta w tablicy. Poproś administratora o dodanie go w zakładce Użytkownicy.`,
+    email,
+  },
+})
 
 export interface AuthDeps {
   users: UserRepository
   sessions: SessionRepository
+  /** Cloudflare Access verifier — set when CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are configured. */
+  access?: AccessVerifier | undefined
 }
 
-export function buildAuthDeps(db: Kysely<DB>): AuthDeps {
-  return { users: new UserRepository(db), sessions: new SessionRepository(db) }
+export function buildAuthDeps(db: Kysely<DB>, access?: AccessVerifier): AuthDeps {
+  return { users: new UserRepository(db), sessions: new SessionRepository(db), access }
+}
+
+/** The Access JWT of a request, when Access is configured and the header is present. */
+function accessAssertion(request: FastifyRequest, deps: AuthDeps): string | null {
+  if (!deps.access) return null
+  const value = request.headers[ACCESS_JWT_HEADER]
+  return typeof value === 'string' && value !== '' ? value : null
+}
+
+/** Reached over HTTPS through a proxy on this machine (cloudflared → 127.0.0.1). */
+function viaLocalHttpsProxy(request: FastifyRequest): boolean {
+  const ip = request.socket.remoteAddress ?? ''
+  const loopback = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
+  return loopback && request.headers['x-forwarded-proto'] === 'https'
 }
 
 /** Routes that must work without a session. */
@@ -40,6 +78,7 @@ const PUBLIC_PATHS = new Set(['/api/auth/login'])
 
 export function registerAuthHook(app: FastifyInstance, deps: AuthDeps): void {
   app.decorateRequest('user', null)
+  app.decorateRequest('authVia', null)
   app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
     // Only the API is session-guarded. Static assets and the SPA shell are
     // public — the app itself renders the login screen, and every data
@@ -54,11 +93,24 @@ export function registerAuthHook(app: FastifyInstance, deps: AuthDeps): void {
     const route = request.routeOptions?.url
     if (!path.startsWith('/api/') && !(route ?? '').startsWith('/api/')) return
     if (PUBLIC_PATHS.has(route ?? path) && PUBLIC_PATHS.has(path)) return
+
+    const assertion = accessAssertion(request, deps)
+    if (assertion !== null && deps.access) {
+      const identity = await deps.access.verify(assertion)
+      if (!identity) return reply.status(401).send(ACCESS_INVALID)
+      const accessUser = await deps.users.findByEmail(identity.email)
+      if (!accessUser || accessUser.active !== 1) return reply.status(403).send(noAccount(identity.email))
+      request.user = UserRepository.toPublic(accessUser)
+      request.authVia = 'access'
+      return
+    }
+
     const token = request.cookies[SESSION_COOKIE]
     if (!token) return reply.status(401).send(UNAUTHENTICATED)
     const userRow = await deps.sessions.resolveUser(token)
     if (!userRow) return reply.status(401).send(UNAUTHENTICATED)
     request.user = UserRepository.toPublic(userRow)
+    request.authVia = 'session'
   })
 }
 
@@ -92,6 +144,11 @@ export function registerAuthRoutes(
       },
     },
     async (request, reply) => {
+      if (accessAssertion(request, deps) !== null) {
+        return reply.status(400).send({
+          error: { code: 'USE_ACCESS', message: 'Tu logujesz się przez Cloudflare (konto Microsoft 365), nie hasłem tablicy — odśwież stronę.' },
+        })
+      }
       const userRow = await deps.users.findByEmail(request.body.email)
       if (!userRow || userRow.active !== 1) {
         return reply.status(401).send({ error: { code: 'INVALID_CREDENTIALS', message: CREDENTIALS_MESSAGE } })
@@ -107,8 +164,9 @@ export function registerAuthRoutes(
         sameSite: 'lax',
         maxAge: Math.floor(SESSION_TTL_MS / 1000),
         // Secure when served over HTTPS (e.g. behind a tunnel/reverse proxy);
-        // opt-in via COOKIE_SECURE so plain-HTTP local dev keeps working.
-        ...(options.secureCookies === true ? { secure: true } : {}),
+        // opt-in via COOKIE_SECURE so plain-HTTP local dev keeps working, and
+        // automatic for HTTPS arriving through a proxy on this machine.
+        ...(options.secureCookies === true || viaLocalHttpsProxy(request) ? { secure: true } : {}),
       })
       return reply.send({ user: UserRepository.toPublic(userRow) })
     },
@@ -122,7 +180,7 @@ export function registerAuthRoutes(
   })
 
   app.get('/api/auth/me', async (request, reply) => {
-    return reply.send({ user: request.user })
+    return reply.send({ user: request.user, via: request.authVia })
   })
 
   // Admin-only user management (no self-registration).

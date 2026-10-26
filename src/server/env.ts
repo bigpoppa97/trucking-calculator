@@ -14,6 +14,10 @@ export interface ServerEnv {
   cookieSecure: boolean
   /** Directory of the built web UI; served when it exists. */
   webDistDir: string
+  /** Cloudflare Access (CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD); null = password login only. */
+  access: { teamDomain: string; aud: string } | null
+  /** Public hostname (PUBLIC_HOST, e.g. tablica.example.pl); when set, other Host headers are refused. */
+  publicHost: string | null
 }
 
 export function loadServerEnv(env: NodeJS.ProcessEnv = process.env): ServerEnv {
@@ -30,6 +34,15 @@ export function loadServerEnv(env: NodeJS.ProcessEnv = process.env): ServerEnv {
     throw new Error(`PORT environment variable is not a valid port: '${portRaw}'.`)
   }
 
+  const teamDomain = env['CF_ACCESS_TEAM_DOMAIN']?.trim() ?? ''
+  const aud = env['CF_ACCESS_AUD']?.trim() ?? ''
+  if ((teamDomain === '') !== (aud === '')) {
+    throw new Error(
+      'Cloudflare Access needs both CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD in .env (or neither). Refusing to start.',
+    )
+  }
+  const publicHost = (env['PUBLIC_HOST'] ?? '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase()
+
   return {
     hereApiKey,
     databasePath: env['DATABASE_PATH'] ?? 'data/calculator.sqlite',
@@ -37,5 +50,7 @@ export function loadServerEnv(env: NodeJS.ProcessEnv = process.env): ServerEnv {
     host: env['HOST'] ?? '127.0.0.1',
     cookieSecure: env['COOKIE_SECURE'] === 'true',
     webDistDir: env['WEB_DIST'] ?? 'web/dist',
+    access: teamDomain === '' ? null : { teamDomain, aud },
+    publicHost: publicHost === '' ? null : publicHost,
   }
 }

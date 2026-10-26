@@ -6,6 +6,7 @@ rem  Startuje automatycznie przy logowaniu do Windows (skrot w Autostarcie,
 rem  dodawany przez autostart-wlacz.cmd). Okno pracuje zminimalizowane na
 rem  pasku zadan - jego zamkniecie zatrzymuje kalkulator.
 rem  Logi serwera: logs\serwer.log
+rem  Z TUNNEL_TOKEN w .env uruchamia tez tunel Cloudflare (scripts\tunel.cmd).
 rem ==========================================================================
 setlocal EnableExtensions
 title Kalkulator kosztow - serwer (nie zamykaj tego okna)
@@ -15,6 +16,10 @@ if not exist "logs" mkdir "logs"
 set "LOG=%CD%\logs\serwer.log"
 
 if not exist ".env" goto brak_env
+
+rem Tunel Cloudflare (dostep z internetu), jesli w .env jest TUNNEL_TOKEN.
+rem Osobne okno: aktualizacja i restart serwera nie przerywaja tunelu.
+findstr /b /c:"TUNNEL_TOKEN=" ".env" >nul 2>&1 && start "Tablica - tunel Cloudflare" /min "%~dp0tunel.cmd"
 
 rem Port z .env (domyslnie 3001)
 set "PORT=3001"

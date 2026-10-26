@@ -30,6 +30,8 @@ describe('loadServerEnv — startup assertion (kickoff Phase 3)', () => {
       host: '127.0.0.1',
       cookieSecure: false,
       webDistDir: 'web/dist',
+      access: null,
+      publicHost: null,
     })
   })
 

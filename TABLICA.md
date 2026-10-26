@@ -99,9 +99,64 @@ Porównuje przychód, koszt, marżę i km per auto i tydzień z grafikiem. Róż
 przepinki bez wpisu PRZ (w grafiku kwota była dzielona ręcznie), koszty w PLN, skonto (tablica pokazuje koszt
 jak w aplikacji), km szacunkowe (≈) zanim HERE policzy dokładne w tle.
 
+## Dostęp z internetu (Cloudflare + Microsoft 365)
+
+Tablica działa dalej na komputerze biurowym, a Cloudflare wystawia ją pod stałym adresem `https://tablica.<domena>`.
+Zanim ktokolwiek zobaczy tablicę, Cloudflare Access sprawdza, kto to jest (konto Microsoft 365 albo kod na e-mail),
+i wpuszcza tylko adresy z listy. Tablica przyjmuje to logowanie: e-mail z Cloudflare = konto w „Użytkownikach”
+(rola jak dotąd), bez hasła tablicy. Na `localhost` logowanie hasłem działa jak wcześniej.
+
+Kolejność ma znaczenie: **najpierw aplikacja Access (krok 2), potem adres tunelu (krok 3)** — inaczej przez chwilę
+tablica byłaby w internecie chroniona tylko hasłem. Nazwy w panelu Cloudflare bywają zmieniane; szukaj podobnych.
+
+1. **Domena i konto.** Konto Cloudflare na firmowy e-mail, z włączonym logowaniem dwuetapowym. Domena musi mieć DNS
+   w Cloudflare: subdomena `zetlogistic.pl` tylko po przeniesieniu DNS całej domeny (to dotyka poczty — decyzja osoby
+   od domeny), więc prościej osobna domena tylko na tablicę. Cloudflare nie sprzedaje `.pl` ani `.eu`: `.com` kupisz
+   w Cloudflare (Domain Registration), `.pl` u polskiego rejestratora, a potem w Cloudflare „Add a domain” i zmiana
+   serwerów nazw u rejestratora. Zero Trust → plan **Free** (do 50 osób) → nazwa zespołu (team name), np. `zet` —
+   daje adres `zet.cloudflareaccess.com`.
+2. **Aplikacja Access.** Zero Trust → Access → Applications → Add an application → **Self-hosted**:
+   - nazwa „Tablica floty”, adres `tablica.<domena>`, czas sesji np. 1 tydzień;
+   - polityka **Allow** → Include → **Emails** → `wojciech.zalubski@zetlogistic.pl` (kolejne osoby dopisujesz tutaj
+     i zakładasz im konto w „Użytkownikach” — potrzebne jest jedno i drugie);
+   - logowanie: na start **One-time PIN** (kod na e-mail); po kroku 5 — Microsoft (Azure AD) z „Instant Auth”;
+   - po zapisaniu skopiuj **Application Audience (AUD) Tag** (ustawienia aplikacji).
+3. **Tunel.** Zero Trust → Networks → Tunnels → Create a tunnel → **Cloudflared** → nazwa `tablica` → Windows.
+   Skopiuj **token** (długi ciąg po `service install`) — samego polecenia instalacji nie uruchamiaj (wymaga
+   administratora Windows; tunel startuje u nas z `scripts\tunel.cmd`). Dodaj adres publiczny tunelu
+   (Public hostname): subdomena `tablica`, Twoja domena, usługa **HTTP**, adres `127.0.0.1:3001` (nie `localhost`).
+4. **`.env` na komputerze biurowym** (ten sam plik co `HERE_API_KEY`) — dopisz:
+   ```
+   CF_ACCESS_TEAM_DOMAIN=zet.cloudflareaccess.com
+   CF_ACCESS_AUD=<AUD tag z kroku 2>
+   PUBLIC_HOST=tablica.<domena>
+   TUNNEL_TOKEN=<token z kroku 3>
+   ```
+   Zamknij okno serwera i kliknij `scripts\aktualizuj.cmd`. Serwer otworzy drugie zminimalizowane okno
+   „Tablica - tunel Cloudflare” (przy pierwszym razie pobierze `cloudflared` z GitHuba). Test: telefon na danych
+   komórkowych → `https://tablica.<domena>` → kod z e-maila → tablica od razu, bez hasła.
+5. **Microsoft 365 (Entra ID)** — wymaga administratora M365 (zgoda administratora na uprawnienia):
+   - Entra admin center → App registrations → New registration: nazwa „Cloudflare Access”, Redirect URI typu **Web**:
+     `https://zet.cloudflareaccess.com/cdn-cgi/access/callback`;
+   - Certificates & secrets → New client secret → skopiuj **Value** od razu (widać ją raz); zapisz w kalendarzu datę
+     wygaśnięcia — po niej logowanie Microsoft przestaje działać, dopóki nie wpiszesz nowego sekretu;
+   - API permissions → Microsoft Graph → Delegated: `email`, `offline_access`, `openid`, `profile`, `User.Read`,
+     `Directory.Read.All`, `GroupMember.Read.All` → **Grant admin consent**;
+   - Cloudflare: Zero Trust → Integrations (Settings) → Identity providers → Add → **Azure AD**: Application (client) ID,
+     client secret, Directory (tenant) ID → Save → Test;
+   - w aplikacji Access (krok 2) zaznacz Azure AD jako metodę logowania, włącz „Instant Auth”, One-time PIN możesz zostawić
+     jako zapasowy.
+
+Gdy Cloudflare przepuści adres bez konta w tablicy, strona pokaże, który adres przyszedł („Brak dostępu do tablicy”) —
+dodaj konto z dokładnie tym adresem w „Użytkownikach”. „Wyloguj” wylogowuje z Cloudflare. Wyłączenie dostępu
+z internetu: zamknij okno tunelu albo usuń `TUNNEL_TOKEN` z `.env`; w Cloudflare można też wyłączyć aplikację.
+Logi tunelu: `logs\tunel.log`. Komputer biurowy musi być włączony, żeby tablica działała z zewnątrz.
+
 ## Ustawienia (`.env`)
 
 - `BOARD_HERE=off` — tablica nie odpyta HERE o kilometry (zostają szacunki); domyślnie włączone.
+- `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`, `PUBLIC_HOST`, `TUNNEL_TOKEN` — dostęp z internetu (sekcja wyżej).
+  Bez nich tablica działa jak dotąd, tylko na tym komputerze.
 
 ## Poza etapem 1
 

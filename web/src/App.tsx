@@ -4,6 +4,7 @@ import { RouteDbPage } from './pages/RouteDbPage.js'
 import { ConfigPage } from './pages/ConfigPage.js'
 import { HistoryPage } from './pages/HistoryPage.js'
 import { LoginPage } from './pages/LoginPage.js'
+import { AccessProblemPage } from './pages/AccessProblemPage.js'
 import { UsersPage } from './pages/UsersPage.js'
 import { useAuth } from './lib/auth.js'
 import type { UserRole } from './lib/types.js'
@@ -68,7 +69,7 @@ const BACK_LABELS: Record<string, string> = { board: 'Tablica', review: 'Do spra
 const allowed = (role: UserRole) => (item: { roles?: UserRole[] }) => item.roles === undefined || item.roles.includes(role)
 
 export function App() {
-  const { user, logout } = useAuth()
+  const { user, logout, problem } = useAuth()
   const [screen, setScreen] = useState<Screen>('board')
   const [calcScreen, setCalcScreen] = useState<CalcScreen>('calculator')
   const [focus, setFocus] = useState<WeekFocus | null>(null)
@@ -107,7 +108,7 @@ export function App() {
     return <p className="p-6 text-sm text-[#545B63]">Sprawdzanie sesji…</p>
   }
   if (user === null) {
-    return <LoginPage />
+    return problem ? <AccessProblemPage problem={problem} /> : <LoginPage />
   }
 
   const screens = SCREENS.filter(allowed(user.role))

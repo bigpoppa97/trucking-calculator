@@ -15,6 +15,7 @@ import { DistanceService } from '../board/distances.js'
 import { ensurePlaceSeed } from '../board/placeSeed.js'
 import { importAirports } from '../import/importAirports.js'
 import { buildApp } from './app.js'
+import { AccessVerifier } from './cloudflareAccess.js'
 import { loadServerEnv } from './env.js'
 import { loadDotEnv } from '../loadDotEnv.js'
 
@@ -61,12 +62,18 @@ const board = new BoardService(db, distances, {
   filesDir: process.env['FILES_DIR'] ?? resolve(dirname(env.databasePath), 'pliki'),
 })
 
+// Cloudflare Access (tunnel): sign-in with Microsoft 365 / e-mail code instead of the board password.
+const access = env.access ? new AccessVerifier(env.access) : undefined
+if (access) console.log(`Cloudflare Access: on (${access.issuer})${env.publicHost ? ` · public host ${env.publicHost}` : ''}`)
+
 const app = buildApp({
   db,
   fetchService,
   board,
   geocoder: new HereGeocodingClient({ apiKey: env.hereApiKey }),
   secureCookies: env.cookieSecure,
+  ...(access ? { access } : {}),
+  publicHost: env.publicHost,
 })
 
 // Production mode: serve the built web UI (vite build → web/dist) from the

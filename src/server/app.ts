@@ -17,6 +17,8 @@ import { BoardService } from '../board/boardService.js'
 import { DistanceService } from '../board/distances.js'
 import { registerBoardRoutes } from '../board/routes.js'
 import type { HereGeocodingClient } from '../here/hereGeocodingClient.js'
+import type { AccessVerifier } from './cloudflareAccess.js'
+import { registerRequestGuards } from './requestGuards.js'
 
 /**
  * HTTP layer for the route lookup / HERE proxy flow (PRD §3.2, §4):
@@ -37,6 +39,10 @@ export interface AppDeps {
   geocoder?: Pick<HereGeocodingClient, 'geocode'>
   /** Mark the session cookie Secure — enable when served over HTTPS. */
   secureCookies?: boolean
+  /** Cloudflare Access sign-in (tunnel); absent = password login only. */
+  access?: AccessVerifier
+  /** Public hostname behind the tunnel; when set, requests for other hosts are refused. */
+  publicHost?: string | null
 }
 
 const ROUTE_CODE_PARAM_SCHEMA = {
@@ -121,8 +127,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     config: configRepo,
     calculations: calculationRepo,
   })
-  const authDeps = buildAuthDeps(deps.db)
+  const authDeps = buildAuthDeps(deps.db, deps.access)
   app.register(fastifyCookie)
+  registerRequestGuards(app, { publicHost: deps.publicHost ?? null })
   registerAuthHook(app, authDeps)
   registerAuthRoutes(app, authDeps, { secureCookies: deps.secureCookies === true })
 

@@ -15,6 +15,14 @@ import type {
   UserRole,
 } from './types.js'
 
+/** How the current user is signed in: Cloudflare Access (tunnel) or board password (localhost). */
+export type AuthVia = 'access' | 'session'
+
+export interface AuthSessionDto {
+  user: UserDto
+  via: AuthVia
+}
+
 /**
  * All backend calls go through this module. Every failure becomes an
  * ApiError with a stable code — components never see raw fetch errors.
@@ -41,6 +49,19 @@ export function setUnauthenticatedHandler(handler: (() => void) | null): void {
   onUnauthenticated = handler
 }
 
+/**
+ * Signed in through Cloudflare Access (tunnel). An expired Access login makes
+ * fetches fail like a lost connection (Cloudflare redirects to its sign-in page),
+ * so the network message then also says to reload.
+ */
+let accessMode = false
+export function setAccessMode(on: boolean): void {
+  accessMode = on
+}
+
+/** Cloudflare Access sign-out for this site (also ends the Microsoft 365 sign-in for the board). */
+export const ACCESS_LOGOUT_URL = '/cdn-cgi/access/logout'
+
 /** For API clients outside this module (e.g. the board) that got a 401 UNAUTHENTICATED. */
 export function reportUnauthenticated(): void {
   onUnauthenticated?.()
@@ -55,7 +76,12 @@ async function request<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', u
   try {
     response = await fetch(url, init)
   } catch {
-    throw new ApiError('NETWORK', 'Brak połączenia z serwerem. Sprawdź, czy backend działa.')
+    throw new ApiError(
+      'NETWORK',
+      accessMode
+        ? 'Brak połączenia z tablicą. Jeśli strona była długo otwarta, odśwież ją (F5) — logowanie mogło wygasnąć.'
+        : 'Brak połączenia z serwerem. Sprawdź, czy backend działa.',
+    )
   }
 
   if (!response.ok) {
@@ -87,12 +113,16 @@ export const api = {
     await request<{ ok: boolean }>('POST', '/api/auth/logout')
   },
 
-  /** Returns null when there is no valid session. */
-  async me(): Promise<UserDto | null> {
+  /**
+   * Returns null when there is no valid session. Throws ApiError NO_ACCOUNT /
+   * ACCESS_INVALID when Cloudflare Access signed someone in that the board cannot accept.
+   */
+  async me(): Promise<AuthSessionDto | null> {
     try {
-      return (await request<{ user: UserDto }>('GET', '/api/auth/me')).user
+      const session = await request<{ user: UserDto | null; via?: AuthVia | null }>('GET', '/api/auth/me')
+      return session.user ? { user: session.user, via: session.via ?? 'session' } : null
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) return null
+      if (error instanceof ApiError && error.status === 401 && error.code !== 'ACCESS_INVALID') return null
       throw error
     }
   },
