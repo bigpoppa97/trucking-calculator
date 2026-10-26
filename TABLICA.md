@@ -127,6 +127,8 @@ zmieniane; szukaj podobnych.
    Skopiuj **token** (długi ciąg po `service install`) — samego polecenia instalacji nie uruchamiaj (wymaga
    administratora Windows; tunel startuje u nas z `scripts\tunel.cmd`). Dodaj adres publiczny tunelu
    (Public hostname): subdomena `tablica`, Twoja domena, usługa **HTTP**, adres `127.0.0.1:3001` (nie `localhost`).
+   Dodatkowe ustawienia zostaw domyślne — zwłaszcza puste „HTTP Host Header” (inaczej zapisy na tablicy będą
+   odrzucane). Nie dodawaj do tego tunelu tras sieci prywatnej (Private Network / CIDR).
 4. **`.env` na komputerze biurowym** (ten sam plik co `HERE_API_KEY`) — dopisz:
    ```
    CF_ACCESS_TEAM_DOMAIN=zet.cloudflareaccess.com

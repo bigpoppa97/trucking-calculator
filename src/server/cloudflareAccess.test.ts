@@ -178,6 +178,7 @@ describe('request guards', () => {
     expect(isSameOrigin('http://localhost:5173', '127.0.0.1:3001')).toBe(true)
     expect(isSameOrigin('https://evil.com', '127.0.0.1:3001')).toBe(false)
     expect(isSameOrigin('http://localhost:5173', 'tablica.example.pl')).toBe(false)
+    expect(isSameOrigin('http://localhost:8080', '127.0.0.1:3001')).toBe(false)
   })
 })
 
@@ -307,6 +308,16 @@ describe('sign-in through Cloudflare Access', () => {
       { host: 'localhost:3001', 'cf-ray': '8a1b-WAW' },
       { host: '127.0.0.1:3001', 'x-forwarded-for': '203.0.113.7' },
     ]
+    // A LAN machine (HOST=0.0.0.0) sending Host: localhost without proxy headers
+    const lan = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      remoteAddress: '192.168.1.20',
+      headers: { host: 'localhost:3001' },
+      payload: credentials,
+    })
+    expect(lan.statusCode).toBe(401)
+    expect(lan.json()).toMatchObject({ error: { code: 'ACCESS_REQUIRED' } })
     for (const headers of viaTunnel) {
       const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers, payload: credentials })
       expect(login.statusCode).toBe(401)

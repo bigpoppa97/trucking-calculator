@@ -13,6 +13,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+const DEV_ORIGINS = new Set(['localhost:5173', '127.0.0.1:5173'])
 
 /** "Tablica.Example.pl:443" → "tablica.example.pl", "[::1]:3001" → "[::1]". */
 export function hostnameOf(hostHeader: string): string {
@@ -44,8 +45,9 @@ export function isSameOrigin(originHeader: string, hostHeader: string | undefine
     return false // "null" or garbage
   }
   if (originHost === hostHeader.trim().toLowerCase()) return true
-  // Dev proxy (Vite on :5173 → :3001): both ends on this machine, ports differ.
-  return LOOPBACK_HOSTS.has(hostnameOf(originHost)) && isLoopbackHost(hostHeader)
+  // Vite dev server (:5173) proxying to the backend on this machine. Only that port:
+  // cookies are shared across localhost ports, so other local pages must not write.
+  return DEV_ORIGINS.has(originHost) && isLoopbackHost(hostHeader)
 }
 
 export function registerRequestGuards(app: FastifyInstance, options: { publicHost: string | null }): void {

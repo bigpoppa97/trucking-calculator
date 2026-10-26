@@ -92,9 +92,14 @@ function viaProxy(request: FastifyRequest): boolean {
   return PROXY_HEADERS.some(name => request.headers[name] !== undefined)
 }
 
-/** Typed on this machine: loopback Host and nothing added by a proxy. */
+function fromLoopbackSocket(request: FastifyRequest): boolean {
+  const ip = request.socket.remoteAddress ?? ''
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
+}
+
+/** Typed on this machine: loopback connection, loopback Host and nothing added by a proxy. */
 function isLocalRequest(request: FastifyRequest): boolean {
-  return isLoopbackHost(request.headers.host) && !viaProxy(request)
+  return fromLoopbackSocket(request) && isLoopbackHost(request.headers.host) && !viaProxy(request)
 }
 
 /** Came through Cloudflare (tunnel or edge). */
@@ -104,9 +109,7 @@ function viaCloudflare(request: FastifyRequest): boolean {
 
 /** Reached over HTTPS through a proxy on this machine (cloudflared → 127.0.0.1). */
 function viaLocalHttpsProxy(request: FastifyRequest): boolean {
-  const ip = request.socket.remoteAddress ?? ''
-  const loopback = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
-  return loopback && request.headers['x-forwarded-proto'] === 'https'
+  return fromLoopbackSocket(request) && request.headers['x-forwarded-proto'] === 'https'
 }
 
 /** Routes that must work without a session. */
