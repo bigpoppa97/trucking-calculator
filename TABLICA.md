@@ -140,15 +140,19 @@ zmieniane; szukaj podobnych.
    Zamknij okno serwera i kliknij `scripts\aktualizuj.cmd`. Serwer otworzy drugie zminimalizowane okno
    „Tablica - tunel Cloudflare” (przy pierwszym razie pobierze `cloudflared` z GitHuba). Test: telefon na danych
    komórkowych → `https://tablica.<domena>` → kod z e-maila → tablica od razu, bez hasła.
-5. **Microsoft 365 (Entra ID)** — wymaga administratora M365 (zgoda administratora na uprawnienia):
-   - Entra admin center → App registrations → New registration: nazwa „Cloudflare Access”, Redirect URI typu **Web**:
-     `https://zet.cloudflareaccess.com/cdn-cgi/access/callback`;
-   - Certificates & secrets → New client secret → skopiuj **Value** od razu (widać ją raz); zapisz w kalendarzu datę
+5. **Microsoft 365 (Entra ID)** — aplikację rejestrujesz sam (domyślnie może każdy użytkownik), z minimalnymi
+   uprawnieniami; administrator M365 potrzebny tylko, gdy M365 poprosi o jego zgodę. Pełna procedura z gotowymi
+   wiadomościami do informatyka: dokument „Tablica z internetu — procedura Cloudflare + Microsoft 365” w projekcie.
+   - Entra admin center → App registrations → New registration: nazwa „Cloudflare Access - Tablica floty”, single tenant,
+     Redirect URI typu **Web**: `https://zet.cloudflareaccess.com/cdn-cgi/access/callback`;
+   - Certificates & secrets → New client secret (24 miesiące) → skopiuj **Value** od razu; zapisz w kalendarzu datę
      wygaśnięcia — po niej logowanie Microsoft przestaje działać, dopóki nie wpiszesz nowego sekretu;
-   - API permissions → Microsoft Graph → Delegated: `email`, `offline_access`, `openid`, `profile`, `User.Read`,
-     `Directory.Read.All`, `GroupMember.Read.All` → **Grant admin consent**;
-   - Cloudflare: Zero Trust → Integrations (Settings) → Identity providers → Add → **Azure AD**: Application (client) ID,
-     client secret, Directory (tenant) ID → Save → Test;
+   - API permissions → Microsoft Graph → Delegated: `openid`, `email`, `profile`, `offline_access` (+ domyślny `User.Read`).
+     Bez `Directory.Read.All` i `GroupMember.Read.All` — są potrzebne tylko do polityk na grupach; dodaj je (ze zgodą
+     administratora) dopiero, gdy test w Cloudflare zgłosi „Failed to fetch user/group information”;
+   - Cloudflare: Zero Trust → Integrations → Identity providers → Add → **Azure AD**: Application (client) ID,
+     client secret, Directory (tenant) ID, Support groups wyłączone → Save → **Test**. „Need admin approval” → administrator
+     otwiera `https://login.microsoftonline.com/<tenant ID>/adminconsent?client_id=<client ID>` i akceptuje;
    - w aplikacji Access (krok 2) zaznacz Azure AD, odznacz One-time PIN i włącz „Instant Auth” (działa tylko przy jednej
      metodzie logowania — wtedy strona od razu przechodzi do logowania Microsoft). Gdyby Microsoft kiedyś nie działał
      (np. wygasł sekret), włącz z powrotem One-time PIN.
