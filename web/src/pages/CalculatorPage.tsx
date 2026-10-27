@@ -15,6 +15,7 @@ import { RoutePanel, type RouteState } from '../components/RoutePanel.js'
 import { RoutePreview } from '../components/RoutePreview/RoutePreview.js'
 import { FillFromHerePanel } from '../components/FillFromHere.js'
 import { RecalcTollsPanel } from '../components/TollCheck.js'
+import { loadCalcSession, saveCalcForm, saveCalcRoute, type CalcSession } from '../lib/calcSession.js'
 
 /**
  * Calculator screen (PRD §5.3), mirroring the validated sheet layout:
@@ -24,6 +25,14 @@ import { RecalcTollsPanel } from '../components/TollCheck.js'
  * route state atomically. All derived values (km, tolls, breakdown) render
  * exclusively from that state, so a not-found or error result structurally
  * cannot leave old toll values on screen (the v1 stale-toll bug).
+ *
+ * KEPT FOR THE TAB (27.10.2026, lib/calcSession.ts): the last route and the
+ * order parameters survive switching screens and reloading, until the tab is
+ * closed or the next lookup replaces them. A database route is re-read from
+ * the database on return (same atomic lookup — no stale values); an unsaved
+ * HERE route is restored as fetched, without a second HERE request. Session
+ * writes happen in the actions themselves, so a lookup or HERE fetch that
+ * finishes after the screen was left is still remembered.
  */
 
 interface OrderFormState {
@@ -44,6 +53,16 @@ const INITIAL_FORM: OrderFormState = {
   revenue: '',
 }
 
+/** First render after a return: an unsaved HERE route at once, a database route via a lookup. */
+function restoredRouteState(route: CalcSession['route']): RouteState {
+  if (route === null) return { kind: 'idle' }
+  if (route.kind === 'fetched') return { kind: 'fetched', fetched: route.fetched, saved: false, saving: false }
+  return { kind: 'loading', routeCode: route.routeCode }
+}
+
+const restoredCode = (route: CalcSession['route']): string | undefined =>
+  route === null ? undefined : route.kind === 'fetched' ? route.fetched.routeCode : route.routeCode
+
 type StaticData =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
@@ -51,8 +70,10 @@ type StaticData =
 
 export function CalculatorPage() {
   const [staticData, setStaticData] = useState<StaticData>({ kind: 'loading' })
-  const [routeState, setRouteState] = useState<RouteState>({ kind: 'idle' })
-  const [form, setForm] = useState<OrderFormState>(INITIAL_FORM)
+  // Read once per mount — what this tab had on screen before.
+  const [session] = useState(loadCalcSession)
+  const [routeState, setRouteState] = useState<RouteState>(() => restoredRouteState(session.route))
+  const [form, setForm] = useState<OrderFormState>(() => ({ ...INITIAL_FORM, ...(session.form ?? {}) }))
   const [saveState, setSaveState] = useState<{ kind: 'idle' } | { kind: 'saving' } | { kind: 'saved' } | { kind: 'error'; message: string }>(
     { kind: 'idle' },
   )
@@ -63,7 +84,11 @@ export function CalculatorPage() {
       .then(([config, variants, airports]) => {
         if (cancelled) return
         setStaticData({ kind: 'ready', config, variants, airports })
-        setForm(f => ({ ...f, fleetVariantId: variants[0]?.id ?? null }))
+        // Keep a remembered variant while it still exists (and is active).
+        setForm(f => ({
+          ...f,
+          fleetVariantId: variants.some(v => v.id === f.fleetVariantId) ? f.fleetVariantId : (variants[0]?.id ?? null),
+        }))
       })
       .catch((error: unknown) => {
         if (cancelled) return
@@ -81,6 +106,18 @@ export function CalculatorPage() {
     setSaveState(s => (s.kind === 'saved' || s.kind === 'error' ? { kind: 'idle' } : s))
   }, [form])
 
+  // Parameters are remembered for the tab as they are typed.
+  useEffect(() => {
+    saveCalcForm(form)
+  }, [form])
+
+  // Back on the calculator with a remembered route: read it again from the database.
+  useEffect(() => {
+    const route = session.route
+    if (route !== null && route.kind !== 'fetched') void lookup(route.routeCode)
+    // Once per mount, with the session read at mount.
+  }, [])
+
   const lookup = async (rawCode: string) => {
     const routeCode = rawCode.trim().toUpperCase()
     // Atomic reset BEFORE repopulating — nothing derived survives a lookup.
@@ -88,8 +125,10 @@ export function CalculatorPage() {
     setSaveState({ kind: 'idle' })
     try {
       const route = await api.getRoute(routeCode)
+      saveCalcRoute(route === null ? { kind: 'notFound', routeCode } : { kind: 'db', routeCode: route.routeCode })
       setRouteState(route === null ? { kind: 'notFound', routeCode } : { kind: 'found', route })
     } catch (error) {
+      // The remembered route stays as it was — a passing error (server restart) must not wipe it.
       setRouteState({
         kind: 'error',
         message: error instanceof ApiError ? error.message : 'Nie udało się sprawdzić trasy. Spróbuj ponownie.',
@@ -103,6 +142,8 @@ export function CalculatorPage() {
     setRouteState({ kind: 'fetching', routeCode })
     try {
       const fetched = await api.fetchRouteFromHere(routeCode)
+      // Remembered whole — coming back must not cost a second HERE request.
+      saveCalcRoute({ kind: 'fetched', fetched })
       setRouteState({ kind: 'fetched', fetched, saved: false, saving: false })
     } catch (error) {
       setRouteState({
@@ -119,6 +160,7 @@ export function CalculatorPage() {
     setRouteState({ ...current, saving: true })
     try {
       await api.saveFetchedRoute(current.fetched)
+      saveCalcRoute({ kind: 'db', routeCode: current.fetched.routeCode })
       setRouteState({ ...current, saved: true, saving: false })
     } catch (error) {
       setRouteState({
@@ -282,6 +324,7 @@ export function CalculatorPage() {
     <div className="grid gap-4 md:grid-cols-2">
       <div className="space-y-4">
         <RoutePanel
+          initialCode={restoredCode(session.route)}
           routeState={routeState}
           airports={staticData.airports}
           onLookup={lookup}

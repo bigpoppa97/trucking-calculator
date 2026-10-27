@@ -15,6 +15,7 @@ import { TruckPage, parseTruckHash, truckHash, type TruckRoute } from './board/T
 import { DriverPage, driverHash, parseDriverHash } from './board/DriverPage.js'
 import { boardApi } from './board/boardApi.js'
 import { todayIso } from './board/format.js'
+import { loadScreen, saveScreen } from './lib/calcSession.js'
 
 type Screen = 'board' | 'review' | 'fleet' | 'calculator' | 'users'
 type CalcScreen = 'calculator' | 'routes' | 'config' | 'history'
@@ -70,14 +71,19 @@ const allowed = (role: UserRole) => (item: { roles?: UserRole[] }) => item.roles
 
 export function App() {
   const { user, logout, problem } = useAuth()
-  const [screen, setScreen] = useState<Screen>('board')
-  const [calcScreen, setCalcScreen] = useState<CalcScreen>('calculator')
+  // A reload returns to the screen that was open in this tab (unknown ids fall back below).
+  const [screen, setScreen] = useState<Screen>(() => loadScreen<Screen, CalcScreen>()?.screen ?? 'board')
+  const [calcScreen, setCalcScreen] = useState<CalcScreen>(() => loadScreen<Screen, CalcScreen>()?.calc ?? 'calculator')
   const [focus, setFocus] = useState<WeekFocus | null>(null)
   const [boardDate, setBoardDate] = useState<string>(todayIso())
   const [openIssues, setOpenIssues] = useState<number | null>(null)
   const [page, setPage] = useState<Page | null>(() => parsePage(window.location.hash))
   const [backLabel, setBackLabel] = useState<string | null>(backLabelOfHistory)
   const signedIn = user !== null && user !== undefined
+
+  useEffect(() => {
+    saveScreen(screen, calcScreen)
+  }, [screen, calcScreen])
 
   useEffect(() => {
     const sync = () => {

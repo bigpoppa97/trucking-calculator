@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { ACCESS_LOGOUT_URL, api, ApiError, setAccessMode, setUnauthenticatedHandler, type AuthVia } from './api.js'
 import type { UserDto } from './types.js'
+import { clearCalcSession } from './calcSession.js'
 
 /**
  * Reached from the internet, but the board cannot accept the login: no account for the
@@ -72,6 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Losing the server-side session call is not fatal — drop local state.
       if (!(error instanceof ApiError)) throw error
     }
+    clearCalcSession() // the next person at this browser starts with an empty calculator
     if (via === 'access') {
       // The next request would sign us straight back in — end the Cloudflare login instead.
       window.location.assign(ACCESS_LOGOUT_URL)

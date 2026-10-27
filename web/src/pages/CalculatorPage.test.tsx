@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { CalculatorConfig } from '@domain'
 import type { FetchedRouteDto, RouteDetailsDto } from '../lib/types.js'
@@ -348,5 +348,116 @@ describe('"Uzupełnij z HERE" for a stored route with gaps', () => {
     await lookupRoute(user, 'WAW-PRG')
     await screen.findByTestId('total-cost')
     expect(screen.queryByRole('button', { name: 'Uzupełnij z HERE' })).not.toBeInTheDocument()
+  })
+})
+
+describe('route kept for the tab (27.10.2026 — leaving the calculator must not lose it)', () => {
+  /** Leaving the calculator (Tablica, Baza tras…) unmounts it; coming back mounts it again. */
+  async function leaveAndReturn() {
+    cleanup()
+    render(<CalculatorPage />)
+    await waitFor(() => expect(screen.getByLabelText('Kod trasy')).toBeInTheDocument())
+  }
+
+  it('a database route and the order parameters come back — re-read from the database, no HERE call', async () => {
+    mocked.getRoute.mockResolvedValue(WAW_PRG)
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-PRG')
+    await screen.findByTestId('route-status')
+    const days = screen.getByLabelText('Dni (min 0,5)')
+    await user.clear(days)
+    await user.type(days, '2')
+    await user.selectOptions(screen.getByLabelText('Wariant taboru'), '2')
+
+    await leaveAndReturn()
+
+    expect(await screen.findByTestId('route-status')).toHaveTextContent('z bazy tras')
+    expect(screen.getByTestId('route-total-km')).toHaveTextContent('680 km')
+    expect(screen.getByLabelText('Kod trasy')).toHaveValue('WAW-PRG')
+    expect(screen.getByLabelText('Dni (min 0,5)')).toHaveValue('2')
+    expect(screen.getByLabelText('Wariant taboru')).toHaveValue('2')
+    expect(mocked.getRoute).toHaveBeenLastCalledWith('WAW-PRG')
+    expect(mocked.getRoute).toHaveBeenCalledTimes(2)
+    expect(mocked.fetchRouteFromHere).not.toHaveBeenCalled()
+  })
+
+  it('an unsaved HERE route comes back as it was, without a second HERE request', async () => {
+    mocked.getRoute.mockResolvedValue(null)
+    mocked.fetchRouteFromHere.mockResolvedValue(FETCHED_WAW_OSL)
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-OSL')
+    await user.click(await screen.findByRole('button', { name: 'Zapytaj HERE API' }))
+    await screen.findByRole('button', { name: 'Zapisz do bazy tras' })
+
+    await leaveAndReturn()
+
+    expect(screen.getByTestId('route-status')).toHaveTextContent('opłaty niezweryfikowane')
+    expect(screen.getByTestId('route-total-km')).toHaveTextContent('1250 km')
+    expect(screen.getByRole('button', { name: 'Zapisz do bazy tras' })).toBeInTheDocument()
+    expect(mocked.fetchRouteFromHere).toHaveBeenCalledTimes(1)
+  })
+
+  it('once saved, the HERE route comes back from the database', async () => {
+    mocked.getRoute.mockResolvedValueOnce(null)
+    mocked.fetchRouteFromHere.mockResolvedValue(FETCHED_WAW_OSL)
+    mocked.saveFetchedRoute.mockResolvedValue(WAW_PRG)
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-OSL')
+    await user.click(await screen.findByRole('button', { name: 'Zapytaj HERE API' }))
+    await user.click(await screen.findByRole('button', { name: 'Zapisz do bazy tras' }))
+    await screen.findByText('Zapisano w bazie tras.')
+
+    mocked.getRoute.mockResolvedValue({ ...WAW_PRG, routeCode: 'WAW-OSL' })
+    await leaveAndReturn()
+
+    expect(await screen.findByTestId('route-status')).toHaveTextContent('z bazy tras')
+    expect(mocked.getRoute).toHaveBeenLastCalledWith('WAW-OSL')
+  })
+
+  it('a HERE fetch that finishes after the calculator was left is still remembered', async () => {
+    mocked.getRoute.mockResolvedValue(null)
+    let finish: (route: FetchedRouteDto) => void = () => {}
+    mocked.fetchRouteFromHere.mockImplementation(() => new Promise(resolve => (finish = resolve)))
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-OSL')
+    await user.click(await screen.findByRole('button', { name: 'Zapytaj HERE API' }))
+
+    cleanup() // user switches to Tablica while HERE is still answering
+    finish(FETCHED_WAW_OSL)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    render(<CalculatorPage />)
+
+    expect(await screen.findByTestId('route-total-km')).toHaveTextContent('1250 km')
+    expect(mocked.fetchRouteFromHere).toHaveBeenCalledTimes(1)
+  })
+
+  it('the next lookup replaces the remembered route', async () => {
+    mocked.getRoute.mockResolvedValueOnce(WAW_PRG).mockResolvedValue(null)
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-PRG')
+    await screen.findByTestId('route-total-km')
+    await lookupRoute(user, 'WAW-XYZ')
+    await screen.findByRole('button', { name: 'Zapytaj HERE API' })
+
+    await leaveAndReturn()
+
+    expect(await screen.findByRole('button', { name: 'Zapytaj HERE API' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Kod trasy')).toHaveValue('WAW-XYZ')
+    expect(screen.queryByTestId('route-total-km')).not.toBeInTheDocument()
+  })
+
+  it('a passing error while coming back does not wipe the remembered route', async () => {
+    mocked.getRoute.mockResolvedValueOnce(WAW_PRG)
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-PRG')
+    await screen.findByTestId('route-total-km')
+
+    mocked.getRoute.mockRejectedValueOnce(new Error('server restarting'))
+    await leaveAndReturn()
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+
+    mocked.getRoute.mockResolvedValue(WAW_PRG)
+    await leaveAndReturn()
+    expect(await screen.findByTestId('route-total-km')).toHaveTextContent('680 km')
   })
 })

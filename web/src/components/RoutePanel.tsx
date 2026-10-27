@@ -21,6 +21,8 @@ export type RouteState =
   | { kind: 'error'; message: string }
 
 export interface RoutePanelProps {
+  /** Route code to show in the field when the calculator restores a remembered route. */
+  initialCode?: string | undefined
   routeState: RouteState
   airports: AirportDto[]
   onLookup: (routeCode: string) => void
@@ -43,8 +45,8 @@ export function routeStatusOf(state: RouteState): RouteStatus | null {
   }
 }
 
-export function RoutePanel({ routeState, airports, onLookup, onConfirmHereFetch, onSaveFetched }: RoutePanelProps) {
-  const [input, setInput] = useState('')
+export function RoutePanel({ initialCode, routeState, airports, onLookup, onConfirmHereFetch, onSaveFetched }: RoutePanelProps) {
+  const [input, setInput] = useState(initialCode ?? '')
   const status = routeStatusOf(routeState)
 
   const lastSegment = input.split('-').pop() ?? ''
