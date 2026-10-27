@@ -5,7 +5,7 @@ import { DistanceService, type DistanceResult } from './distances.js'
 import { parsePrz, resolveSwapDate, type PrzEntry } from './prz.js'
 import { parseFerries } from './ferry.js'
 import { parseNumberInput } from './amount.js'
-import { normalizePlate, splitPlaces } from './normalize.js'
+import { aliasKey, normalizePlate, splitPlaces } from './normalize.js'
 import { parseAtValue } from './times.js'
 
 /**
@@ -262,6 +262,14 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
       raw: entry.raw,
     }
     const swapStop: Stop = { raw: entry.place, code: placeCode }
+    // Multi-drop / multi-pick (27.10.2026, 79-1523-26: WAW → BER + FRA + STR + MUC, PRZ at FRA):
+    // when the swap place is one of the order's own stops, the route is split right there —
+    // the first truck drives every stop up to it, the second one the rest. Otherwise the swap
+    // place sits between the last loading and the first unloading, as before.
+    const route = [...loadStops, ...unloadStops]
+    const at = swapIndex(route, swapStop)
+    const stopsA = at > 0 && at < route.length - 1 ? route.slice(0, at + 1) : [...loadStops, swapStop]
+    const stopsB = at > 0 && at < route.length - 1 ? route.slice(at) : [swapStop, ...unloadStops]
     const startA = loadDate
     const endA = swapDate < startA ? startA : swapDate
     const startB = endA
@@ -278,7 +286,7 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
       endDate: endA,
       startTime: loadTime,
       endTime: null,
-      stops: [...loadStops, swapStop],
+      stops: stopsA,
       amount: entry.amountFrom,
       przRole: 'from',
     })
@@ -292,7 +300,7 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
       endDate: endB,
       startTime: null,
       endTime: endB === unloadDate ? unloadTime : null,
-      stops: [swapStop, ...unloadStops],
+      stops: stopsB,
       amount: entry.amountTo,
       przRole: 'to',
     })
@@ -372,6 +380,14 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     hasFleetLeg: legs.some(l => l.kind === 'fleet'),
     fleetByExport: !isDraft && ctx.fleet.truckFor(row.sub_plate, loadDate) !== null,
   }
+}
+
+/** First stop after the start that is the swap place (by place code, else by the folded name); -1 = none. */
+function swapIndex(route: Stop[], swap: Stop): number {
+  const key = (stop: Stop) => stop.code ?? aliasKey(stop.raw)
+  const target = key(swap)
+  if (!target) return -1
+  return route.findIndex((stop, i) => i > 0 && key(stop) === target)
 }
 
 function round2(n: number): number {

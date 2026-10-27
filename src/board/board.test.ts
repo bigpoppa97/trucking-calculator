@@ -1580,3 +1580,38 @@ describe('27.10.2026 — "Popraw na …" fixes a mistyped plate in one click', (
     expect(stored?.value).toBe('LH6428A-2026-09-21 PRZ WAW 22.09 AA1001A>BB2001B 1000/900 PROM 120')
   })
 })
+
+describe('27.10.2026 — relay on a multi-drop order splits the route at the swap stop', () => {
+  it('WAW → BER + FRA + STR + MUC, PRZ at FRA: the first truck drives via Berlin to Frankfurt, the second Frankfurt → Stuttgart → Munich', async () => {
+    await board.importFile(
+      await xlsx([
+        {
+          no: '79-1523-26', from: 'WARSZAWA', ld: '2026-09-21', to: 'Schönefeld + Frankfurt am Main + Stuttgart + Munich Airport', ud: '2026-09-24',
+          rev: 3000, cost: 1773, sub: 'AA1001A', trailer: 'TR100', notes: 'PRZ FRA 23.09 AA1001A>BB2001B 1800/800',
+        },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const d = await board.orderDetails('79-1523-26')
+    expect(d.legs.map(l => [l.plate, l.stops])).toEqual([
+      ['AA1001A', ['Warszawa', 'Berlin', 'Frankfurt']],
+      ['BB2001B', ['Frankfurt', 'Stuttgart', 'Munich Airport']],
+    ])
+  })
+
+  it('a swap place that is not one of the stops still sits between loading and unloading', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-146-26', from: 'Wien', ld: '2026-09-21', to: 'Wilno', ud: '2026-09-22', rev: 3620, cost: 2300, sub: 'AA1001A', trailer: 'TR100', notes: 'PRZ WAW 22.09 AA1001A>AA1002A 1400/900' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const d = await board.orderDetails('79-146-26')
+    expect(d.legs.map(l => l.stops)).toEqual([
+      ['Wiedeń', 'Warszawa'],
+      ['Warszawa', 'Wilno'],
+    ])
+  })
+})
