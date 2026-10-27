@@ -56,6 +56,61 @@ export interface RouteDetailsDto {
   tollsPendingCountries: string[]
   /** Null for v1-imported routes — map shows the straight-line fallback. */
   polylineSections: PolylineSectionDto[] | null
+  /** Last HERE toll check (per-toll details + warnings); null/absent = never checked. */
+  tollCheck?: TollCheckDto | null
+}
+
+/** One HERE toll (fare) as counted in the estimate (src/here/tollChecks.ts). */
+export interface TollItemDto {
+  country: string
+  tollSystem: string
+  gates: string[]
+  gateCoords: string[]
+  hereEur: number
+  finalEur: number
+  originalPrice: number | null
+  originalCurrency: string | null
+  ruleId: number | null
+  ruleSignature: string | null
+  ruleApplied: boolean
+}
+
+export interface TollCheckDto {
+  checkedAt: string
+  items: TollItemDto[]
+  warnings: string[]
+}
+
+export interface TollRecalcChangeDto {
+  country: string
+  beforeEur: number | null
+  hereEur: number | null
+  outcome: 'updated' | 'unchanged' | 'added' | 'kept-verified' | 'no-here-value' | 'pending'
+}
+
+/** Result of "Przelicz opłaty z HERE" on a stored route. */
+export interface TollRecalcResultDto {
+  route: RouteDetailsDto
+  summary: {
+    changes: TollRecalcChangeDto[]
+    hereTotalKm: number
+    warnings: string[]
+    tollCheck: TollCheckDto
+  }
+}
+
+export interface TollRecalcCandidateDto {
+  routeCode: string
+  reason: 'never-checked' | 'rules-changed' | 'up-to-date'
+  tollWarnings: number
+}
+
+/** A toll system HERE returned on stored routes (rule form suggestions). */
+export interface SeenTollSystemDto {
+  country: string
+  tollSystem: string
+  gates: string[]
+  routes: number
 }
 
 /** Result of "Uzupełnij z HERE" on an existing route (add-only gap fill). */
@@ -81,6 +136,8 @@ export interface RouteSummaryDto {
   createdAt: string
   tollsPending: boolean
   hasEstimates: boolean
+  /** Warnings of the last HERE toll check. */
+  tollWarnings?: number
 }
 
 export interface VehicleProfileDto {
@@ -99,6 +156,7 @@ export interface FetchedRouteDto {
   vehicleProfile: VehicleProfileDto
   fetchedAt: string
   warnings: string[]
+  tollCheck?: TollCheckDto
 }
 
 import type { CostBreakdown, DriverCount } from '@domain'
@@ -150,11 +208,15 @@ export type TollRuleType = 'replace_per_gate' | 'scale'
 export interface TollSystemRuleDto {
   id: number
   tollSystem: string
+  /** '' = the whole system; otherwise a gate-name fragment (e.g. 'Świecko'). */
+  gateFilter?: string
   ruleType: TollRuleType
   value: number
   note: string | null
   updatedBy: string | null
   updatedAt: string | null
+  /** Last time a HERE fetch applied the rule; null = never. */
+  lastMatchedAt?: string | null
 }
 
 export interface UserDto {

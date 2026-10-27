@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.js'
 import type { RouteDetailsDto, RouteSummaryDto, RouteWaypointDto } from '../lib/types.js'
 import { formatEur, formatKm } from '../lib/format.js'
 import { FillFromHerePanel } from '../components/FillFromHere.js'
+import { RecalcTollsPanel, TollCheckWarnings } from '../components/TollCheck.js'
 
 /**
  * Route database screen (PRD §5.3): all routes, "tolls pending verification"
@@ -63,7 +64,9 @@ export function RouteDbPage() {
     )
   }
 
-  const visible = pendingOnly ? list.routes.filter(r => r.tollsPending || r.hasEstimates) : list.routes
+  const visible = pendingOnly
+    ? list.routes.filter(r => r.tollsPending || r.hasEstimates || (r.tollWarnings ?? 0) > 0)
+    : list.routes
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-4">
@@ -123,6 +126,14 @@ export function RouteDbPage() {
                       {route.tollsPending && (
                         <span className="rounded-full bg-orange-100 px-2 py-0.5 text-xs text-orange-800">
                           brakujące opłaty
+                        </span>
+                      )}
+                      {(route.tollWarnings ?? 0) > 0 && (
+                        <span
+                          className="rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800"
+                          title="Ostrzeżenia z ostatniego sprawdzenia opłat — szczegóły po otwarciu trasy"
+                        >
+                          ⚠ {route.tollWarnings} {route.tollWarnings === 1 ? 'uwaga do opłat' : 'uwagi do opłat'}
                         </span>
                       )}
                       {!route.hasEstimates && !route.tollsPending && (
@@ -392,7 +403,11 @@ function RouteDetailPanel({
         </tbody>
       </table>
 
+      <TollCheckWarnings warnings={route.tollCheck?.warnings ?? []} className="mb-3" />
+
       <FillFromHerePanel route={route} onFilled={onUpdated} className="mb-4" />
+
+      <RecalcTollsPanel key={`recalc-${route.routeCode}`} route={route} onRecalculated={onUpdated} className="mb-4" />
 
       {/* Re-mount on km changes (e.g. after a HERE fill) so the form never submits a stale country split. */}
       <KmOverrideForm

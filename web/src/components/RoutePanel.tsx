@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { AirportDto, FetchedRouteDto, RouteDetailsDto } from '../lib/types.js'
 import { formatEur, formatKm } from '../lib/format.js'
 import { RouteStatusBadge, type RouteStatus } from './RouteStatusBadge.js'
+import { TollCheckDetails, TollCheckWarnings } from './TollCheck.js'
 
 /**
  * Route lookup panel (PRD §3.2): table-first, explicit confirmation before
@@ -141,11 +142,19 @@ export function RoutePanel({ routeState, airports, onLookup, onConfirmHereFetch,
 
         {routeState.kind === 'fetching' && <p className="text-sm text-slate-500">Pobieram trasę z HERE…</p>}
 
-        {routeState.kind === 'found' && <RouteDataTable data={toDisplay(routeState.route)} />}
+        {routeState.kind === 'found' && (
+          <div className="space-y-2">
+            <RouteDataTable data={toDisplay(routeState.route)} />
+            {/* Warnings of the last HERE toll check — details and "Przelicz" under the map. */}
+            <TollCheckWarnings warnings={routeState.route.tollCheck?.warnings ?? []} />
+          </div>
+        )}
 
         {routeState.kind === 'fetched' && (
           <div className="space-y-3">
             <RouteDataTable data={toDisplayFetched(routeState.fetched)} />
+            <TollCheckWarnings warnings={routeState.fetched.tollCheck?.warnings ?? []} />
+            {routeState.fetched.tollCheck !== undefined && <TollCheckDetails check={routeState.fetched.tollCheck} />}
             {routeState.fetched.warnings.length > 0 && (
               <ul className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 {routeState.fetched.warnings.map(w => (

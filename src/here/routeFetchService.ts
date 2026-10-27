@@ -6,6 +6,13 @@ import type { TollSystemRule, TollSystemRuleRepository } from '../repositories/t
 import { ROUTE_CODE_REGEX } from '../repositories/routeRepository.js'
 import type { HerePlace, HereRoutingClient, TollVehicleProfile } from './hereRoutingClient.js'
 import { parseHereRoute, type ParsedHereRoute, type RoutePolylineSection } from './routeParser.js'
+import {
+  computeTollRateBaseline,
+  isTollCheckStale,
+  rateWarnings,
+  unmatchedSystemWarnings,
+  type TollCheck,
+} from './tollChecks.js'
 
 /**
  * Fetch-and-save flow for routes not in the database (PRD §3.2 steps 2–3).
@@ -40,6 +47,44 @@ export interface FetchedRoute {
   vehicleProfile: TollVehicleProfile
   fetchedAt: string
   warnings: string[]
+  /** Per-toll details + check warnings (unmatched systems, €/km band). */
+  tollCheck?: TollCheck
+}
+
+/** One country's toll before/after a "Przelicz opłaty z HERE". */
+export interface TollRecalcChange {
+  country: string
+  /** Stored value before the recalculation (null = none). */
+  beforeEur: number | null
+  /** HERE estimate after correction rules (null = HERE gave none). */
+  hereEur: number | null
+  /**
+   * updated   — estimate replaced by the new HERE value
+   * unchanged — estimate equal to the new HERE value
+   * added     — country had no toll value, now a HERE estimate
+   * kept-verified — verified (invoice) value, never overwritten
+   * no-here-value — HERE returned no toll; the stored estimate stays
+   * pending   — no value before, none from HERE
+   */
+  outcome: 'updated' | 'unchanged' | 'added' | 'kept-verified' | 'no-here-value' | 'pending'
+}
+
+export interface TollRecalcResult {
+  route: RouteDetails
+  summary: {
+    changes: TollRecalcChange[]
+    hereTotalKm: number
+    warnings: string[]
+    tollCheck: TollCheck
+  }
+}
+
+export type TollRecalcReason = 'never-checked' | 'rules-changed' | 'up-to-date'
+
+export interface TollRecalcCandidate {
+  routeCode: string
+  reason: TollRecalcReason
+  tollWarnings: number
 }
 
 /** What a gap fill changed (and deliberately did not) on an existing route. */
@@ -108,7 +153,7 @@ export interface RouteFetchServiceDeps {
   routes: RouteRepository
   config: ConfigRepository
   /** Optional: toll-system correction rules applied at parse time. */
-  tollRules?: Pick<TollSystemRuleRepository, 'listAll'>
+  tollRules?: Pick<TollSystemRuleRepository, 'listAll'> & Partial<Pick<TollSystemRuleRepository, 'markMatched'>>
   /** Optional: company-preferred via waypoints per route code (PRD §3.3). */
   waypoints?: Pick<RouteWaypointRepository, 'listByRoute'>
   now?: () => string
@@ -165,7 +210,12 @@ export class RouteFetchService {
         via,
         profile,
       })
-      return { parsed: parseHereRoute(response, rules), profile, waypointNames }
+      const parsed = parseHereRoute(response, rules)
+      if (parsed.matchedRuleIds.length > 0) {
+        // Diagnostics only — a failed stamp must never fail the fetch.
+        await this.deps.tollRules?.markMatched?.(parsed.matchedRuleIds, this.now()).catch(() => undefined)
+      }
+      return { parsed, profile, waypointNames }
     } catch {
       // Detail stays server-side; the client gets a graceful, static message.
       throw new RouteFetchError(
@@ -177,6 +227,29 @@ export class RouteFetchService {
 
   private now(): string {
     return (this.deps.now ?? (() => new Date().toISOString()))()
+  }
+
+  /**
+   * Toll checks for one HERE result: non-e-TOLL systems without a rule and
+   * the €/km band against the company's other stored routes.
+   */
+  private async buildTollCheck(
+    parsed: ParsedHereRoute,
+    countryKm: Record<string, number>,
+    excludeRouteId?: number,
+  ): Promise<TollCheck> {
+    // HERE's own (rule-corrected) values only — the Baltic €0 period-pass
+    // defaults are deliberate and must not read as "podejrzanie niska".
+    const tollEstimates = parsed.tollEstimates
+    const baseline = computeTollRateBaseline(await this.deps.routes.tollRateSamples(excludeRouteId))
+    return {
+      checkedAt: this.now(),
+      items: parsed.tollItems,
+      warnings: [
+        ...unmatchedSystemWarnings(parsed.tollItems),
+        ...rateWarnings(countryKm, tollEstimates, parsed.tollItems, baseline),
+      ],
+    }
   }
 
   /** Call HERE for a route that is not in the database. Does NOT save. */
@@ -205,6 +278,7 @@ export class RouteFetchService {
     }
     const { tollEstimates, defaulted } = withBalticDefaults(parsed.countryKm, parsed.tollEstimates)
     warnings.push(...defaulted.map(balticWarning))
+    const tollCheck = await this.buildTollCheck(parsed, parsed.countryKm)
 
     return {
       routeCode: code,
@@ -216,6 +290,7 @@ export class RouteFetchService {
       vehicleProfile: profile,
       fetchedAt: this.now(),
       warnings,
+      tollCheck,
     }
   }
 
@@ -269,6 +344,8 @@ export class RouteFetchService {
     )
     const plan = planGapFill(route, parsed.countryKm, tollEstimates)
     warnings.push(...defaulted.filter(c => plan.addedTolls[c] !== undefined).map(balticWarning))
+    const check = await this.buildTollCheck(parsed, { ...parsed.countryKm, ...route.countryKm }, route.id)
+    warnings.push(...check.warnings)
 
     const fetchedAt = this.now()
     const addedKmEntries = Object.entries(plan.addedCountryKm)
@@ -327,6 +404,7 @@ export class RouteFetchService {
       createdBy: actor,
       countryKm: fetched.countryKm,
       polylineSections: fetched.sections,
+      ...(fetched.tollCheck !== undefined ? { tollCheck: fetched.tollCheck } : {}),
       tolls: Object.entries(fetched.tollEstimates).map(([country, tollEur]) => ({
         country,
         tollEur,
@@ -335,5 +413,82 @@ export class RouteFetchService {
         vehicleProfile: fetched.vehicleProfile,
       })),
     })
+  }
+
+  /**
+   * "Przelicz opłaty z HERE" for a STORED route (1 HERE request) with the
+   * current correction rules. Every estimate is replaced by the new HERE
+   * value and countries without a toll get one; verified (invoice) values,
+   * stored km and the binding total stay as they are. Stores the shape and
+   * the toll check, so a later rule change can tell this route is affected.
+   */
+  async recalculateTolls(routeCode: string): Promise<TollRecalcResult> {
+    const code = routeCode.trim().toUpperCase()
+    const route = await this.deps.routes.findByCode(code)
+    if (!route) {
+      throw new RouteFetchError('ROUTE_NOT_FOUND', `Route ${code} is not in the database.`)
+    }
+
+    const rules = (await this.deps.tollRules?.listAll()) ?? []
+    const { parsed, profile, waypointNames } = await this.queryHere(code, route.stops, rules)
+    const warnings = [...parsed.warnings]
+    if (waypointNames.length > 0) {
+      warnings.push(`Preferred waypoints applied: ${waypointNames.join(', ')}.`)
+    }
+    const countryKm = { ...parsed.countryKm, ...route.countryKm }
+    const { tollEstimates, defaulted } = withBalticDefaults(countryKm, parsed.tollEstimates)
+    warnings.push(...defaulted.map(balticWarning))
+    const tollCheck = await this.buildTollCheck(parsed, countryKm, route.id)
+
+    const fetchedAt = this.now()
+    const written = new Set(
+      await this.deps.routes.applyTollRecalc(route.id, {
+        estimates: Object.entries(tollEstimates).map(([country, tollEur]) => ({
+          country,
+          tollEur,
+          fetchedAt,
+          vehicleProfile: profile,
+        })),
+        polylineSections: parsed.sections,
+        tollCheck,
+      }),
+    )
+
+    const before = new Map(route.tolls.map(t => [t.country, t]))
+    const countries = [...new Set([...before.keys(), ...Object.keys(tollEstimates), ...Object.keys(route.countryKm)])].sort()
+    const changes: TollRecalcChange[] = countries.map(country => {
+      const old = before.get(country)
+      const here = tollEstimates[country] ?? null
+      const beforeEur = old?.tollEur ?? null
+      let outcome: TollRecalcChange['outcome']
+      if (old?.status === 'verified') outcome = 'kept-verified'
+      else if (written.has(country)) outcome = old === undefined ? 'added' : old.tollEur === here ? 'unchanged' : 'updated'
+      else outcome = old === undefined ? 'pending' : 'no-here-value'
+      return { country, beforeEur, hereEur: here, outcome }
+    })
+
+    const updated = await this.deps.routes.findByCode(code)
+    if (!updated) throw new RouteFetchError('ROUTE_NOT_FOUND', `Route ${code} disappeared during the toll recalculation.`)
+    return { route: updated, summary: { changes, hereTotalKm: parsed.totalKm, warnings, tollCheck } }
+  }
+
+  /**
+   * Stored routes whose HERE toll estimates may be out of date — the list
+   * for the bulk recalculation after a rule change. No HERE call. Routes
+   * whose every toll is verified (and none pending) are left out: a
+   * recalculation would change nothing.
+   */
+  async listTollRecalcCandidates(): Promise<TollRecalcCandidate[]> {
+    const rules = (await this.deps.tollRules?.listAll()) ?? []
+    const candidates: TollRecalcCandidate[] = []
+    for (const summary of await this.deps.routes.listAll()) {
+      if (!summary.hasEstimates && !summary.tollsPending) continue
+      const route = await this.deps.routes.findById(summary.id)
+      if (!route) continue
+      const reason: TollRecalcReason =
+        route.tollCheck === null ? 'never-checked' : isTollCheckStale(route.tollCheck, rules) ? 'rules-changed' : 'up-to-date'
+      candidates.push({ routeCode: route.routeCode, reason, tollWarnings: route.tollCheck?.warnings.length ?? 0 })
+    }
+    return candidates
   }
 }

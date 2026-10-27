@@ -14,6 +14,7 @@ import { CostBreakdownPanel } from '../components/CostBreakdownPanel.js'
 import { RoutePanel, type RouteState } from '../components/RoutePanel.js'
 import { RoutePreview } from '../components/RoutePreview/RoutePreview.js'
 import { FillFromHerePanel } from '../components/FillFromHere.js'
+import { RecalcTollsPanel } from '../components/TollCheck.js'
 
 /**
  * Calculator screen (PRD §5.3), mirroring the validated sheet layout:
@@ -413,13 +414,20 @@ export function CalculatorPage() {
         }
         tollFooter={
           routeState.kind === 'found' ? (
-            <FillFromHerePanel
-              key={routeState.route.routeCode}
-              route={routeState.route}
-              // Same atomic replacement as a lookup — every derived value
-              // (km, tolls, breakdown, map) re-renders from the filled route.
-              onFilled={route => setRouteState({ kind: 'found', route })}
-            />
+            <>
+              <FillFromHerePanel
+                key={routeState.route.routeCode}
+                route={routeState.route}
+                // Same atomic replacement as a lookup — every derived value
+                // (km, tolls, breakdown, map) re-renders from the filled route.
+                onFilled={route => setRouteState({ kind: 'found', route })}
+              />
+              <RecalcTollsPanel
+                key={`recalc-${routeState.route.routeCode}`}
+                route={routeState.route}
+                onRecalculated={route => setRouteState({ kind: 'found', route })}
+              />
+            </>
           ) : undefined
         }
       />

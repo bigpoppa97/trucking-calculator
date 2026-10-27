@@ -1,8 +1,9 @@
 import { alpha3ToAlpha2 } from './countryCodes.js'
 import { splitKmByCountry } from './polylineCountrySplit.js'
 import { roundEur } from '../domain/money.js'
-import type { HereRouteResponse } from './hereRoutingClient.js'
-import type { TollSystemRule } from '../repositories/tollSystemRuleRepository.js'
+import type { HereRouteResponse, HereTollCost } from './hereRoutingClient.js'
+import { findTollRule, tollRuleLabel, tollRuleSignature, type TollRuleLike } from './tollRules.js'
+import type { TollItem } from './tollChecks.js'
 
 /**
  * Turns a raw HERE v8 response into the app's route shape (PRD §4.2):
@@ -13,8 +14,12 @@ import type { TollSystemRule } from '../repositories/tollSystemRuleRepository.js
  * - toll fares are deduplicated by fare id across sections (the same fare
  *   can apply to several sections and must be counted once)
  * - toll-system correction rules fix fares HERE prices at the wrong tariff
- *   (e.g. private A2 gates billed at the oversized category); corrected
+ *   (e.g. private A2 gates billed at the oversized category); a rule may be
+ *   limited to gates whose name contains a fragment (tollRules.ts); corrected
  *   values remain estimates
+ * - every counted toll is returned as a TollItem (system, gates, HERE vs
+ *   corrected EUR, matched rule) for the toll checks and the "Szczegóły
+ *   opłat" table
  */
 
 export interface RoutePolylineSection {
@@ -30,6 +35,10 @@ export interface ParsedHereRoute {
   countryKm: Record<string, number>
   /** EUR toll estimate per alpha-2 country. */
   tollEstimates: Record<string, number>
+  /** One entry per counted toll (fare), in route order. */
+  tollItems: TollItem[]
+  /** Ids of the correction rules that matched at least one toll. */
+  matchedRuleIds: number[]
   /** One entry per HERE section, for the map preview. */
   sections: RoutePolylineSection[]
   warnings: string[]
@@ -37,9 +46,24 @@ export interface ParsedHereRoute {
 
 const roundKm = (km: number): number => Math.round(km * 10) / 10
 
-export function parseHereRoute(response: HereRouteResponse, tollRules: TollSystemRule[] = []): ParsedHereRoute {
+/** Gate / fare names HERE gives for one toll, de-duplicated, in order. */
+function gateLabelsOf(toll: HereTollCost, fareName: string | undefined): string[] {
+  const labels = [
+    ...(toll.tollCollectionLocations ?? []).map(l => l.name?.trim() ?? ''),
+    fareName?.trim() ?? '',
+  ].filter(label => label !== '')
+  return [...new Set(labels)]
+}
+
+function gateCoordsOf(toll: HereTollCost): string[] {
+  return (toll.tollCollectionLocations ?? [])
+    .map(l => l.location)
+    .filter((loc): loc is { lat: number; lng: number } => typeof loc?.lat === 'number' && typeof loc?.lng === 'number')
+    .map(loc => `${loc.lat.toFixed(3)},${loc.lng.toFixed(3)}`)
+}
+
+export function parseHereRoute(response: HereRouteResponse, tollRules: readonly TollRuleLike[] = []): ParsedHereRoute {
   const warnings: string[] = []
-  const ruleBySystem = new Map(tollRules.map(rule => [rule.tollSystem.trim().toUpperCase(), rule]))
   const route = response.routes[0]
   if (!route || route.sections.length === 0) {
     throw new Error('HERE response contains no route sections.')
@@ -53,7 +77,9 @@ export function parseHereRoute(response: HereRouteResponse, tollRules: TollSyste
   const tollByAlpha3: Record<string, number> = {}
   const seenFareIds = new Set<string>()
   const sections: RoutePolylineSection[] = []
-  // Rule corrections are aggregated into ONE warning per toll system —
+  const tollItems: TollItem[] = []
+  const matchedRuleIds = new Set<number>()
+  // Rule corrections are aggregated into ONE warning per rule —
   // HU-GO style systems return 40+ tiny per-segment fares.
   const ruleTotals = new Map<string, { count: number; fromEur: number; toEur: number }>()
 
@@ -105,30 +131,49 @@ export function parseHereRoute(response: HereRouteResponse, tollRules: TollSyste
         continue
       }
 
-      let eur = price.value
-      const rule = toll.tollSystem ? ruleBySystem.get(toll.tollSystem.trim().toUpperCase()) : undefined
+      const hereEur = price.value
+      let eur = hereEur
+      const gates = gateLabelsOf(toll, fare.name)
+      const rule = findTollRule(tollRules, toll.tollSystem, gates)
+      let ruleApplied = false
       if (rule) {
+        matchedRuleIds.add(rule.id)
         const corrected = applyTollRule(rule, fare, eur)
         if (corrected === null) {
           warnings.push(
-            `Toll rule for '${rule.tollSystem}' could not be applied (no original-currency price on the fare) — HERE value kept.`,
+            `Toll rule for '${tollRuleLabel(rule)}' could not be applied (no original-currency price on the fare) — HERE value kept.`,
           )
         } else {
-          const totals = ruleTotals.get(rule.tollSystem) ?? { count: 0, fromEur: 0, toEur: 0 }
+          const label = tollRuleLabel(rule)
+          const totals = ruleTotals.get(label) ?? { count: 0, fromEur: 0, toEur: 0 }
           totals.count += 1
           totals.fromEur += eur
           totals.toEur += corrected
-          ruleTotals.set(rule.tollSystem, totals)
+          ruleTotals.set(label, totals)
           eur = corrected
+          ruleApplied = true
         }
       }
       tollByAlpha3[alpha3] = (tollByAlpha3[alpha3] ?? 0) + eur
+      tollItems.push({
+        country: alpha3ToAlpha2(alpha3) ?? alpha3,
+        tollSystem: toll.tollSystem?.trim() ?? '',
+        gates,
+        gateCoords: gateCoordsOf(toll),
+        hereEur: roundEur(hereEur),
+        finalEur: roundEur(eur),
+        originalPrice: typeof fare.price?.value === 'number' ? fare.price.value : null,
+        originalCurrency: fare.price?.currency ?? null,
+        ruleId: rule?.id ?? null,
+        ruleSignature: tollRuleSignature(rule),
+        ruleApplied,
+      })
     }
   }
 
-  for (const [system, totals] of ruleTotals) {
+  for (const [label, totals] of ruleTotals) {
     warnings.push(
-      `Toll rule applied to '${system}': ${totals.count} ${totals.count === 1 ? 'fare' : 'fares'} corrected, €${roundEur(totals.fromEur)} → €${roundEur(totals.toEur)}.`,
+      `Toll rule applied to '${label}': ${totals.count} ${totals.count === 1 ? 'fare' : 'fares'} corrected, €${roundEur(totals.fromEur)} → €${roundEur(totals.toEur)}.`,
     )
   }
 
@@ -156,6 +201,8 @@ export function parseHereRoute(response: HereRouteResponse, tollRules: TollSyste
     totalKm: roundKm(totalMetres / 1000),
     countryKm,
     tollEstimates,
+    tollItems,
+    matchedRuleIds: [...matchedRuleIds],
     sections,
     warnings,
   }
@@ -166,10 +213,10 @@ type HereFare = { price?: { value?: number; currency?: string }; convertedPrice?
 /**
  * Returns the corrected EUR amount for one fare, or null when the rule
  * cannot be applied. 'replace_per_gate' values are in the fare's ORIGINAL
- * currency (e.g. 105 PLN) and are converted with the fare's own FX ratio,
+ * currency (e.g. 165 PLN) and are converted with the fare's own FX ratio,
  * so the rule survives exchange-rate movement.
  */
-function applyTollRule(rule: TollSystemRule, fare: HereFare, eur: number): number | null {
+function applyTollRule(rule: TollRuleLike, fare: HereFare, eur: number): number | null {
   if (rule.ruleType === 'scale') return eur * rule.value
   const original = fare.price?.value
   if (original === undefined || original <= 0) return null

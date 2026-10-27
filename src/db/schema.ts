@@ -38,6 +38,8 @@ export interface RoutesTable {
   km_updated_at: ColumnType<string | null, string | null | undefined, string | null>
   /** JSON array of {polyline, spans} per HERE section; NULL = no shape stored. */
   polyline_encoded: ColumnType<string | null, string | null | undefined, string | null>
+  /** JSON StoredTollCheck of the last HERE toll check (0015); NULL = never checked. */
+  toll_check: ColumnType<string | null, string | null | undefined, string | null>
 }
 
 export interface RouteCountryKmTable {
@@ -102,12 +104,15 @@ export interface SessionsTable {
 
 export interface TollSystemRulesTable {
   id: Generated<number>
-  toll_system: string // UNIQUE — HERE tollSystem name, matched case-insensitively
+  toll_system: string // HERE tollSystem name, matched case/diacritics-insensitively
+  /** '' = whole system; otherwise a gate-name fragment (UNIQUE with toll_system, 0015). */
+  gate_filter: ColumnType<string, string | undefined, string>
   rule_type: TollRuleType
   value: number // per-gate price in the fare's original currency, or scale factor
   note: string | null
   updated_by: string | null
   updated_at: string | null
+  last_matched_at: ColumnType<string | null, string | null | undefined, string | null>
 }
 
 export interface RouteWaypointsTable {

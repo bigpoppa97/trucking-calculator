@@ -42,6 +42,9 @@ vi.mock('../lib/api.js', async importOriginal => {
       createVariant: vi.fn(),
       patchVariant: vi.fn(),
       listTollRules: vi.fn(),
+      listSeenTollSystems: vi.fn(),
+      listTollRecalcCandidates: vi.fn(),
+      recalculateTolls: vi.fn(),
       upsertTollRule: vi.fn(),
       deleteTollRule: vi.fn(),
       saveCalculation: vi.fn(),
@@ -251,6 +254,8 @@ describe('ConfigPage (finance)', () => {
         updatedAt: null,
       },
     ])
+    mocked.listSeenTollSystems.mockResolvedValue([])
+    mocked.listTollRecalcCandidates.mockResolvedValue([])
   })
 
   it('saves edited values, accepting comma decimals', async () => {
@@ -324,6 +329,71 @@ describe('ConfigPage (finance)', () => {
       }),
     )
     expect(await screen.findByText('A4 STALEXPORT')).toBeInTheDocument()
+  })
+
+  it('shows rules that never matched, offers HERE names, and saves a gate-specific rule', async () => {
+    mocked.listTollRules.mockResolvedValue([
+      {
+        id: 3,
+        tollSystem: 'A2 WIELKOPOLSKA',
+        gateFilter: '',
+        ruleType: 'replace_per_gate',
+        value: 165,
+        note: null,
+        updatedBy: null,
+        updatedAt: null,
+        lastMatchedAt: null,
+      },
+    ])
+    mocked.listSeenTollSystems.mockResolvedValue([
+      { country: 'PL', tollSystem: 'A2 AUTOSTRADA WIELKOPOLSKA', gates: ['Nowy Tomyśl', 'Świecko'], routes: 4 },
+    ])
+    mocked.upsertTollRule.mockResolvedValue([])
+    const user = userEvent.setup()
+    render(<ConfigPage />)
+
+    expect(await screen.findByText('nigdy')).toBeInTheDocument()
+    await user.click(await screen.findByText(/Systemy poboru zwrócone przez HERE/))
+    // the misnamed rule does not cover the HERE name — one click puts name + gate into the form
+    await user.click(screen.getByRole('button', { name: 'Świecko' }))
+    expect(screen.getByLabelText('System poboru (nazwa z HERE)')).toHaveValue('A2 AUTOSTRADA WIELKOPOLSKA')
+    expect(screen.getByLabelText('Tylko bramki zawierające (opcjonalnie)')).toHaveValue('Świecko')
+
+    await user.type(screen.getByLabelText('Wartość'), '40')
+    await user.click(screen.getByRole('button', { name: 'Zapisz regułę' }))
+    await waitFor(() =>
+      expect(mocked.upsertTollRule).toHaveBeenCalledWith({
+        tollSystem: 'A2 AUTOSTRADA WIELKOPOLSKA',
+        gateFilter: 'Świecko',
+        ruleType: 'replace_per_gate',
+        value: 40,
+      }),
+    )
+  })
+
+  it('bulk recalculation runs the out-of-date routes one by one and reports warnings', async () => {
+    mocked.listTollRecalcCandidates.mockResolvedValue([
+      { routeCode: 'LCJ-BER', reason: 'rules-changed', tollWarnings: 1 },
+      { routeCode: 'POZ-VIE', reason: 'never-checked', tollWarnings: 0 },
+      { routeCode: 'WAW-WRO', reason: 'up-to-date', tollWarnings: 0 },
+    ])
+    mocked.recalculateTolls.mockImplementation(async code => ({
+      route: {} as RouteDetailsDto,
+      summary: {
+        changes: [],
+        hereTotalKm: 1,
+        warnings: [],
+        tollCheck: { checkedAt: '2026-10-27T12:00:00Z', items: [], warnings: code === 'POZ-VIE' ? ['CZ: podejrzanie niska opłata'] : [] },
+      },
+    }))
+    const user = userEvent.setup()
+    render(<ConfigPage />)
+
+    await user.click(await screen.findByRole('button', { name: /Przelicz nieaktualne \(2/ }))
+
+    expect(await screen.findByText(/Przeliczono 2/)).toBeInTheDocument()
+    expect(mocked.recalculateTolls.mock.calls.map(c => c[0])).toEqual(['LCJ-BER', 'POZ-VIE'])
+    expect(screen.getByText(/Z uwagami do opłat \(1\): POZ-VIE/)).toBeInTheDocument()
   })
 
   it('adds a fleet variant and toggles active state', async () => {

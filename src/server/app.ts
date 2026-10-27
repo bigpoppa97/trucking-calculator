@@ -109,6 +109,16 @@ const SAVE_BODY_SCHEMA = {
     },
     fetchedAt: { type: 'string', minLength: 1 },
     warnings: { type: 'array', items: { type: 'string' } },
+    // Diagnostics from the fetch (per-toll details + check warnings), stored as-is.
+    tollCheck: {
+      type: 'object',
+      properties: {
+        checkedAt: { type: 'string', minLength: 1 },
+        items: { type: 'array', maxItems: 5000, items: { type: 'object' } },
+        warnings: { type: 'array', maxItems: 100, items: { type: 'string', maxLength: 2000 } },
+      },
+      required: ['checkedAt', 'items', 'warnings'],
+    },
   },
   required: ['routeCode', 'stops', 'totalKm', 'countryKm', 'tollEstimates', 'vehicleProfile', 'fetchedAt'],
   additionalProperties: false,
@@ -369,11 +379,15 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   // the wrong tariff. Finance/admin only, like the rest of the config.
   const tollRuleRepo = new TollSystemRuleRepository(deps.db)
 
+  // Rules + the toll systems HERE actually returned on stored routes (with
+  // their gate names), so a rule is typed from real names, not from memory.
   app.get('/api/toll-rules', async (_request, reply) => {
-    return reply.send({ rules: await tollRuleRepo.listAll() })
+    return reply.send({ rules: await tollRuleRepo.listAll(), seenSystems: await routeRepo.seenTollSystems() })
   })
 
-  app.put<{ Body: { tollSystem: string; ruleType: 'replace_per_gate' | 'scale'; value: number; note?: string } }>(
+  app.put<{
+    Body: { tollSystem: string; gateFilter?: string; ruleType: 'replace_per_gate' | 'scale'; value: number; note?: string }
+  }>(
     '/api/toll-rules',
     {
       preHandler: requireRole('finance', 'admin'),
@@ -382,6 +396,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
           type: 'object',
           properties: {
             tollSystem: { type: 'string', minLength: 1, maxLength: 200 },
+            gateFilter: { type: 'string', maxLength: 100 },
             ruleType: { type: 'string', enum: ['replace_per_gate', 'scale'] },
             value: { type: 'number', exclusiveMinimum: 0 },
             note: { type: 'string', maxLength: 500 },
@@ -590,6 +605,29 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       }
     },
   )
+
+  // "Przelicz opłaty z HERE" (1 request): every ESTIMATE is replaced with the
+  // current HERE value after the correction rules, missing tolls are filled;
+  // verified values, stored km and the binding total stay. Estimates remain
+  // estimates (finance verification workflow unchanged).
+  app.post<{ Params: { routeCode: string } }>(
+    '/api/routes/:routeCode/recalculate-tolls',
+    { schema: { params: ROUTE_CODE_PARAM_SCHEMA } },
+    async (request, reply) => {
+      try {
+        return await reply.send(await deps.fetchService.recalculateTolls(request.params.routeCode))
+      } catch (error) {
+        return sendRouteFetchError(reply, error)
+      }
+    },
+  )
+
+  // Bulk recalculation list (no HERE call): stored routes with estimates and
+  // whether their last toll check predates the current rules. The client then
+  // recalculates them one by one (progress bar, no long-running request).
+  app.get('/api/toll-recalc/candidates', async (_request, reply) => {
+    return reply.send({ candidates: await deps.fetchService.listTollRecalcCandidates() })
+  })
 
   app.post<{ Body: { routeCode: string } }>(
     '/api/here/route-fetch',

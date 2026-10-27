@@ -29,6 +29,7 @@ vi.mock('../lib/api.js', async importOriginal => {
       saveFetchedRoute: vi.fn(),
       saveCalculation: vi.fn(),
       fillRouteFromHere: vi.fn(),
+      recalculateTolls: vi.fn(),
     },
   }
 })

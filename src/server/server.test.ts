@@ -494,4 +494,44 @@ describe('API endpoints', () => {
     expect(summary.addedTolls['PL']).toBe(24.19)
     expect(summary.warnings.some(w => w.includes('Toll rule applied'))).toBe(true)
   })
+
+  it('POST …/recalculate-tolls replaces the estimate (1 HERE call); candidates list it as checked', async () => {
+    await new RouteRepository(db).create({
+      routeCode: 'WAW-PRG',
+      totalKm: 700,
+      kmSource: 'manual',
+      createdBy: 'test',
+      countryKm: { PL: 700 },
+      tolls: [{ country: 'PL', tollEur: 300, status: 'estimate' }],
+    })
+    const before = await inject({ method: 'GET', url: '/api/toll-recalc/candidates' })
+    expect(before.json()).toEqual({ candidates: [{ routeCode: 'WAW-PRG', reason: 'never-checked', tollWarnings: 0 }] })
+
+    const res = await inject({ method: 'POST', url: '/api/routes/WAW-PRG/recalculate-tolls' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as {
+      route: { totalKm: number; tolls: Array<{ country: string; tollEur: number; status: string }> }
+      summary: { changes: Array<{ country: string; outcome: string }> }
+    }
+    expect(hereCalls).toBe(1)
+    expect(body.route.totalKm).toBe(700)
+    expect(body.route.tolls).toMatchObject([{ country: 'PL', tollEur: 102, status: 'estimate' }])
+    expect(body.summary.changes).toEqual([{ country: 'PL', beforeEur: 300, hereEur: 102, outcome: 'updated' }])
+
+    const after = await inject({ method: 'GET', url: '/api/toll-recalc/candidates' })
+    expect((after.json() as { candidates: Array<{ reason: string }> }).candidates[0]?.reason).toBe('up-to-date')
+  })
+
+  it('POST …/recalculate-tolls for an unknown route is a 404 with zero quota', async () => {
+    const res = await inject({ method: 'POST', url: '/api/routes/WAW-PRG/recalculate-tolls' })
+    expect(res.statusCode).toBe(404)
+    expect(hereCalls).toBe(0)
+  })
+
+  it('GET /api/toll-rules also returns the toll systems HERE returned on stored routes', async () => {
+    const res = await inject({ method: 'GET', url: '/api/toll-rules' })
+    const body = res.json() as { rules: Array<{ gateFilter: string; lastMatchedAt: string | null }>; seenSystems: unknown[] }
+    expect(body.seenSystems).toEqual([])
+    expect(body.rules[0]).toMatchObject({ gateFilter: '', lastMatchedAt: null })
+  })
 })

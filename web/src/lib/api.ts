@@ -9,6 +9,9 @@ import type {
   RouteSummaryDto,
   RouteWaypointDto,
   SaveCalculationInput,
+  SeenTollSystemDto,
+  TollRecalcCandidateDto,
+  TollRecalcResultDto,
   TollRuleType,
   TollSystemRuleDto,
   UserDto,
@@ -210,6 +213,19 @@ export const api = {
     return request<GapFillResultDto>('POST', `/api/routes/${encodeURIComponent(routeCode)}/fill-from-here`)
   },
 
+  /**
+   * "Przelicz opłaty z HERE" (1 request): estimates replaced with the current
+   * HERE value after correction rules; verified values and km stay.
+   */
+  async recalculateTolls(routeCode: string): Promise<TollRecalcResultDto> {
+    return request<TollRecalcResultDto>('POST', `/api/routes/${encodeURIComponent(routeCode)}/recalculate-tolls`)
+  },
+
+  /** Stored routes with estimates and whether their toll check is out of date (no HERE call). */
+  async listTollRecalcCandidates(): Promise<TollRecalcCandidateDto[]> {
+    return (await request<{ candidates: TollRecalcCandidateDto[] }>('GET', '/api/toll-recalc/candidates')).candidates
+  },
+
   // --- Route DB screen (PRD §5.3) ---
 
   async listRoutes(): Promise<RouteSummaryDto[]> {
@@ -273,8 +289,14 @@ export const api = {
     return (await request<{ rules: TollSystemRuleDto[] }>('GET', '/api/toll-rules')).rules
   },
 
+  /** Toll systems HERE returned on stored routes, with gate names. */
+  async listSeenTollSystems(): Promise<SeenTollSystemDto[]> {
+    return (await request<{ seenSystems?: SeenTollSystemDto[] }>('GET', '/api/toll-rules')).seenSystems ?? []
+  },
+
   async upsertTollRule(input: {
     tollSystem: string
+    gateFilter?: string
     ruleType: TollRuleType
     value: number
     note?: string

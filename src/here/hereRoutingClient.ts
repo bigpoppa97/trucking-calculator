@@ -56,9 +56,13 @@ export interface HereTollCost {
   tollSystem?: string
   fares: Array<{
     id: string
+    /** Fare name — for gate systems often the entry/exit or plaza name. */
+    name?: string
     price?: { value?: number; currency?: string }
     convertedPrice?: { value?: number; currency?: string }
   }>
+  /** Where the toll is collected (plazas / gantries), when HERE knows it. */
+  tollCollectionLocations?: Array<{ name?: string; location?: { lat?: number; lng?: number } }>
 }
 
 export class HereApiError extends Error {

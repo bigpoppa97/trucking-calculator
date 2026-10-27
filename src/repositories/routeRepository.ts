@@ -1,6 +1,7 @@
 import type { Kysely, Transaction } from 'kysely'
 import type { DB, KmSource, TollStatusDb } from '../db/schema.js'
 import type { RoutePolylineSection } from '../here/routeParser.js'
+import { sanitizeTollCheck, type TollCheck } from '../here/tollChecks.js'
 
 /** Route ID format per PRD §3.1: hyphen-separated IATA codes, 2+ stops. */
 export const ROUTE_CODE_REGEX = /^[A-Z]{3}(-[A-Z]{3})+$/
@@ -34,6 +35,8 @@ export interface RouteDetails {
   tollsPendingCountries: string[]
   /** Route shape for the map preview; null for v1-imported routes. */
   polylineSections: RoutePolylineSection[] | null
+  /** Last HERE toll check (per-toll details + warnings); null = never checked. */
+  tollCheck: TollCheck | null
 }
 
 export interface NewRouteInput {
@@ -43,6 +46,7 @@ export interface NewRouteInput {
   createdBy: string
   countryKm: Record<string, number>
   polylineSections?: RoutePolylineSection[]
+  tollCheck?: TollCheck
   tolls: Array<{
     country: string
     tollEur: number
@@ -54,6 +58,14 @@ export interface NewRouteInput {
   }>
 }
 
+export interface SeenTollSystem {
+  country: string
+  tollSystem: string
+  gates: string[]
+  /** Number of stored routes where HERE returned this system. */
+  routes: number
+}
+
 export interface RouteSummary {
   id: number
   routeCode: string
@@ -62,6 +74,8 @@ export interface RouteSummary {
   createdAt: string
   tollsPending: boolean
   hasEstimates: boolean
+  /** Warnings of the last HERE toll check (0 when never checked). */
+  tollWarnings: number
 }
 
 export class RouteRepository {
@@ -83,6 +97,7 @@ export class RouteRepository {
           km_source: input.kmSource,
           created_by: input.createdBy,
           polyline_encoded: input.polylineSections === undefined ? null : JSON.stringify(input.polylineSections),
+          toll_check: input.tollCheck === undefined ? null : JSON.stringify(input.tollCheck),
         })
         .returning('id')
         .executeTakeFirstOrThrow()
@@ -138,6 +153,7 @@ export class RouteRepository {
         createdAt: r.created_at,
         tollsPending: details.tollsPendingCountries.length > 0,
         hasEstimates: details.tolls.some(t => t.status === 'estimate'),
+        tollWarnings: details.tollCheck?.warnings.length ?? 0,
       })
     }
     return summaries
@@ -205,6 +221,94 @@ export class RouteRepository {
         .where('id', '=', routeId)
         .execute()
     })
+  }
+
+  /**
+   * Apply a HERE toll recalculation atomically ("Przelicz opłaty z HERE").
+   * Each given estimate REPLACES an estimate row or fills a missing country;
+   * a verified row is never touched (re-checked inside the transaction).
+   * Km and the binding total stay as stored; the shape and the toll check
+   * are replaced. Returns the countries actually written.
+   */
+  async applyTollRecalc(
+    routeId: number,
+    recalc: {
+      estimates: Array<Omit<NewRouteInput['tolls'][number], 'status'>>
+      polylineSections: RoutePolylineSection[]
+      tollCheck: TollCheck
+    },
+  ): Promise<string[]> {
+    return this.db.transaction().execute(async trx => {
+      const verified = new Set(
+        (
+          await trx
+            .selectFrom('route_country_toll')
+            .select('country')
+            .where('route_id', '=', routeId)
+            .where('status', '=', 'verified')
+            .execute()
+        ).map(r => r.country),
+      )
+      const written: string[] = []
+      for (const estimate of recalc.estimates) {
+        if (verified.has(estimate.country)) continue
+        await trx
+          .deleteFrom('route_country_toll')
+          .where('route_id', '=', routeId)
+          .where('country', '=', estimate.country)
+          .execute()
+        await insertToll(trx, routeId, { ...estimate, status: 'estimate' })
+        written.push(estimate.country)
+      }
+      await trx
+        .updateTable('routes')
+        .set({
+          polyline_encoded: JSON.stringify(recalc.polylineSections),
+          toll_check: JSON.stringify(recalc.tollCheck),
+        })
+        .where('id', '=', routeId)
+        .execute()
+      return written
+    })
+  }
+
+  /**
+   * Toll systems HERE returned on stored routes (from their toll checks),
+   * with gate names — suggestions for the rule form. Sorted by country, name.
+   */
+  async seenTollSystems(): Promise<SeenTollSystem[]> {
+    const rows = await this.db.selectFrom('routes').select(['route_code', 'toll_check']).where('toll_check', 'is not', null).execute()
+    const seen = new Map<string, { country: string; tollSystem: string; gates: Set<string>; routes: Set<string> }>()
+    for (const row of rows) {
+      const check = parseTollCheck(row.toll_check)
+      for (const item of check?.items ?? []) {
+        const key = `${item.country}|${item.tollSystem}`
+        const entry = seen.get(key) ?? { country: item.country, tollSystem: item.tollSystem, gates: new Set(), routes: new Set() }
+        for (const gate of item.gates) entry.gates.add(gate)
+        entry.routes.add(row.route_code)
+        seen.set(key, entry)
+      }
+    }
+    return [...seen.values()]
+      .map(e => ({ country: e.country, tollSystem: e.tollSystem, gates: [...e.gates].sort().slice(0, 40), routes: e.routes.size }))
+      .sort((a, b) => a.country.localeCompare(b.country) || a.tollSystem.localeCompare(b.tollSystem))
+  }
+
+  /**
+   * Per-country (km, toll) of every stored route — the sample for the €/km
+   * plausibility band (tollChecks.ts). Optionally without one route, so a
+   * route is never compared with itself.
+   */
+  async tollRateSamples(excludeRouteId?: number): Promise<Array<{ country: string; km: number; tollEur: number }>> {
+    let query = this.db
+      .selectFrom('route_country_toll as t')
+      .innerJoin('route_country_km as k', join =>
+        join.onRef('k.route_id', '=', 't.route_id').onRef('k.country', '=', 't.country'),
+      )
+      .select(['t.country as country', 'k.km as km', 't.toll_eur as tollEur'])
+    if (excludeRouteId !== undefined) query = query.where('t.route_id', '!=', excludeRouteId)
+    const rows = await query.execute()
+    return rows.map(r => ({ country: r.country, km: Number(r.km), tollEur: Number(r.tollEur) }))
   }
 
   /**
@@ -338,6 +442,7 @@ export class RouteRepository {
       tollsPendingCountries,
       polylineSections:
         row.polyline_encoded === null ? null : (JSON.parse(row.polyline_encoded) as RoutePolylineSection[]),
+      tollCheck: parseTollCheck(row.toll_check),
     }
   }
 }
@@ -360,4 +465,13 @@ async function insertToll(
       verified_at: toll.verifiedAt ?? null,
     })
     .execute()
+}
+
+function parseTollCheck(raw: string | null): TollCheck | null {
+  if (raw === null) return null
+  try {
+    return sanitizeTollCheck(JSON.parse(raw))
+  } catch {
+    return null
+  }
 }
