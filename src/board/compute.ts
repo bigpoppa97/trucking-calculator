@@ -129,6 +129,12 @@ export interface ComputedOrder {
   missing: boolean
   history: boolean
   hasFleetLeg: boolean
+  /**
+   * The export's truck is a fleet truck on the loading day — the order belongs to the
+   * department even when a PRZ entry leaves no leg on a fleet truck (27.10.2026: a mistyped
+   * plate made such an order vanish without a review item).
+   */
+  fleetByExport: boolean
 }
 
 export interface ComputeWindow {
@@ -364,6 +370,7 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     missing: row.missing_since_import_id !== null,
     history: row.history === 1,
     hasFleetLeg: legs.some(l => l.kind === 'fleet'),
+    fleetByExport: !isDraft && ctx.fleet.truckFor(row.sub_plate, loadDate) !== null,
   }
 }
 

@@ -153,6 +153,22 @@ export function editDistance(a: string, b: string): number {
   return prev[b.length]!
 }
 
+/**
+ * One keyboard slip between two plates: one wrong, missing or extra character, or two
+ * neighbouring characters swapped (27.10.2026: KN4841J typed for KN4814J).
+ */
+export function isOneSlip(a: string, b: string): boolean {
+  if (a === b || !a || !b) return false
+  if (a.length === b.length) {
+    const diff: number[] = []
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff.push(i)
+    if (diff.length === 1) return true
+    const [i, j] = diff
+    return diff.length === 2 && j === i! + 1 && a[i!] === b[j] && a[j] === b[i!]
+  }
+  return Math.abs(a.length - b.length) === 1 && editDistance(a, b) === 1
+}
+
 /** Great-circle distance in km. */
 export function haversineKm(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
   const R = 6371

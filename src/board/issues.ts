@@ -3,6 +3,7 @@ import type { DB } from '../db/schema.js'
 import { sameCarrier, type BoardContext } from './context.js'
 import { legSort, type ComputedLeg, type ComputedOrder } from './compute.js'
 import { aliasKey, normalizePlate } from './normalize.js'
+import { similarPlates } from './prz.js'
 
 /**
  * The review queue ("Do sprawdzenia").
@@ -72,7 +73,9 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
 
   for (const o of orders) {
     // A cancelled forwarding order without PRZ: the truck does not carry it — nothing to review.
-    if (o.history || !o.hasFleetLeg || o.noCarrier) continue
+    // An order of a fleet truck whose PRZ entry leaves no leg on the fleet stays here: it is off
+    // the board, so this list is the only place it can still be seen (27.10.2026).
+    if (o.history || o.noCarrier || (!o.hasFleetLeg && !o.fleetByExport)) continue
     const ref = o.orderNo
     const counted = o.excluded === null
 
@@ -120,11 +123,15 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
     if (o.prz) {
       for (const plate of [o.prz.from, o.prz.to]) {
         if (!ctx.fleet.isFleetPlate(plate) && !ctx.ownPlates.has(plate)) {
+          const similar = similarPlates(plate, [...ctx.fleet.allPlates(), ...ctx.ownPlates])
           out.push({
             key: `PRZ_TRUCK_UNKNOWN:${ref}:${plate}`,
             kind: 'PRZ_TRUCK_UNKNOWN',
             ref,
-            message: `Auto ${plate} z wpisu PRZ nie jest ani w Twojej flocie, ani we flocie własnej. Literówka?`,
+            message:
+              `Auto ${plate} z wpisu PRZ nie jest ani w Twojej flocie, ani we flocie własnej. ` +
+              (similar.length > 0 ? `Literówka? Podobny numer: ${similar.join(', ')}.` : 'Literówka?') +
+              (o.hasFleetLeg ? '' : ' Zlecenia nie ma teraz na tablicy — żaden odcinek nie jedzie autem z Twojej floty.'),
             details: { plate },
             fingerprint: o.prz.raw,
           })
@@ -160,7 +167,9 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
             key: `PRZ_SUB_NOT_IN_ENTRY:${ref}`,
             kind: 'PRZ_SUB_NOT_IN_ENTRY',
             ref,
-            message: `Auto z eksportu (${o.subPlate}) nie występuje we wpisie PRZ (${o.prz.from}>${o.prz.to}).`,
+            message:
+              `Auto z eksportu (${o.subPlate}) nie występuje we wpisie PRZ (${o.prz.from}>${o.prz.to}).` +
+              (o.hasFleetLeg ? '' : ' Zlecenia nie ma teraz na tablicy — żaden odcinek nie jedzie autem z Twojej floty.'),
             details: { plate: o.subPlate },
             fingerprint: o.prz.raw,
           })

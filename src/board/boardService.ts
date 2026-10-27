@@ -12,6 +12,7 @@ import { DRAFT_PREFIX, replaceDraft } from './drafts.js'
 import { atKey, displayAt, formatAt, normTime, parseAtInput, parseAtValue } from './times.js'
 import { DEFAULT_THRESHOLDS, deriveIssues, fmtDate, syncDerivedIssues, type IssueThresholds } from './issues.js'
 import { planFleetSync, type FleetPlan } from './fleetList.js'
+import { parsePrz, resolveSwapDate, similarPlates } from './prz.js'
 import {
   CERT_FILE_MAX_BYTES,
   FROM_THE_BEGINNING,
@@ -1621,6 +1622,7 @@ export class BoardService {
     }
     const row = await this.requireOrder(orderNo)
     if (AT_OVERRIDES.has(field)) value = await this.resolveAtOverride(row, field as 'load_at' | 'unload_at', value)
+    if (field === 'prz') value = await this.checkPrzOverride(row, value)
     const appValue = overrideAppValue(field, row)
     const now = this.now()
     await this.db.transaction().execute(async trx => {
@@ -1655,6 +1657,52 @@ export class BoardService {
       .where('active', '=', 1)
       .execute()
     await this.refreshIssues()
+  }
+
+  /**
+   * A relay typed on the board ("Wpis przepinki (PRZ)", 27.10.2026). Refused when the board
+   * could not use it — the order would otherwise change or vanish without anyone noticing:
+   *  - text that is not a readable PRZ entry (the panel would only show it in red);
+   *  - a plate that is neither in the fleet nor in the own fleet but one keyboard slip away
+   *    from one that is (KN4841J for KN4814J) — "Czy chodziło o …?";
+   *  - no plate that is a fleet truck on its leg's day: no leg would be on the board, so the
+   *    order would disappear from it.
+   * A truck from outside both fleets with no similar plate is accepted (a third-party truck);
+   * it still gets the "Literówka?" review item.
+   */
+  private async checkPrzOverride(row: Selectable<BoardOrdersTable>, input: string): Promise<string> {
+    const text = input.trim()
+    const parsed = parsePrz(text)
+    const entry = parsed.entries[0]
+    if (!entry || parsed.errors.length > 0 || parsed.entries.length > 1) {
+      throw new BoardError(
+        'BAD_PRZ',
+        `Nie rozumiem wpisu przepinki: „${parsed.errors[0] ?? text}”. Wzór: PRZ MIEJSCE DD.MM AUTO>AUTO KWOTA/KWOTA, np. PRZ WAW 28.10 AB123CD>AB456CD 1400/900 (jedna przepinka w jednym wpisie).`,
+      )
+    }
+    const ctx = await loadBoardContext(this.db)
+    const known = [...ctx.fleet.allPlates(), ...ctx.ownPlates]
+    for (const plate of [entry.from, entry.to]) {
+      if (ctx.fleet.isFleetPlate(plate) || ctx.ownPlates.has(plate)) continue
+      const similar = similarPlates(plate, known)
+      if (similar.length > 0) {
+        throw new BoardError(
+          'PRZ_PLATE_TYPO',
+          `Auta ${plate} nie ma ani w Twojej flocie, ani we flocie własnej. Czy chodziło o ${similar.join(' albo ')}? Popraw numer we wpisie.`,
+        )
+      }
+    }
+    const swapDate = resolveSwapDate(entry.day, entry.month, row.load_date)
+    const legB = swapDate < row.load_date ? row.load_date : swapDate
+    if (!ctx.fleet.truckFor(entry.from, row.load_date) && !ctx.fleet.truckFor(entry.to, legB)) {
+      throw new BoardError(
+        'PRZ_NO_FLEET_TRUCK',
+        `Żadne auto z wpisu (${entry.from}, ${entry.to}) nie jest w Twojej flocie w tych dniach — po zapisaniu zlecenie zniknęłoby z tablicy` +
+          (row.sub_plate ? ` (auto z eksportu: ${row.sub_plate}).` : '.') +
+          ' Sprawdź numery aut.',
+      )
+    }
+    return text
   }
 
   /**

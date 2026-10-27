@@ -1453,3 +1453,79 @@ describe('migration 0014', () => {
     }
   })
 })
+
+describe('27.10.2026 — a relay with a mistyped plate must not make an order vanish', () => {
+  // AA1001A carries 79-1-26 (fleet); KN5692K is an own-fleet truck (known from its own order).
+  const rows: Row[] = [
+    { no: '79-1-26', from: 'Wien', ld: '2026-09-21', to: 'Wilno', ud: '2026-09-22', rev: 3120, cost: 1000, sub: 'AA1001A', trailer: 'TR100' },
+    { no: '79-3-26', from: 'Warszawa', ld: '2026-09-22', to: 'Praha 6 - Ruzyně', ud: '2026-09-23', rev: 900, cost: null, own: 'KN5692K' },
+  ]
+  beforeEach(async () => {
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
+  })
+
+  it('board entry: a plate one slip away from a known one is refused with the suggestion', async () => {
+    await expect(board.setOverride('79-1-26', 'prz', 'PRZ WAW 22.09 AA1010A>KN5692K 1420/1700')).rejects.toMatchObject({
+      code: 'PRZ_PLATE_TYPO',
+      message: expect.stringContaining('Czy chodziło o AA1001A?'),
+    })
+    await expect(board.setOverride('79-1-26', 'prz', 'PRZ WAW 22.09 AA1001A>KN5629K 1420/1700')).rejects.toMatchObject({
+      code: 'PRZ_PLATE_TYPO',
+      message: expect.stringContaining('KN5692K'),
+    })
+    expect((await board.orderDetails('79-1-26')).order.prz).toBeNull() // nothing stored
+  })
+
+  it('board entry: no fleet truck in the entry is refused — the order would leave the board', async () => {
+    await expect(board.setOverride('79-1-26', 'prz', 'PRZ WAW 22.09 XY77777>KN5692K 1420/1700')).rejects.toMatchObject({
+      code: 'PRZ_NO_FLEET_TRUCK',
+      message: expect.stringContaining('auto z eksportu: AA1001A'),
+    })
+  })
+
+  it('board entry: unreadable text is refused with the pattern', async () => {
+    await expect(board.setOverride('79-1-26', 'prz', 'PRZ WAW 22.09 AA1001A>KN5692K')).rejects.toMatchObject({ code: 'BAD_PRZ' })
+  })
+
+  it('board entry: a correct relay to the own fleet is saved; the fleet leg stays on the board', async () => {
+    await board.setOverride('79-1-26', 'prz', 'PRZ WAW 22.09 AA1001A>KN5692K 1420/1700')
+    const d = await board.orderDetails('79-1-26')
+    expect(d.legs.map(l => [l.plate, l.kind])).toEqual([
+      ['AA1001A', 'fleet'],
+      ['KN5692K', 'own'],
+    ])
+    const week = await board.weekView('2026-09-21')
+    expect(week.trucks.find(t => t.plate === 'AA1001A')!.bars.map(b => b.orderNo)).toContain('79-1-26')
+  })
+
+  it('board entry: a third-party truck with no similar plate is accepted, with the "Literówka?" item', async () => {
+    await board.setOverride('79-1-26', 'prz', 'PRZ WAW 22.09 AA1001A>XY77777 1000/1700')
+    const [item] = await issuesOf('PRZ_TRUCK_UNKNOWN')
+    expect(item!.message).toBe('Auto XY77777 z wpisu PRZ nie jest ani w Twojej flocie, ani we flocie własnej. Literówka?')
+  })
+
+  it('an entry already stored with the typo (or one from the application) shows up in review instead of vanishing', async () => {
+    // As on the office PC on 27.10: stored before this check existed.
+    await db
+      .insertInto('board_overrides')
+      .values({ order_no: '79-1-26', field: 'prz', value: 'PRZ WAW 22.09 AA1010A>KN5692K 1420/1700', app_value: '', created_by: 'test', created_at: now })
+      .execute()
+    await board.refreshIssues()
+
+    const week = await board.weekView('2026-09-21')
+    expect(week.trucks.flatMap(t => t.bars.map(b => b.orderNo))).not.toContain('79-1-26')
+    const [typo] = await issuesOf('PRZ_TRUCK_UNKNOWN')
+    expect(typo).toMatchObject({ ref: '79-1-26' })
+    expect(typo!.message).toContain('Literówka? Podobny numer: AA1001A.')
+    expect(typo!.message).toContain('Zlecenia nie ma teraz na tablicy')
+    const [sub] = await issuesOf('PRZ_SUB_NOT_IN_ENTRY')
+    expect(sub!.message).toContain('Auto z eksportu (AA1001A) nie występuje we wpisie PRZ (AA1010A>KN5692K).')
+
+    // Fixed from the order panel (opened from the review item): the order is back, the items close.
+    await board.setOverride('79-1-26', 'prz', 'PRZ WAW 22.09 AA1001A>KN5692K 1420/1700')
+    expect(await issuesOf('PRZ_TRUCK_UNKNOWN')).toEqual([])
+    expect(await issuesOf('PRZ_SUB_NOT_IN_ENTRY')).toEqual([])
+    const after = await board.weekView('2026-09-21')
+    expect(after.trucks.find(t => t.plate === 'AA1001A')!.bars.map(b => b.orderNo)).toContain('79-1-26')
+  })
+})

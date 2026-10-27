@@ -1,5 +1,5 @@
 import { NOTE_MARKERS } from './ferry.js'
-import { normalizePlate } from './normalize.js'
+import { isOneSlip, normalizePlate } from './normalize.js'
 
 /**
  * Trailer swap ("przepinka") entries typed into the client order's notes in
@@ -83,6 +83,15 @@ export function parsePrz(notes: string | null | undefined): PrzParseResult {
     })
   }
   return result
+}
+
+/**
+ * Known plates (fleet + own fleet) one keyboard slip away from a plate in a PRZ entry —
+ * "Czy chodziło o KN4814J?". At most three, sorted.
+ */
+export function similarPlates(plate: string, known: Iterable<string>): string[] {
+  const p = normalizePlate(plate)
+  return [...new Set(known)].filter(k => isOneSlip(p, k)).sort().slice(0, 3)
 }
 
 /**

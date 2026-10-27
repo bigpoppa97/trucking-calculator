@@ -63,6 +63,11 @@ export class FleetIndex {
     return null
   }
 
+  /** Every plate the fleet has ever had (suggestions for a mistyped plate). */
+  allPlates(): string[] {
+    return [...new Set(this.trucks.flatMap(t => t.plates.map(tp => tp.plate)))]
+  }
+
   /** Plate belongs to the fleet at any time (used for PRZ scope checks). */
   isFleetPlate(plate: string): boolean {
     const p = normalizePlate(plate)
