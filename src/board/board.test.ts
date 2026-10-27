@@ -1529,3 +1529,54 @@ describe('27.10.2026 — a relay with a mistyped plate must not make an order va
     expect(after.trucks.find(t => t.plate === 'AA1001A')!.bars.map(b => b.orderNo)).toContain('79-1-26')
   })
 })
+
+describe('27.10.2026 — "Popraw na …" fixes a mistyped plate in one click', () => {
+  it('a board entry: the plate is replaced, the order is back, both items close', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-1-26', from: 'Wien', ld: '2026-09-21', to: 'Wilno', ud: '2026-09-22', rev: 3120, cost: 1000, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-3-26', from: 'Warszawa', ld: '2026-09-22', to: 'Praha 6 - Ruzyně', ud: '2026-09-23', rev: 900, cost: null, own: 'KN5692K' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    await db
+      .insertInto('board_overrides')
+      .values({ order_no: '79-1-26', field: 'prz', value: 'PRZ WAW 22.09 AA1010A>KN5692K 1420/1700', app_value: '', created_by: 'test', created_at: now })
+      .execute()
+    await board.refreshIssues()
+    const [typo] = await issuesOf('PRZ_TRUCK_UNKNOWN')
+    expect(typo!.details).toMatchObject({ plate: 'AA1010A', suggestions: ['AA1001A'] })
+
+    await expect(board.resolveIssue(typo!.id, 'fix_plate', { plate: 'BB2001B' })).rejects.toMatchObject({ code: 'BAD_PLATE' })
+    await board.resolveIssue(typo!.id, 'fix_plate', { plate: 'AA1001A' })
+
+    const d = await board.orderDetails('79-1-26')
+    expect(d.order.prz).toMatchObject({ from: 'AA1001A', to: 'KN5692K', amountFrom: 1420, amountTo: 1700, place: 'WAW' })
+    expect(await issuesOf('PRZ_TRUCK_UNKNOWN')).toEqual([])
+    expect(await issuesOf('PRZ_SUB_NOT_IN_ENTRY')).toEqual([])
+    const week = await board.weekView('2026-09-21')
+    expect(week.trucks.find(t => t.plate === 'AA1001A')!.bars.map(b => b.orderNo)).toContain('79-1-26')
+  })
+
+  it('an entry from the application notes: the board entry keeps the flight number and the ferry', async () => {
+    await board.importFile(
+      await xlsx([
+        {
+          no: '79-1-26', from: 'Wien', ld: '2026-09-21', to: 'Wilno', ud: '2026-09-22', rev: 3620, cost: 1000, sub: 'AA1001A', trailer: 'TR100',
+          notes: 'LH6428A-2026-09-21 PRZ WAW 22.09 AA1010A>BB2001B 1000/900 PROM 120',
+        },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const [typo] = await issuesOf('PRZ_TRUCK_UNKNOWN')
+    await board.resolveIssue(typo!.id, 'fix_plate', { plate: 'AA1001A' })
+
+    const d = await board.orderDetails('79-1-26')
+    expect(d.order.prz).toMatchObject({ from: 'AA1001A', to: 'BB2001B' })
+    expect(d.order.ferryCost).toBe(120)
+    const stored = await db.selectFrom('board_overrides').select('value').where('order_no', '=', '79-1-26').where('field', '=', 'prz').where('active', '=', 1).executeTakeFirst()
+    expect(stored?.value).toBe('LH6428A-2026-09-21 PRZ WAW 22.09 AA1001A>BB2001B 1000/900 PROM 120')
+  })
+})

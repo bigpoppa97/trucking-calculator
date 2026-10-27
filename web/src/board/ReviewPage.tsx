@@ -368,6 +368,16 @@ function IssueCard({
           ) : (
             <NewTruckActions fleet={fleet} firstDate={String(d['firstDate'] ?? todayIso())} onResolve={onResolve} />
           ))}
+        {issue.kind === 'PRZ_TRUCK_UNKNOWN' &&
+          (Array.isArray(d['suggestions']) ? (d['suggestions'] as string[]) : []).map(plate => (
+            <ActionButton key={plate} primary onClick={() => onResolve('fix_plate', { plate })}>
+              Popraw na {plate}
+            </ActionButton>
+          ))}
+        {/* The order number above is a link too, but easy to miss — say it with a button (27.10.2026). */}
+        {isOrder && (
+          <ActionButton onClick={() => onOpenOrder(issue.ref)}>Otwórz zlecenie</ActionButton>
+        )}
         {issue.kind === 'ROUTE_GAP' &&
           (Array.isArray(d['orders']) ? (d['orders'] as string[]) : []).map(no => (
             <ActionButton key={no} onClick={() => onOpenOrder(no)}>

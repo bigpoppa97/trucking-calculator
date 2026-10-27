@@ -269,6 +269,34 @@ describe('ReviewPage', () => {
   })
 })
 
+describe('ReviewPage — a relay with a mistyped plate (27.10.2026)', () => {
+  it('offers "Popraw na …" from the suggestion and an explicit "Otwórz zlecenie"', async () => {
+    api.issues.mockResolvedValue([
+      issue({
+        id: 21,
+        kind: 'PRZ_TRUCK_UNKNOWN',
+        ref: '79-1538-26',
+        message: 'Auto KN4841J z wpisu PRZ nie jest ani w Twojej flocie, ani we flocie własnej. Literówka? Podobny numer: KN4814J.',
+        details: { plate: 'KN4841J', suggestions: ['KN4814J'], entry: 'PRZ WAW 28.10 KN4841J>KN8559H 1420/1700' },
+      }),
+      issue({ id: 22, kind: 'PRZ_SUB_NOT_IN_ENTRY', ref: '79-1538-26', message: 'Auto z eksportu (KN4814J) nie występuje we wpisie PRZ…', details: { plate: 'KN4814J' } }),
+    ])
+    api.fleet.mockResolvedValue(FLEET)
+    api.imports.mockResolvedValue([])
+    api.resolveIssue.mockResolvedValue({ ok: true })
+    const open = vi.fn()
+    render(<ReviewPage onOpenOrder={open} onIssuesChanged={() => {}} />)
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Popraw na KN4814J' }))
+    expect(api.resolveIssue).toHaveBeenCalledWith(21, 'fix_plate', { plate: 'KN4814J' })
+
+    const openButtons = screen.getAllByRole('button', { name: 'Otwórz zlecenie' })
+    expect(openButtons).toHaveLength(2)
+    await userEvent.click(openButtons[1]!)
+    expect(open).toHaveBeenCalledWith('79-1538-26')
+  })
+})
+
 describe('FleetPage', () => {
   it('records a new plate from a date for an existing truck', async () => {
     api.fleet.mockResolvedValue(FLEET)

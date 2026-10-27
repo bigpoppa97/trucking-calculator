@@ -132,7 +132,8 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
               `Auto ${plate} z wpisu PRZ nie jest ani w Twojej flocie, ani we flocie własnej. ` +
               (similar.length > 0 ? `Literówka? Podobny numer: ${similar.join(', ')}.` : 'Literówka?') +
               (o.hasFleetLeg ? '' : ' Zlecenia nie ma teraz na tablicy — żaden odcinek nie jedzie autem z Twojej floty.'),
-            details: { plate },
+            // suggestions → "Popraw na …" in the review card (one click, 27.10.2026)
+            details: { plate, suggestions: similar, entry: o.prz.raw },
             fingerprint: o.prz.raw,
           })
         }

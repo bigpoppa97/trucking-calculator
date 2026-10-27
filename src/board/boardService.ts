@@ -434,6 +434,16 @@ export class BoardService {
     }
 
     switch (`${issue.kind}:${action}`) {
+      case 'PRZ_TRUCK_UNKNOWN:fix_plate': {
+        // "Popraw na KN4814J": the mistyped plate replaced in the order's current relay entry.
+        const wrong = normalizePlate(String(details['plate'] ?? ''))
+        const plate = normalizePlate(str('plate'))
+        const allowed = Array.isArray(details['suggestions']) ? (details['suggestions'] as unknown[]).map(String) : []
+        if (!plate || !allowed.includes(plate)) throw new BoardError('BAD_PLATE', 'Wybierz numer z podpowiedzi.')
+        await this.setOverride(issue.ref, 'prz', await this.przTextWithPlate(issue.ref, wrong, plate))
+        // setOverride re-derives the review items — this one closes by itself once the entry is right.
+        break
+      }
       case 'UNKNOWN_TRAILER:alias': {
         const trailer = normalizePlate(str('trailer'))
         if (!(await this.db.selectFrom('board_trailers').select('plate').where('plate', '=', trailer).executeTakeFirst())) {
@@ -1657,6 +1667,33 @@ export class BoardService {
       .where('active', '=', 1)
       .execute()
     await this.refreshIssues()
+  }
+
+  /**
+   * The order's relay text (board entry, else the application's notes) with one plate of
+   * its PRZ entry replaced. Everything else in the text stays — the notes also carry flight
+   * numbers and PROM entries, which the board entry replaces as a whole.
+   */
+  private async przTextWithPlate(orderNo: string, wrong: string, plate: string): Promise<string> {
+    const row = await this.requireOrder(orderNo)
+    const override = await this.db
+      .selectFrom('board_overrides')
+      .select('value')
+      .where('order_no', '=', orderNo)
+      .where('field', '=', 'prz')
+      .where('active', '=', 1)
+      .executeTakeFirst()
+    const text = (override?.value ?? row.notes_app).replace(/_x000D_/g, '').replace(/\r/g, '')
+    const entry = parsePrz(text).entries[0]
+    if (!entry || (entry.from !== wrong && entry.to !== wrong) || !text.includes(entry.raw)) {
+      throw new BoardError('PRZ_CHANGED', 'Wpis przepinki zmienił się w międzyczasie — otwórz zlecenie i popraw go w panelu.')
+    }
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const amount = (n: number) => String(n).replace('.', ',')
+    const from = entry.from === wrong ? plate : entry.from
+    const to = entry.to === wrong ? plate : entry.to
+    const fixed = `PRZ ${entry.place} ${pad(entry.day)}.${pad(entry.month)} ${from}>${to} ${amount(entry.amountFrom)}/${amount(entry.amountTo)}`
+    return text.replace(entry.raw, fixed).trim()
   }
 
   /**
