@@ -99,7 +99,12 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     async (request, reply) => handle(reply, () => as(request).clearOverride(request.params.orderNo, request.params.field)),
   )
 
-  app.post<{ Body: { truckId: number; day: string; kind: NoteKind; text: string; place?: string } }>(
+  // Optional hour of a day event / driver change ("HH:MM", checked in the service; null or '' = none).
+  const OPT_TIME = { type: ['string', 'null'], maxLength: 5 } as const
+
+  app.post<{
+    Body: { truckId: number; day: string; kind: NoteKind; text: string; place?: string; time?: string | null; autoKey?: string; suppress?: boolean }
+  }>(
     '/api/board/events',
     {
       schema: {
@@ -111,6 +116,9 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
             kind: { type: 'string', enum: ['note', 'pause', 'driver', 'trailer', 'position'] },
             text: { type: 'string', minLength: 1, maxLength: 500 },
             place: { type: 'string', maxLength: 100 },
+            time: OPT_TIME,
+            autoKey: { type: 'string', minLength: 1, maxLength: 200 },
+            suppress: { type: 'boolean' },
           },
           required: ['truckId', 'day', 'kind', 'text'],
           additionalProperties: false,
@@ -125,6 +133,9 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
           kind: request.body.kind,
           text: request.body.text,
           ...(request.body.place !== undefined ? { place: request.body.place } : {}),
+          time: request.body.time,
+          autoKey: request.body.autoKey,
+          suppress: request.body.suppress,
         }),
       ),
   )
@@ -167,7 +178,7 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     handle(reply, () => as(request).deleteDraft(request.params.orderNo)),
   )
 
-  app.patch<{ Params: { id: string }; Body: { day?: string; kind?: NoteKind; text?: string; place?: string | null } }>(
+  app.patch<{ Params: { id: string }; Body: { day?: string; kind?: NoteKind; text?: string; place?: string | null; time?: string | null; suppress?: boolean } }>(
     '/api/board/events/:id',
     {
       schema: {
@@ -179,6 +190,8 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
             kind: { type: 'string', enum: ['note', 'pause', 'driver', 'trailer', 'position'] },
             text: { type: 'string', minLength: 1, maxLength: 500 },
             place: { type: ['string', 'null'], maxLength: 100 },
+            time: OPT_TIME,
+            suppress: { type: 'boolean' },
           },
           additionalProperties: false,
         },
@@ -501,13 +514,13 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
   )
 
   const DRIVER_ID = { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] } as const
-  app.post<{ Body: { truckId: number; day: string; driverId: number | null; releaseOther?: boolean } }>(
+  app.post<{ Body: { truckId: number; day: string; driverId: number | null; releaseOther?: boolean; time?: string | null } }>(
     '/api/board/driver-changes',
     {
       schema: {
         body: {
           type: 'object',
-          properties: { truckId: { type: 'integer', minimum: 1 }, day: DATE, driverId: DRIVER_ID, releaseOther: { type: 'boolean' } },
+          properties: { truckId: { type: 'integer', minimum: 1 }, day: DATE, driverId: DRIVER_ID, releaseOther: { type: 'boolean' }, time: OPT_TIME },
           required: ['truckId', 'day', 'driverId'],
           additionalProperties: false,
         },
@@ -516,9 +529,9 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     async (request, reply) => handle(reply, () => as(request).setDriverChange(request.body)),
   )
 
-  app.patch<{ Params: { id: string }; Body: { day?: string; driverId?: number | null } }>(
+  app.patch<{ Params: { id: string }; Body: { day?: string; driverId?: number | null; time?: string | null } }>(
     '/api/board/driver-changes/:id',
-    { schema: { params: ID_PARAMS, body: { type: 'object', properties: { day: DATE, driverId: DRIVER_ID }, additionalProperties: false } } },
+    { schema: { params: ID_PARAMS, body: { type: 'object', properties: { day: DATE, driverId: DRIVER_ID, time: OPT_TIME }, additionalProperties: false } } },
     async (request, reply) => handle(reply, () => as(request).updateDriverChange(Number(request.params.id), request.body)),
   )
 

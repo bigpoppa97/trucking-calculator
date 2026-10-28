@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { boardApi, errorMessage, type Driver, type OrderDetails } from './boardApi.js'
 import { dm, dmTime, eur, fixOptions, km, overrideLabel, signedEur, stamp } from './format.js'
 import { Icon } from './Icon.js'
 import { DraftDialog } from './DraftDialog.js'
+import { IssueActions } from './issueActions.js'
 
 /**
  * Order panel: legs, money, km, notes from the app (read-only), board-only
@@ -16,11 +17,14 @@ export function OrderPanel({
   showMoney,
   onClose,
   onChanged,
+  onOpenOrder,
 }: {
   orderNo: string
   showMoney: boolean
   onClose: () => void
   onChanged: () => void
+  /** Open another order in the panel (e.g. the other order of "Czy była przepinka?"). */
+  onOpenOrder?: (orderNo: string) => void
 }) {
   const [data, setData] = useState<OrderDetails | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -31,6 +35,7 @@ export function OrderPanel({
   const [drivers, setDrivers] = useState<Driver[] | null>(null)
   const [editDraft, setEditDraft] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const fixRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
     try {
@@ -67,6 +72,13 @@ export function OrderPanel({
     } finally {
       setBusy(false)
     }
+  }
+
+  /** "Popraw ręcznie" opened from a review item: the field chosen, the value prefilled, scrolled into view. */
+  const openFix = (field: string, value: string) => {
+    setFixField(field)
+    setFixValue(value)
+    window.setTimeout(() => fixRef.current?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }), 0)
   }
 
   const o = data?.order
@@ -187,8 +199,48 @@ export function OrderPanel({
               </span>
               {o.przManual && (
                 <span className="text-xs text-[#545B63]">
-                  Wpisana na tablicy: {o.przManual.createdBy}, {stamp(o.przManual.createdAt)}. Obowiązuje, dopóki ktoś nie zmieni uwag zlecenia w aplikacji.
+                  Wpisana na tablicy {dmy2(o.przManual.createdAt)} ({o.przManual.createdBy})
                 </span>
+              )}
+            </div>
+          )}
+          {o.coLoad?.valid && (
+            <div className="flex flex-col gap-1.5 rounded-lg bg-[#E9E0F5] px-3 py-2.5 text-[#2E1F47]">
+              <span className="text-[11.5px] font-bold uppercase tracking-wider">Doładunek do {o.coLoad.of}</span>
+              <span className="text-[13px]">
+                Jedzie razem ze zleceniem {o.coLoad.of} na tym samym aucie — bez własnych km, nie zmienia pustych dojazdów. Kwoty liczą się normalnie.
+                {o.coLoad.source === 'manual' ? ' Oznaczone ręcznie na tablicy.' : ' Z uwag w aplikacji.'}
+              </span>
+              {onOpenOrder && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => onOpenOrder(o.coLoad!.of)}
+                    className="h-10 rounded-lg border border-[#B9A6D6] bg-white px-3 text-[13px] font-semibold text-[#2E1F47] hover:border-[#2E1F47]"
+                  >
+                    Otwórz {o.coLoad.of}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {o.coLoads.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-lg bg-[#E9E0F5] px-3 py-2.5 text-[#2E1F47]">
+              <span className="text-[11.5px] font-bold uppercase tracking-wider">Doładunki: {o.coLoads.join(', ')}</span>
+              <span className="text-[13px]">Jadą razem z tym zleceniem — ich km są tutaj.</span>
+              {onOpenOrder && (
+                <div className="flex flex-wrap gap-2">
+                  {o.coLoads.map(no => (
+                    <button
+                      key={no}
+                      type="button"
+                      onClick={() => onOpenOrder(no)}
+                      className="h-10 rounded-lg border border-[#B9A6D6] bg-white px-3 text-[13px] font-semibold text-[#2E1F47] hover:border-[#2E1F47]"
+                    >
+                      Otwórz {no}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
           )}
@@ -232,9 +284,12 @@ export function OrderPanel({
                 </span>
                 <span className="font-mono text-[12.5px] text-[#545B63]">
                   {dm(l.startDate)}–{dm(l.endDate)}
-                  {showMoney && ` · kwota ${eur(l.amount)} · przychód ${eur(l.revAlloc)}`}
+                  {showMoney && ` · kwota ${eur(l.amount)}${l.amountGross !== null ? ` (${eur(l.amountGross)} − 1,5% skonta)` : ''} · przychód ${eur(l.revAlloc)}`}
                 </span>
-                {l.kind === 'fleet' && (
+                {l.kind === 'fleet' && l.coLoad && (
+                  <span className="font-mono text-[12.5px] text-[#545B63]">doładunek — bez własnych km (są na zleceniu {o.coLoad?.of ?? 'głównym'})</span>
+                )}
+                {l.kind === 'fleet' && !l.coLoad && (
                   <span className="font-mono text-[12.5px] text-[#545B63]">
                     z ładunkiem {km(l.kmLoaded, l.kmEstimated)} · dojazd pusty {km(l.kmEmpty, l.kmEstimated)}
                     {l.kmEmptyFrom ? ` (z: ${l.kmEmptyFrom})` : ' (brak poprzedniego zlecenia)'}
@@ -262,16 +317,37 @@ export function OrderPanel({
               <Money
                 label="Kwoty dla aut"
                 value={eur(o.amountsTotal)}
-                sub={o.extraCost ? `w tym ${o.extraCostManual ? 'dodatkowe' : 'prom'} ${eur(o.extraCost)}` : undefined}
+                sub={
+                  [o.extraCost ? `w tym ${o.extraCostManual ? 'dodatkowe' : 'prom'} ${eur(o.extraCost)}` : null, o.skonto ? 'po 1,5% skonta' : null]
+                    .filter(Boolean)
+                    .join(' · ') || undefined
+                }
               />
               <Money label="Marża" value={signedEur(o.margin)} sub={o.marginPct !== null ? `${String(o.marginPct).replace('.', ',')}%` : undefined} />
             </div>
           )}
 
+          {/* Review items settle right here (28.10.2026) — the same buttons as in "Do sprawdzenia". */}
           {data.issues.map(i => (
-            <p key={i.id} className="rounded-lg bg-[#F4C77A] px-3 py-2 text-[13px] text-[#3A2400]">
-              {i.message}
-            </p>
+            <div key={i.id} className="flex flex-col gap-2 rounded-lg bg-[#F4C77A] px-3 py-2.5 text-[13px] text-[#3A2400]">
+              <p>{i.message}</p>
+              <IssueActions
+                issue={i}
+                fleet={[]}
+                currentOrderNo={orderNo}
+                onOpenOrder={no => onOpenOrder?.(no)}
+                onResolve={(action, payload) => void run(() => boardApi.resolveIssue(i.id, action, payload ?? {}))}
+                {...(i.kind === 'PRZ_AMOUNT_MISMATCH'
+                  ? {
+                      onFixPrz: () => {
+                        // The entry as it stands: the board entry, else the application's notes (flight numbers and PROM stay).
+                        openFix('prz', data.overrides.find(ov => ov.field === 'prz')?.value ?? o.notesApp)
+                      },
+                    }
+                  : {})}
+                {...(i.kind === 'COLOAD' ? { onFixCoLoad: () => openFix('coload', o.coLoad?.of ?? '') } : {})}
+              />
+            </div>
           ))}
 
           {!o.draft && (
@@ -335,7 +411,7 @@ export function OrderPanel({
 
           {/* A preliminary order is changed with "Edytuj", not with corrections. */}
           {!o.draft && (
-            <div className="flex flex-col gap-2">
+            <div ref={fixRef} className="flex flex-col gap-2">
               <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Ręczne poprawki</span>
               {data.overrides.length === 0 && <span className="text-[13px] text-[#545B63]">Brak — liczby pochodzą z aplikacji.</span>}
               {data.overrides.map(ov => (
@@ -408,7 +484,9 @@ export function OrderPanel({
                               ? 'np. 07.10 12:00 albo sama godzina 12:00'
                               : fixField.startsWith('km_total')
                                 ? 'np. 1250 — z ładunkiem i pustym dojazdem razem'
-                                : ''
+                                : fixField === 'coload'
+                                  ? 'np. 79-1234-26 — albo „-”, gdy to nie doładunek'
+                                  : ''
                         }
                         className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal"
                       />
@@ -419,7 +497,9 @@ export function OrderPanel({
                       ? 'Kierowca zlecenia liczy się sam ze zmian kierowców na tablicy — poprawiaj tylko wyjątki.'
                       : fixField.startsWith('km_total')
                         ? 'Wszystkie km auta na tym zleceniu. Pusty dojazd zostaje wyliczony przez tablicę, reszta liczy się jako km z ładunkiem.'
-                        : 'Poprawka zostaje, dopóki aplikacja nie zmieni tej samej wartości — wtedy obowiązuje wartość z aplikacji.'}
+                        : fixField === 'coload'
+                          ? 'Numer zlecenia głównego na tym samym aucie: doładunek nie ma własnych km i nie zmienia pustych dojazdów. „-” = to nie doładunek (choć uwagi tak mówią).'
+                          : 'Poprawka zostaje, dopóki aplikacja nie zmieni tej samej wartości — wtedy obowiązuje wartość z aplikacji.'}
                   </p>
                   <div className="flex gap-2">
                     <button
@@ -428,7 +508,8 @@ export function OrderPanel({
                       onClick={() =>
                         void run(async () => {
                           const raw = fixValue.trim()
-                          const asText = fixField === 'prz' || fixField.startsWith('driver') || fixField === 'load_at' || fixField === 'unload_at'
+                          const asText =
+                            fixField === 'prz' || fixField === 'coload' || fixField.startsWith('driver') || fixField === 'load_at' || fixField === 'unload_at'
                           await boardApi.setOverride(orderNo, fixField, asText ? raw : raw.replace(',', '.'))
                           setFixField(null)
                           setFixValue('')
@@ -459,6 +540,15 @@ export function OrderPanel({
       )}
     </aside>
   )
+}
+
+/** "2026-10-27T14:21:17Z" → "27.10.26" (Polish date). */
+function dmy2(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10)
+  const parts = new Intl.DateTimeFormat('pl-PL', { timeZone: 'Europe/Warsaw', day: '2-digit', month: '2-digit', year: '2-digit' }).formatToParts(d)
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? ''
+  return `${get('day')}.${get('month')}.${get('year')}`
 }
 
 function Money({ label, value, sub }: { label: string; value: string; sub?: string | undefined }) {

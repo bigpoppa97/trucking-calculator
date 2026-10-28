@@ -117,6 +117,7 @@ export const OVERRIDE_LABELS: Record<string, string> = {
   'driver:1': 'Kierowca — 2. odcinek',
   load_at: 'Załadunek (data i godzina)',
   unload_at: 'Rozładunek (data i godzina)',
+  coload: 'Doładunek do zlecenia',
 }
 
 /** "Km razem" of a leg: km_total (leg 0) or km_total:1 (leg 1). */
@@ -151,6 +152,7 @@ export function fixOptions(legs: LegKindRef[]): Array<{ field: string; label: st
     ...(legs.length > 1 ? [opt('driver:1')] : []),
     opt('load_at'),
     opt('unload_at'),
+    opt('coload'),
   ]
 }
 

@@ -1615,3 +1615,243 @@ describe('27.10.2026 — relay on a multi-drop order splits the route at the swa
     ])
   })
 })
+
+describe('paczka 28.10.2026 — skonto, doładunek, trailer change and driver change with an hour, review in the order panel', () => {
+  const truckId = async (plate: string) => (await board.fleet()).find(t => t.currentPlate === plate)!.id
+  const rowOf = async (plate: string, date = '2026-09-21') => (await board.weekView(date)).trucks.find(t => t.plate === plate)!
+
+  it('the order panel gets its review items with details; "Czy była przepinka?" also in the panel of the first order', async () => {
+    const rows: Row[] = [
+      { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100', lh: '08:00 — —', uh: '— — 13:00' },
+      { no: '79-2-26', from: 'Warszawa', ld: '2026-09-22', to: 'Wilno', ud: '2026-09-23', rev: 1500, cost: 1200, sub: 'AA1001A', trailer: 'TR100', lh: '16:00 — —', uh: '— — 12:00' },
+    ]
+    await board.importFile(await xlsx(rows, HOURS_HEADERS), 'a.xlsx', 'daily')
+    for (const no of ['79-1-26', '79-2-26']) {
+      const d = await board.orderDetails(no)
+      const gap = d.issues.find(i => i.kind === 'ROUTE_GAP')
+      expect(gap?.details['orders']).toEqual(['79-1-26', '79-2-26'])
+    }
+  })
+
+  it('skonto: the cost is the PRZ amount less 1.5% — no review item, the board counts the amount after it', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 3000, cost: 1576, sub: 'AA1001A', trailer: 'TR100', notes: 'PRZ BRATISLAVA 21.09 AA1001A>BB2001B 1600/800' },
+        // Both legs of one carrier on one forwarding order: the sum less skonto.
+        { no: '79-2-26', from: 'Warszawa', ld: '2026-09-23', to: 'Budapest', ud: '2026-09-24', rev: 2500, cost: 1970, sub: 'AA1001A', trailer: 'TR100', notes: 'PRZ BRATISLAVA 23.09 AA1001A>AA1002A 1000/1000' },
+        // A real difference is still reported.
+        { no: '79-3-26', from: 'Warszawa', ld: '2026-09-23', to: 'Budapest', ud: '2026-09-24', rev: 3000, cost: 1000, sub: 'BB2001B', carrier: 'Beta Trans', trailer: 'TR960PE', notes: 'PRZ BRATISLAVA 23.09 BB2001B>AA1002A 1420/1700' },
+        // Exact amount: nothing changes.
+        { no: '79-4-26', from: 'Warszawa', ld: '2026-09-25', to: 'Budapest', ud: '2026-09-26', rev: 3000, cost: 1600, sub: 'AA1001A', trailer: 'TR100', notes: 'PRZ BRATISLAVA 25.09 AA1001A>BB2001B 1600/800' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    expect((await issuesOf('PRZ_AMOUNT_MISMATCH')).map(i => i.ref)).toEqual(['79-3-26'])
+
+    const one = await board.orderDetails('79-1-26')
+    expect(one.order.skonto).toBe(true)
+    expect(one.legs.map(l => [l.plate, l.amount, l.amountGross])).toEqual([
+      ['AA1001A', 1576, 1600],
+      ['BB2001B', 800, null],
+    ])
+    expect(one.order.amountsTotal).toBe(2376)
+    expect(one.order.margin).toBe(624)
+
+    const both = await board.orderDetails('79-2-26')
+    expect(both.legs.map(l => [l.amount, l.amountGross])).toEqual([
+      [985, 1000],
+      [985, 1000],
+    ])
+    expect((await board.orderDetails('79-4-26')).legs.map(l => [l.amount, l.amountGross])).toEqual([
+      [1600, null],
+      [800, null],
+    ])
+    // The truck's totals use the amount after skonto.
+    const bar = (await rowOf('AA1001A')).bars.find(b => b.orderNo === '79-1-26')!
+    expect(bar.amount).toBe(1576)
+    expect(bar.noteLines).toContain('Kwota po skoncie: 1576 € (1600 € − 1,5%).')
+  })
+
+  it('doładunek: "Doładunek do <order>" in the notes rides with the main order — no km of its own, no route check, money counts', async () => {
+    const rows: Row[] = [
+      { no: '79-10-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest + Praha 6', ud: '2026-09-23', rev: 2600, cost: 2100, sub: 'AA1001A', trailer: 'TR100' },
+      { no: '79-11-26', from: 'Budapest', ld: '2026-09-23', to: 'Praha 6', ud: '2026-09-23', rev: 400, cost: 300, sub: 'AA1001A', trailer: 'TR100', notes: 'dołądunek do 79-10-26-S' },
+      { no: '79-12-26', from: 'Praha 6', ld: '2026-09-24', to: 'Warszawa', ud: '2026-09-25', rev: 1200, cost: 1000, sub: 'AA1001A', trailer: 'TR100' },
+    ]
+    // A typo in the keyword ("dołądunek") is folded too — only the number must be there.
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
+    let co = await board.orderDetails('79-11-26')
+    expect(co.order.coLoad).toMatchObject({ of: '79-10-26', valid: true, source: 'notes' })
+    expect(co.legs[0]).toMatchObject({ kmLoaded: 0, kmEmpty: 0, coLoad: true, amount: 300 })
+    expect((await board.orderDetails('79-10-26')).order.coLoads).toEqual(['79-11-26'])
+    // The next empty run starts at the main order's unloading.
+    expect((await board.orderDetails('79-12-26')).legs[0]).toMatchObject({ kmEmptyFrom: 'Praga', kmEmpty: 0 })
+    expect(await issuesOf('ROUTE_GAP')).toEqual([])
+    expect(await issuesOf('COLOAD')).toEqual([])
+    const row = await rowOf('AA1001A')
+    expect(row.bars.find(b => b.orderNo === '79-11-26')?.coLoadOf).toBe('79-10-26')
+    expect(row.totals.legs).toBe(3)
+    expect(row.totals.revenue).toBe(4200)
+
+    // The board correction "-" = not a co-load: a normal order again, with its own km and the route check.
+    await board.setOverride('79-11-26', 'coload', '-')
+    co = await board.orderDetails('79-11-26')
+    expect(co.order.coLoad).toBeNull()
+    expect(co.legs[0]!.kmEmpty).toBeGreaterThan(500)
+    expect((await issuesOf('ROUTE_GAP')).map(i => i.ref)).toEqual(['79-11-26'])
+    await board.clearOverride('79-11-26', 'coload')
+    expect(await issuesOf('ROUTE_GAP')).toEqual([])
+
+    await expect(board.setOverride('79-11-26', 'coload', 'abc')).rejects.toMatchObject({ code: 'BAD_ORDER_NO' })
+    await expect(board.setOverride('79-11-26', 'coload', '79-11-26')).rejects.toMatchObject({ code: 'BAD_ORDER_NO' })
+    await expect(board.setOverride('79-11-26', 'coload', '79-99-26')).rejects.toMatchObject({ code: 'ORDER_NOT_FOUND' })
+  })
+
+  it('doładunek: main order on another truck, missing or cancelled → a normal order and a review item; the board correction marks one', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-10-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest + Praha 6', ud: '2026-09-23', rev: 2600, cost: 2100, sub: 'AA1002A', trailer: 'TR200' },
+        { no: '79-11-26', from: 'Budapest', ld: '2026-09-23', to: 'Praha 6', ud: '2026-09-23', rev: 400, cost: 300, sub: 'AA1001A', trailer: 'TR100', notes: 'Doładunek 79-10-26' },
+        { no: '79-13-26', from: 'Budapest', ld: '2026-09-23', to: 'Praha 6', ud: '2026-09-23', rev: 400, cost: 300, sub: 'BB2001B', carrier: 'Beta Trans', trailer: 'TR960PE', notes: 'DOLADUNEK DO 79-77-26' },
+        { no: '79-14-26', from: 'Budapest', ld: '2026-09-25', to: 'Praha 6', ud: '2026-09-25', rev: 400, cost: 300, sub: 'AA1001A', trailer: 'TR100', notes: 'doładunek' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const items = (await issuesOf('COLOAD')).sort((a, b) => a.ref.localeCompare(b.ref))
+    expect(items.map(i => [i.ref, i.details['problem']])).toEqual([
+      ['79-11-26', 'other_truck'],
+      ['79-13-26', 'missing'],
+      ['79-14-26', 'no_ref'],
+    ])
+    expect(items[0]!.message).toMatch(/79-10-26 jedzie innym autem \(AA1002A\) niż 79-11-26 \(AA1001A\)/)
+    expect((await board.orderDetails('79-11-26')).legs[0]!.kmLoaded).toBeGreaterThan(0)
+
+    // Marked on the board as a co-load of an order on its truck: the item closes.
+    await board.importFile(
+      await xlsx([{ no: '79-15-26', from: 'Warszawa', ld: '2026-09-24', to: 'Budapest + Praha 6', ud: '2026-09-26', rev: 2600, cost: 2100, sub: 'AA1001A', trailer: 'TR100' }]),
+      'b.xlsx',
+      'daily',
+    )
+    await board.setOverride('79-14-26', 'coload', '79-15-26 -S')
+    expect((await board.orderDetails('79-14-26')).order.coLoad).toMatchObject({ of: '79-15-26', valid: true, source: 'manual' })
+    expect((await board.orderDetails('79-14-26')).overrides.find(o => o.field === 'coload')?.display).toBe('do 79-15-26')
+    expect((await issuesOf('COLOAD')).map(i => i.ref).sort()).toEqual(['79-11-26', '79-13-26'])
+  })
+
+  it('an automatic trailer change can be typed over (day, hour, place, text) — the truck has the new trailer from then; or dismissed', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-2-26', from: 'Budapest', ld: '2026-09-25', to: 'Warszawa', ud: '2026-09-26', rev: 1200, cost: 1000, sub: 'AA1001A', trailer: 'TR200' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const t1 = await truckId('AA1001A')
+    let row = await rowOf('AA1001A')
+    const auto = row.events.find(e => e.kind === 'trailer')!
+    expect(auto).toMatchObject({ auto: true, day: '2026-09-25', text: 'BUD: TR100 → TR200', place: 'BUD', autoKey: '79-2-26:0:TR100>TR200' })
+    expect(row.trailer).toBe('TR200') // today 27.09
+
+    // It really happened on Sunday 27.09 at 21:00 in Warsaw (now: 27.09 20:00 Polish time).
+    await board.addTruckEvent({ truckId: t1, day: '2026-09-27', kind: 'trailer', text: 'TR100 → TR200 na bazie', place: 'Warszawa', time: '21:00', autoKey: auto.autoKey! })
+    row = await rowOf('AA1001A')
+    const typed = row.events.filter(e => e.kind === 'trailer')
+    expect(typed).toHaveLength(1)
+    expect(typed[0]).toMatchObject({ auto: false, day: '2026-09-27', time: '21:00', text: 'TR100 → TR200 na bazie', place: 'WAW', autoKey: auto.autoKey, autoDay: '2026-09-25' })
+    expect(row.trailer).toBe('TR100')
+    expect(row.copyText).toMatch(/Trailer TR100/)
+    await board.updateTruckEvent(typed[0]!.id!, { time: '19:30' })
+    expect((await rowOf('AA1001A')).trailer).toBe('TR200')
+    await expect(board.updateTruckEvent(typed[0]!.id!, { time: '25:00' })).rejects.toMatchObject({ code: 'BAD_TIME' })
+
+    // Typed over again: the earlier entry is replaced, not doubled.
+    await board.addTruckEvent({ truckId: t1, day: '2026-09-24', kind: 'trailer', text: 'zmiana w BUD', autoKey: auto.autoKey! })
+    row = await rowOf('AA1001A')
+    expect(row.events.filter(e => e.kind === 'trailer').map(e => [e.day, e.text])).toEqual([['2026-09-24', 'zmiana w BUD']])
+
+    // "Usuń — nie było zmiany": no chip at all.
+    const entry = row.events.find(e => e.kind === 'trailer')!
+    await board.updateTruckEvent(entry.id!, { suppress: true })
+    row = await rowOf('AA1001A')
+    expect(row.events.filter(e => e.kind === 'trailer')).toEqual([])
+    // A normal event cannot be "dismissed" that way.
+    await board.addTruckEvent({ truckId: t1, day: '2026-09-23', kind: 'note', text: 'mycie' })
+    const note = (await rowOf('AA1001A')).events.find(e => e.text === 'mycie')!
+    await expect(board.updateTruckEvent(note.id!, { suppress: true })).rejects.toMatchObject({ code: 'NOT_AUTO' })
+
+    // Deleting the entry brings the automatic chip back.
+    await board.deleteNote(entry.id!)
+    expect((await rowOf('AA1001A')).events.find(e => e.kind === 'trailer')).toMatchObject({ auto: true, day: '2026-09-25' })
+    await expect(board.addTruckEvent({ truckId: t1, day: '2026-09-24', kind: 'note', text: 'x', autoKey: auto.autoKey! })).rejects.toMatchObject({ code: 'BAD_KIND' })
+  })
+
+  it('a typed-over trailer change stays as a normal "Naczepa" event when the automatic one is gone', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-2-26', from: 'Budapest', ld: '2026-09-25', to: 'Warszawa', ud: '2026-09-26', rev: 1200, cost: 1000, sub: 'AA1001A', trailer: 'TR200' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const t1 = await truckId('AA1001A')
+    const auto = (await rowOf('AA1001A')).events.find(e => e.kind === 'trailer')!
+    await board.addTruckEvent({ truckId: t1, day: '2026-09-24', kind: 'trailer', text: 'TR100 → TR200 w BUD', autoKey: auto.autoKey!, time: '7:05' })
+    await board.setOverride('79-2-26', 'trailer', 'TR100')
+    const events = (await rowOf('AA1001A')).events.filter(e => e.kind === 'trailer')
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ auto: false, day: '2026-09-24', time: '07:05', text: 'TR100 → TR200 w BUD' })
+    expect(events[0]!.autoKey).toBeUndefined()
+  })
+
+  it('day events take an optional hour', async () => {
+    const t1 = await truckId('AA1001A')
+    await board.addTruckEvent({ truckId: t1, day: '2026-09-22', kind: 'pause', text: 'pauza 45 h', time: '6:00' })
+    const ev = (await rowOf('AA1001A')).events.find(e => e.text === 'pauza 45 h')!
+    expect(ev.time).toBe('06:00')
+    await board.updateTruckEvent(ev.id!, { time: null })
+    expect((await rowOf('AA1001A')).events.find(e => e.id === ev.id)!.time).toBeNull()
+    await expect(board.addTruckEvent({ truckId: t1, day: '2026-09-22', kind: 'note', text: 'x', time: 'rano' })).rejects.toMatchObject({ code: 'BAD_TIME' })
+  })
+
+  it('a driver change with an hour: before loading the new driver, after unloading the old one, in between both; the driver now switches at it', async () => {
+    await board.importFile(
+      await xlsx(
+        [{ no: '79-201-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-24', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100', lh: '08:00 — —', uh: '— — 12:00' }],
+        HOURS_HEADERS,
+      ),
+      'a.xlsx',
+      'daily',
+    )
+    const t1 = await truckId('AA1001A')
+    const krzys = await board.createDriver({ name: 'Krzysztof Z.', carrier: 'Przewoźnik Alfa' })
+    const driverOf = async () => (await board.orderDetails('79-201-26')).legs[0]!.driver
+    await board.setDriverChange({ truckId: t1, day: '2026-09-21', driverId: krzys, time: '06:00' })
+    expect(await driverOf()).toBe('Krzysztof Z.')
+    const change = (await board.truckView(t1, '2026-09-21', '2026-09-21')).truck.driverChanges[0]!
+    expect(change.time).toBe('06:00')
+    await board.updateDriverChange(change.id, { time: '10:00' })
+    expect(await driverOf()).toBe('Jan K. → Krzysztof Z. (zmiana 21.09 10:00)')
+    await board.updateDriverChange(change.id, { day: '2026-09-24', time: '11:00' })
+    expect(await driverOf()).toBe('Jan K. → Krzysztof Z. (zmiana 24.09 11:00)')
+    await board.updateDriverChange(change.id, { time: '12:00' })
+    expect(await driverOf()).toBe('Jan K.')
+    // Without an hour the day rule stays: on the unloading day it belongs to the next order.
+    await board.updateDriverChange(change.id, { time: null })
+    expect(await driverOf()).toBe('Jan K.')
+    await expect(board.updateDriverChange(change.id, { time: '9' })).rejects.toMatchObject({ code: 'BAD_TIME' })
+    await board.deleteDriverChange(change.id)
+
+    // Today (27.09, now 20:00 Polish time): a change at 21:00 is not in force yet, one at 19:00 is.
+    await board.setDriverChange({ truckId: t1, day: '2026-09-27', driverId: krzys, time: '21:00' })
+    let row = await rowOf('AA1001A')
+    expect(row.driver).toBe('Jan K.')
+    expect(row.events.find(e => e.kind === 'driver' && e.day === '2026-09-27')).toMatchObject({ text: 'Kierowca: Jan K. → Krzysztof Z.', time: '21:00' })
+    await board.setDriverChange({ truckId: t1, day: '2026-09-27', driverId: krzys, time: '19:00' })
+    row = await rowOf('AA1001A')
+    expect(row.driver).toBe('Krzysztof Z.')
+  })
+})

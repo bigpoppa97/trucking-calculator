@@ -72,8 +72,8 @@ export function DriverChangeDialog({
 }: {
   truck: { id: number; plate: string; carrier: string; driverId: number | null }
   day: string
-  /** Existing change → edit (day, driver) or delete. */
-  change?: { id: number; driverId: number | null } | null
+  /** Existing change → edit (day, hour, driver) or delete. */
+  change?: { id: number; driverId: number | null; time?: string | null } | null
   onClose: () => void
   onSaved: (message?: string) => void
 }) {
@@ -81,6 +81,7 @@ export function DriverChangeDialog({
   const [drivers, setDrivers] = useState<Driver[] | null>(null)
   const [driverId, setDriverId] = useState<string>(change ? String(change.driverId ?? 'none') : '')
   const [date, setDate] = useState(day || todayIso())
+  const [time, setTime] = useState(change?.time ?? '')
   const [release, setRelease] = useState(true)
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
@@ -141,14 +142,15 @@ export function DriverChangeDialog({
     void run(async () => {
       let target: number | null = driverId === 'none' ? null : Number(driverId)
       if (adding) target = await boardApi.createDriver({ name: name.trim(), phone: phone.trim(), carrier: truck.carrier })
+      const hour = time.trim() ? time.trim() : null
       if (change) {
-        await boardApi.updateDriverChange(change.id, { day: date, driverId: target })
+        await boardApi.updateDriverChange(change.id, { day: date, driverId: target, time: hour })
         return undefined
       }
       // Only when the box was shown (the driver is on another tractor) — never a silent release.
       const releaseOther = !adding && elsewhere.length > 0 && release
-      const res = await boardApi.setDriverChange({ truckId: truck.id, day: date, driverId: target, releaseOther })
-      return res.released.length > 0 ? `${res.released.join(', ')}: od ${dm(date)} bez kierowcy.` : undefined
+      const res = await boardApi.setDriverChange({ truckId: truck.id, day: date, driverId: target, releaseOther, time: hour })
+      return res.released.length > 0 ? `${res.released.join(', ')}: od ${dm(date)}${hour ? ` ${hour}` : ''} bez kierowcy.` : undefined
     })
   }
 
@@ -160,17 +162,28 @@ export function DriverChangeDialog({
             <h2 id={`${id}-title`} className="flex items-center gap-2 text-lg font-bold">
               <Icon name="driver" size={18} /> Zmiana kierowcy · {truck.plate}
             </h2>
-            <p className="text-sm text-[#545B63]">Od tego dnia tablica pokazuje nowego kierowcę; zlecenia przypisze sama.</p>
+            <p className="text-sm text-[#545B63]">Od tego dnia (i godziny, jeśli ją podasz) tablica pokazuje nowego kierowcę; zlecenia przypisze sama.</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Zamknij" className="flex h-11 w-11 flex-none items-center justify-center rounded-lg border border-[#D5D9D3]">
             <Icon name="close" size={18} />
           </button>
         </div>
         <div className="flex flex-col gap-3 text-sm">
-          <label className="flex flex-col gap-1 font-semibold" htmlFor={`${id}-day`}>
-            Od dnia
-            <input id={`${id}-day`} type="date" value={date} onChange={e => setDate(e.target.value)} className={FIELD} />
-          </label>
+          <div className="grid grid-cols-[minmax(0,1fr)_150px] gap-2">
+            <label className="flex flex-col gap-1 font-semibold" htmlFor={`${id}-day`}>
+              Od dnia
+              <input id={`${id}-day`} type="date" value={date} onChange={e => setDate(e.target.value)} className={FIELD} />
+            </label>
+            <label className="flex flex-col gap-1 font-semibold" htmlFor={`${id}-time`}>
+              Godzina (opcjonalnie)
+              <input id={`${id}-time`} type="time" value={time} onChange={e => setTime(e.target.value)} className={`${FIELD} px-2`} />
+            </label>
+          </div>
+          {time.trim() && (
+            <p className="-mt-1 text-xs text-[#545B63]">
+              Zlecenie z załadunkiem przed tą godziną jedzie już nowy kierowca; z rozładunkiem przed nią — jeszcze poprzedni; w trakcie — obaj.
+            </p>
+          )}
 
           {!adding ? (
             <label className="flex flex-col gap-1 font-semibold" htmlFor={`${id}-driver`}>

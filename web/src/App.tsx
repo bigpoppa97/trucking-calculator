@@ -222,13 +222,14 @@ export function App() {
             }}
             onShowOnBoard={orderNo => void openOrder(orderNo)}
             onOpenDriver={openDriver}
+            onIssuesChanged={() => void refreshCount()}
           />
         )}
         {page?.kind === 'driver' && (
           <DriverPage key={page.id} driverId={page.id} backLabel={backLabel ?? 'Flota'} onBack={closePage} onOpenTruck={id => openTruck(id, boardDate)} />
         )}
         {!page && activeScreen === 'board' && (
-          <WeekPage focus={focus} initialDate={boardDate} onDateChange={setBoardDate} onReview={() => go('review')} onOpenTruck={openTruck} onOpenDriver={openDriver} />
+          <WeekPage focus={focus} initialDate={boardDate} onDateChange={setBoardDate} onReview={() => go('review')} onOpenTruck={openTruck} onOpenDriver={openDriver} onIssuesChanged={() => void refreshCount()} />
         )}
         {!page && activeScreen === 'review' && <ReviewPage onOpenOrder={orderNo => void openOrder(orderNo)} onIssuesChanged={() => void refreshCount()} />}
         {!page && activeScreen === 'fleet' && (

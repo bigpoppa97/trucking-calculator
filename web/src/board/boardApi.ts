@@ -30,6 +30,8 @@ export interface WeekBar {
   noCarrier: boolean
   /** Preliminary order typed on the board ("W-…"). */
   draft: boolean
+  /** Co-load ("doładunek") riding with this main order on the truck — no km of its own. */
+  coLoadOf: string | null
   inWeek: boolean
   noteLines: string[]
   /** Set when the truck is in service all day on a day of this leg. */
@@ -103,6 +105,15 @@ export interface WeekEvent {
   placeName?: string | null
   createdBy?: string
   createdAt?: string
+  /** Hour of the event ("HH:MM"), null = the whole day. */
+  time?: string | null
+  /**
+   * Trailer change: the automatic change this chip is (auto) or that a board entry replaces —
+   * opens the trailer-change dialog; with its own day and description for the defaults.
+   */
+  autoKey?: string
+  autoDay?: string
+  autoText?: string
 }
 
 export type CertStatus = 'ok' | 'expiring' | 'expired' | 'none'
@@ -154,6 +165,7 @@ export interface TruckOrderRow {
   noCarrier: boolean
   missing: boolean
   draft: boolean
+  coLoadOf: string | null
   driver: string
   driverManual: boolean
 }
@@ -175,7 +187,7 @@ export interface TruckView {
     retiredOn: string | null
     copyText: string
     required: Service[]
-    driverChanges: Array<{ id: number; day: string; driverId: number | null; driver: string; createdBy: string; createdAt: string }>
+    driverChanges: Array<{ id: number; day: string; time: string | null; driverId: number | null; driver: string; createdBy: string; createdAt: string }>
   }
   from: string
   to: string
@@ -251,6 +263,12 @@ export interface OrderDetails {
     przManual: { createdBy: string; createdAt: string } | null
     przErrors: string[]
     trailer: string | null
+    /** The application's cost is the PRZ amount less 1.5% skonto; legs carry the amount after it. */
+    skonto: boolean
+    /** Co-load (doładunek) of another order; valid = rides with it (no km of its own). */
+    coLoad: { of: string; valid: boolean; source: 'notes' | 'manual'; problem: string | null } | null
+    /** Co-loads riding with this order. */
+    coLoads: string[]
   }
   legs: Array<{
     index: number
@@ -263,6 +281,10 @@ export interface OrderDetails {
     startDate: string
     endDate: string
     amount: number | null
+    /** PRZ amount before skonto (the leg's amount is after it); null = no skonto. */
+    amountGross: number | null
+    /** Leg of a co-load riding with its main order. */
+    coLoad: boolean
     revAlloc: number | null
     kmLoaded: number | null
     kmEmpty: number | null
@@ -276,7 +298,7 @@ export interface OrderDetails {
   }>
   notes: Array<{ id: number; text: string; createdBy: string; createdAt: string }>
   overrides: Array<{ field: string; value: string; display: string; createdAt: string }>
-  issues: Array<{ id: number; kind: string; message: string }>
+  issues: Array<{ id: number; kind: string; ref: string; message: string; details: Record<string, unknown> }>
   history: Array<{ at: string; text: string }>
 }
 
@@ -492,8 +514,10 @@ export const boardApi = {
     call('POST', `/api/board/orders/${encodeURIComponent(orderNo)}/overrides`, { field, value }),
   clearOverride: (orderNo: string, field: string) =>
     call('DELETE', `/api/board/orders/${encodeURIComponent(orderNo)}/overrides/${encodeURIComponent(field)}`),
-  addEvent: (input: { truckId: number; day: string; kind: NoteKind; text: string; place?: string }) => call('POST', '/api/board/events', input),
-  updateEvent: (id: number, patch: { day?: string; kind?: NoteKind; text?: string; place?: string | null }) => call('PATCH', `/api/board/events/${id}`, patch),
+  addEvent: (input: { truckId: number; day: string; kind: NoteKind; text: string; place?: string; time?: string | null; autoKey?: string; suppress?: boolean }) =>
+    call('POST', '/api/board/events', input),
+  updateEvent: (id: number, patch: { day?: string; kind?: NoteKind; text?: string; place?: string | null; time?: string | null; suppress?: boolean }) =>
+    call('PATCH', `/api/board/events/${id}`, patch),
   createDraft: async (input: DraftForm & { truckId: number; note?: string }) => (await call<{ orderNo: string }>('POST', '/api/board/drafts', input)).orderNo,
   updateDraft: (orderNo: string, patch: Partial<DraftForm>) => call('PATCH', `/api/board/drafts/${encodeURIComponent(orderNo)}`, patch),
   deleteDraft: (orderNo: string) => call('DELETE', `/api/board/drafts/${encodeURIComponent(orderNo)}`),
@@ -518,9 +542,10 @@ export const boardApi = {
   driver: (id: number) => call<DriverDetails>('GET', `/api/board/drivers/${id}`),
   createDriver: async (input: { name: string; phone?: string; carrier?: string; notes?: string }) => (await call<{ id: number }>('POST', '/api/board/drivers', input)).id,
   updateDriver: (id: number, patch: Partial<{ name: string; phone: string; carrier: string; notes: string; active: boolean }>) => call('PATCH', `/api/board/drivers/${id}`, patch),
-  setDriverChange: (input: { truckId: number; day: string; driverId: number | null; releaseOther?: boolean }) =>
+  setDriverChange: (input: { truckId: number; day: string; driverId: number | null; releaseOther?: boolean; time?: string | null }) =>
     call<{ released: string[] }>('POST', '/api/board/driver-changes', input),
-  updateDriverChange: (id: number, patch: { day?: string; driverId?: number | null }) => call('PATCH', `/api/board/driver-changes/${id}`, patch),
+  updateDriverChange: (id: number, patch: { day?: string; driverId?: number | null; time?: string | null }) =>
+    call('PATCH', `/api/board/driver-changes/${id}`, patch),
   deleteDriverChange: (id: number) => call('DELETE', `/api/board/driver-changes/${id}`),
   createCert: async (driverId: number, input: { kind: string; number?: string; validTo?: string | null; notes?: string }) =>
     (await call<{ id: number }>('POST', `/api/board/drivers/${driverId}/certs`, input)).id,

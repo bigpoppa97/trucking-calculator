@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Kysely, Selectable } from 'kysely'
 import type { BoardOrdersTable, DB, ImportMode, NoteKind, ServiceTarget } from '../db/schema.js'
-import { computeOrders, routeLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
+import { computeOrders, normalizeOrderNo, routeLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
 import { parseNumberInput } from './amount.js'
 import { loadBoardContext, retiredOn, servesBetween, type BoardContext, type TruckRecord } from './context.js'
 import type { DistanceService } from './distances.js'
@@ -77,6 +77,8 @@ export const OVERRIDE_FIELDS = [
   'driver:1',
   'load_at',
   'unload_at',
+  // Co-load (doładunek) of another order (28.10.2026): the main order number, '-' = not a co-load.
+  'coload',
 ] as const
 /** Loading / unloading date and hour typed on the board (12.10.2026). */
 const AT_OVERRIDES = new Set(['load_at', 'unload_at'])
@@ -113,6 +115,8 @@ export interface WeekBar {
   noCarrier: boolean
   /** Preliminary order typed on the board (12.10.2026). */
   draft: boolean
+  /** Co-load riding with another order on this truck ("doładunek", 28.10.2026): main order number. */
+  coLoadOf: string | null
   inWeek: boolean
   noteLines: string[]
   /** Set when the truck is in service all day on a day of this leg (red outline on the board). */
@@ -133,6 +137,28 @@ export interface WeekEvent {
   placeName?: string | null
   createdBy?: string
   createdAt?: string
+  /** Hour of the event ("HH:MM", 28.10.2026), null = the whole day. */
+  time?: string | null
+  /**
+   * Trailer change (28.10.2026): the automatic change this chip is (auto) or replaces (a board
+   * entry typed over it) — click opens the trailer-change dialog. Absent on other events and on
+   * a typed change whose automatic one is no longer computed (it is a normal "Naczepa" event).
+   */
+  autoKey?: string
+  /** The automatic change's own day and description (to restore the defaults in the dialog). */
+  autoDay?: string
+  autoText?: string
+}
+
+/** An automatic trailer change between two legs of a truck, and the board entry typed over it (if any). */
+interface AutoTrailerChange {
+  /** "<order>:<leg>:<old>><new>" — names the change in board_notes.auto_key. */
+  key: string
+  leg: ComputedLeg
+  day: string
+  place: string | null
+  text: string
+  entry: { id: number; day: string | null; time: string | null; suppress: number } | null
 }
 
 export interface CertWarning {
@@ -185,6 +211,8 @@ export interface TruckOrderRow {
   noCarrier: boolean
   missing: boolean
   draft: boolean
+  /** Co-load of this order (no km of its own, 28.10.2026). */
+  coLoadOf: string | null
   /** "A → B (zmiana 11.10)"; manual = corrected in the order panel. */
   driver: string
   driverManual: boolean
@@ -208,7 +236,7 @@ export interface TruckView {
     copyText: string
     required: ServiceDto[]
     /** Driver changes of this tractor, newest first (the first entry may be "from the beginning"). */
-    driverChanges: Array<{ id: number; day: string; driverId: number | null; driver: string; createdBy: string; createdAt: string }>
+    driverChanges: Array<{ id: number; day: string; time: string | null; driverId: number | null; driver: string; createdBy: string; createdAt: string }>
   }
   from: string
   to: string
@@ -651,9 +679,20 @@ export class BoardService {
       .selectAll()
       .where('scope', '=', 'truck_day')
       .where('deleted', '=', 0)
+      .where('suppress', '=', 0)
       .where('kind', '!=', 'service')
       .where('day', '>=', first)
       .where('day', '<=', last)
+      .orderBy('id')
+      .execute()
+    // Trailer changes typed over automatic ones (28.10.2026), whatever their day: the automatic
+    // change may sit in this week while the entry moved it to another one, or the other way round.
+    const autoNotes = await this.db
+      .selectFrom('board_notes')
+      .selectAll()
+      .where('scope', '=', 'truck_day')
+      .where('deleted', '=', 0)
+      .where('auto_key', 'is not', null)
       .orderBy('id')
       .execute()
 
@@ -686,19 +725,75 @@ export class BoardService {
       list.sort((a, b) => a.l.startDate.localeCompare(b.l.startDate) || a.l.endDate.localeCompare(b.l.endDate) || a.l.orderNo.localeCompare(b.l.orderNo))
     }
 
-    /** Trailer behind the truck on a day: the latest order loaded by then, else the fixed trailer. */
-    const trailerOn = (truck: TruckRecord, day: string): { trailer: string; since: string } | null => {
-      const latest = [...(legsByTruck.get(truck.id) ?? [])].reverse().find(x => x.l.startDate <= day && x.l.trailer)
-      if (latest?.l.trailer) return { trailer: latest.l.trailer, since: latest.l.startDate }
+    // Automatic trailer changes between consecutive legs of each truck (gray chips), and the
+    // board entries typed over them (28.10.2026: other day, hour or place).
+    const autoChanges = new Map<number, AutoTrailerChange[]>()
+    const autoEntry = new Map<string, (typeof autoNotes)[number]>()
+    for (const n of autoNotes) if (n.truck_id !== null && n.auto_key) autoEntry.set(`${n.truck_id}|${n.auto_key}`, n)
+    for (const [truckId, legs] of legsByTruck) {
+      const list: AutoTrailerChange[] = []
+      let prevTrailer: string | null = null
+      for (const { o, l } of legs) {
+        if (o.excluded || o.noCarrier) continue
+        if (l.trailer && prevTrailer && l.trailer !== prevTrailer) {
+          const place = l.stops[0]?.code ?? null
+          const where = place ? `${place}: ` : ''
+          const key = `${o.orderNo}:${l.index}:${prevTrailer}>${l.trailer}`
+          const entry = autoEntry.get(`${truckId}|${key}`) ?? null
+          list.push({
+            key,
+            leg: l,
+            day: l.startDate,
+            place,
+            text: l.przRole === 'to' ? `${where}przepinka, bierze ${l.trailer}` : `${where}${prevTrailer} → ${l.trailer}`,
+            entry,
+          })
+        }
+        if (l.trailer) prevTrailer = l.trailer
+      }
+      autoChanges.set(truckId, list)
+    }
+
+    /** Moments the truck took a trailer: each leg's start, or the day/hour of a change typed over the automatic one. */
+    const trailerSteps = new Map<number, Array<{ trailer: string; since: string; at: string | null }>>()
+    const stepsOf = (truckId: number) => {
+      const cached = trailerSteps.get(truckId)
+      if (cached) return cached
+      const moved = new Map<ComputedLeg, { day: string; time: string | null }>()
+      for (const c of autoChanges.get(truckId) ?? []) {
+        if (c.entry && c.entry.suppress === 0 && c.entry.day) moved.set(c.leg, { day: c.entry.day, time: c.entry.time })
+      }
+      const steps = (legsByTruck.get(truckId) ?? [])
+        .filter(x => x.l.trailer)
+        .map(x => {
+          const m = moved.get(x.l)
+          return { trailer: x.l.trailer!, since: m?.day ?? x.l.startDate, at: m ? m.time : null }
+        })
+        .sort((a, b) => a.since.localeCompare(b.since) || (a.at ?? '').localeCompare(b.at ?? ''))
+      trailerSteps.set(truckId, steps)
+      return steps
+    }
+
+    /**
+     * Trailer behind the truck on a day: the latest order loaded by then (or the change typed
+     * over the automatic one, from its day and hour), else the fixed trailer. `time` = now on today.
+     */
+    const trailerOn = (truck: TruckRecord, day: string, time?: string | null): { trailer: string; since: string } | null => {
+      const latest = [...stepsOf(truck.id)]
+        .reverse()
+        .find(x => x.since < day || (x.since === day && (!x.at || !time || x.at <= time)))
+      if (latest) return { trailer: latest.trailer, since: `${latest.since} ${latest.at ?? ''}` }
       return truck.trailerPlate ? { trailer: truck.trailerPlate, since: '' } : null
     }
+    const nowTime = nowLocal.slice(11, 16)
+    const timeFor = (day: string) => (day === today ? nowTime : null)
 
     /** The truck the trailer is behind on a day (most recent order with it), or null. */
     const trailerHolder = (plate: string | null, day: string): number | null => {
       if (!plate) return null
       let best: { truckId: number; since: string } | null = null
       for (const t of ctx.fleet.trucks) {
-        const on = trailerOn(t, day)
+        const on = trailerOn(t, day, timeFor(day))
         if (on && on.trailer === plate && (!best || on.since > best.since)) best = { truckId: t.id, since: on.since }
       }
       return best?.truckId ?? null
@@ -727,24 +822,31 @@ export class BoardService {
       for (const truck of ctx.fleet.trucks.filter(include)) {
         const legs = legsByTruck.get(truck.id) ?? []
 
-        // Automatic trailer-change events between consecutive legs.
+        // Automatic trailer-change events between consecutive legs (unless typed over or dismissed).
         const events: WeekEvent[] = []
-        let prevTrailer: string | null = null
-        for (const { o, l } of legs) {
-          if (o.excluded || o.noCarrier) continue
-          if (l.trailer && prevTrailer && l.trailer !== prevTrailer && l.startDate >= start && l.startDate <= end) {
-            const where = l.stops[0]?.code ? `${l.stops[0].code}: ` : ''
-            events.push({
-              id: null,
-              day: l.startDate,
-              kind: 'trailer',
-              text: l.przRole === 'to' ? `${where}przepinka, bierze ${l.trailer}` : `${where}${prevTrailer} → ${l.trailer}`,
-              auto: true,
-            })
+        const typedOver = new Map<number, AutoTrailerChange>()
+        for (const c of autoChanges.get(truck.id) ?? []) {
+          if (c.entry) {
+            if (c.entry.suppress === 0) typedOver.set(c.entry.id, c)
+            continue
           }
-          if (l.trailer) prevTrailer = l.trailer
+          if (c.day < start || c.day > end) continue
+          events.push({
+            id: null,
+            day: c.day,
+            kind: 'trailer',
+            text: c.text,
+            auto: true,
+            place: c.place,
+            placeName: c.place ? ctx.places.name(c.place) : null,
+            time: null,
+            autoKey: c.key,
+            autoDay: c.day,
+            autoText: c.text,
+          })
         }
         for (const n of dayNotes.filter(n => n.truck_id === truck.id && n.day !== null && n.day >= start && n.day <= end)) {
+          const over = typedOver.get(n.id)
           events.push({
             id: n.id,
             day: n.day ?? start,
@@ -755,6 +857,8 @@ export class BoardService {
             placeName: n.place_code ? ctx.places.name(n.place_code) : null,
             createdBy: n.created_by,
             createdAt: n.created_at,
+            time: n.time,
+            ...(over ? { autoKey: over.key, autoDay: over.day, autoText: over.text } : {}),
           })
         }
         // Driver changes (the "from the beginning" entry is never in a week).
@@ -763,7 +867,7 @@ export class BoardService {
           if (c.day < start || c.day > end || c.day <= FROM_THE_BEGINNING) continue
           const prev = i > 0 ? changes[i - 1]! : null
           const text = prev ? `${ctx.drivers.name(prev.driverId)} → ${ctx.drivers.name(c.driverId)}` : ctx.drivers.name(c.driverId)
-          events.push({ id: null, day: c.day, kind: 'driver', text: `Kierowca: ${text}`, auto: false, driverChangeId: c.id, driverId: c.driverId })
+          events.push({ id: null, day: c.day, kind: 'driver', text: `Kierowca: ${text}`, auto: false, driverChangeId: c.id, driverId: c.driverId, time: c.time })
         }
 
         const truckServiceDays = serviceRows
@@ -785,7 +889,7 @@ export class BoardService {
         const km = counted.reduce((s, x) => s + (x.l.kmLoaded ?? 0) + (x.l.kmEmpty ?? 0), 0)
         const kmEmpty = counted.reduce((s, x) => s + (x.l.kmEmpty ?? 0), 0)
 
-        const trailer = trailerOn(truck, today < end ? today : end)?.trailer ?? null
+        const trailer = trailerOn(truck, refDay, timeFor(refDay))?.trailer ?? null
         const trailerRec = trailer ? ctx.trailers.get(trailer) : undefined
         const plate = ctx.fleet.plateOn(truck, today >= start && today <= end ? today : end)
         const typePl = trailerRec?.typePl ?? 'chłodnia 2,61 m · rolki'
@@ -808,7 +912,8 @@ export class BoardService {
           .map(r => dtos.get(r.id)!)
           .sort((a, b) => a.reportedAt.localeCompare(b.reportedAt))
 
-        const driver = ctx.drivers.driverOn(truck.id, today >= start && today <= end ? today : end)
+        const driverDay = today >= start && today <= end ? today : end
+        const driver = ctx.drivers.driverOn(truck.id, driverDay, timeFor(driverDay))
         trucks.push({
           id: truck.id,
           plate,
@@ -822,7 +927,7 @@ export class BoardService {
           trailerTypeEn: typeEn,
           copyText: copyTextFor(plate, trailer, typeEn, driver),
           bars,
-          events: events.sort((a, b) => a.day.localeCompare(b.day)),
+          events: events.sort((a, b) => a.day.localeCompare(b.day) || (a.time ?? '').localeCompare(b.time ?? '')),
           services,
           required,
           totals: {
@@ -862,6 +967,9 @@ export class BoardService {
     if (o.excluded === 'cancelled') noteLines.push('Zlecenie anulowane (status A).')
     if (o.excluded === 'unconfirmed') noteLines.push('Zlecenie niezatwierdzone (status N).')
     if (o.noCarrier) noteLines.push('Zlecenie spedycyjne anulowane — auto go nie wiezie.')
+    if (l.coLoad && o.coLoad) noteLines.push(`Doładunek do ${o.coLoad.of} — bez własnych km.`)
+    if (o.coLoads.length > 0 && l.kind === 'fleet') noteLines.push(`Doładunki: ${o.coLoads.join(', ')}.`)
+    if (l.amountGross !== null && l.amount !== null) noteLines.push(`Kwota po skoncie: ${eurText(l.amount)} (${eurText(l.amountGross)} − 1,5%).`)
     if (o.notesApp) noteLines.push(`Z aplikacji: ${o.notesApp}`)
     for (const n of notes) noteLines.push(`Tablica · ${n.created_by}, ${fmtStamp(n.created_at)}: ${n.text}`)
     return {
@@ -888,6 +996,7 @@ export class BoardService {
       missing: o.missing,
       noCarrier: o.noCarrier,
       draft: o.draft,
+      coLoadOf: l.coLoad && o.coLoad ? o.coLoad.of : null,
       inWeek: l.startDate >= weekStartIso,
       noteLines,
       serviceConflict,
@@ -947,6 +1056,7 @@ export class BoardService {
         noCarrier: o.noCarrier,
         missing: o.missing,
         draft: o.draft,
+        coLoadOf: l.coLoad && o.coLoad ? o.coLoad.of : null,
         ...((): { driver: string; driverManual: boolean } => {
           const d = legDriversOf(o, l, ctx)
           return { driver: d.text, driverManual: d.manual }
@@ -973,7 +1083,7 @@ export class BoardService {
       : null
 
     const plateToday = ctx.fleet.plateOn(truck, today)
-    const driverToday = ctx.drivers.driverOn(truckId, today)
+    const driverToday = ctx.drivers.driverOn(truckId, today, nowLocal.slice(11, 16))
     let header: { trailer: string | null; trailerTypePl: string; copyText: string; required: ServiceDto[] }
     if (todayRow) {
       header = { trailer: todayRow.trailer, trailerTypePl: todayRow.trailerTypePl, copyText: todayRow.copyText, required: todayRow.required }
@@ -1025,6 +1135,7 @@ export class BoardService {
         driverChanges: [...ctx.drivers.changesOf(truckId)].reverse().map(c => ({
           id: c.id,
           day: c.day,
+          time: c.time,
           driverId: c.driverId,
           driver: ctx.drivers.name(c.driverId),
           createdBy: c.createdBy,
@@ -1250,10 +1361,25 @@ export class BoardService {
       this.db.selectFrom('board_notes').selectAll().where('order_no', '=', orderNo).where('deleted', '=', 0).orderBy('id').execute(),
       this.db.selectFrom('board_order_changes').selectAll().where('order_no', '=', orderNo).orderBy('id').execute(),
       this.db.selectFrom('board_overrides').selectAll().where('order_no', '=', orderNo).orderBy('id').execute(),
-      this.db.selectFrom('board_issues').selectAll().where('ref', '=', orderNo).where('status', '=', 'open').execute(),
+      // Items about this order; "Czy była przepinka?" also in the panel of the first of its two orders.
+      this.db
+        .selectFrom('board_issues')
+        .selectAll()
+        .where('status', '=', 'open')
+        .where(eb => eb.or([eb('ref', '=', orderNo), eb.and([eb('kind', '=', 'ROUTE_GAP'), eb('details', 'like', `%"${orderNo}"%`)])]))
+        .orderBy('id')
+        .execute(),
     ])
     const overrideDisplay = (field: string, value: string) =>
-      field.startsWith('driver') ? ctx.drivers.name(Number(value) || null) : AT_OVERRIDES.has(field) ? displayAt(value) : value
+      field.startsWith('driver')
+        ? ctx.drivers.name(Number(value) || null)
+        : AT_OVERRIDES.has(field)
+          ? displayAt(value)
+          : field === 'coload'
+            ? value === '-'
+              ? 'nie jest doładunkiem'
+              : `do ${value}`
+            : value
     const history = [
       ...changes.map(c => ({
         at: c.created_at,
@@ -1324,6 +1450,12 @@ export class BoardService {
         przManual: o.prz && o.overrides['prz'] ? { createdBy: o.overrides['prz'].createdBy, createdAt: o.overrides['prz'].createdAt } : null,
         przErrors: o.przErrors,
         trailer: o.legs[0]?.trailer ?? null,
+        /** Skonto (28.10.2026): the legs carry the amount after it; `amountGross` on the leg is the PRZ amount. */
+        skonto: o.skonto,
+        /** Co-load of another order (doładunek, 28.10.2026); valid = rides with it (no km of its own). */
+        coLoad: o.coLoad && o.coLoad.of ? { of: o.coLoad.of, valid: o.coLoad.valid, source: o.coLoad.source, problem: o.coLoad.problem } : null,
+        /** Co-loads riding with this order. */
+        coLoads: o.coLoads,
       },
       legs: o.legs.map(l => ({
         index: l.index,
@@ -1339,6 +1471,8 @@ export class BoardService {
         startDate: l.startDate,
         endDate: l.endDate,
         amount: l.amount,
+        amountGross: l.amountGross,
+        coLoad: l.coLoad,
         revAlloc: l.revAlloc,
         kmLoaded: l.kmLoaded,
         kmEmpty: l.kmEmpty,
@@ -1359,7 +1493,7 @@ export class BoardService {
           display: overrideDisplay(ov.field, ov.value),
           createdAt: ov.created_at,
         })),
-      issues: issues.map(i => ({ id: i.id, kind: i.kind, message: i.message })),
+      issues: issues.map(i => ({ id: i.id, kind: i.kind, ref: i.ref, message: i.message, details: JSON.parse(i.details) as Record<string, unknown> })),
       history,
     }
   }
@@ -1376,9 +1510,25 @@ export class BoardService {
       .execute()
   }
 
-  async addTruckEvent(input: { truckId: number; day: string; kind: NoteKind; text: string; place?: string }) {
+  /**
+   * A day event on a truck. With `autoKey` (28.10.2026) it is a trailer change typed over the
+   * automatic one with that key (replacing an earlier entry for it); `suppress` = "Usuń — nie
+   * było zmiany": the automatic change is not shown at all.
+   */
+  async addTruckEvent(input: {
+    truckId: number
+    day: string
+    kind: NoteKind
+    text: string
+    place?: string
+    time?: string | null | undefined
+    autoKey?: string | undefined
+    suppress?: boolean | undefined
+  }) {
     if (input.kind === 'service') throw new BoardError('USE_SERVICE_FORM', 'Serwis dodaje się formularzem serwisu.')
     if (!NOTE_KINDS.includes(input.kind)) throw new BoardError('BAD_KIND', 'Nieznany rodzaj zdarzenia.')
+    if (input.autoKey !== undefined && input.kind !== 'trailer') throw new BoardError('BAD_KIND', 'Tylko zmianę naczepy można poprawić w miejscu automatycznej.')
+    const time = eventTime(input.time)
     const truck = await this.db.selectFrom('board_trucks').select('id').where('id', '=', input.truckId).executeTakeFirst()
     if (!truck) throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
     let placeCode: string | null = null
@@ -1389,19 +1539,35 @@ export class BoardService {
     }
     const text = input.text.trim()
     if (!text) throw new BoardError('EMPTY_NOTE', 'Opis jest pusty.')
-    await this.db
-      .insertInto('board_notes')
-      .values({
-        scope: 'truck_day',
-        truck_id: input.truckId,
-        day: input.day,
-        kind: input.kind,
-        text,
-        place_code: placeCode,
-        created_by: this.actor(),
-        created_at: this.now(),
-      })
-      .execute()
+    const autoKey = input.autoKey?.trim() || null
+    await this.db.transaction().execute(async trx => {
+      if (autoKey) {
+        await trx
+          .updateTable('board_notes')
+          .set({ deleted: 1 })
+          .where('scope', '=', 'truck_day')
+          .where('truck_id', '=', input.truckId)
+          .where('auto_key', '=', autoKey)
+          .where('deleted', '=', 0)
+          .execute()
+      }
+      await trx
+        .insertInto('board_notes')
+        .values({
+          scope: 'truck_day',
+          truck_id: input.truckId,
+          day: input.day,
+          kind: input.kind,
+          text,
+          place_code: placeCode,
+          time,
+          auto_key: autoKey,
+          suppress: autoKey && input.suppress ? 1 : 0,
+          created_by: this.actor(),
+          created_at: this.now(),
+        })
+        .execute()
+    })
   }
 
   // ---------------------------------------------------------------- preliminary orders (zlecenia wstępne)
@@ -1577,7 +1743,18 @@ export class BoardService {
    * Edit a day event (note, pause, trailer, position) from the board. `place` '' clears it.
    * Only "Pozycja auta" moves the empty run — the place of other kinds is information only.
    */
-  async updateTruckEvent(id: number, patch: { day?: string | undefined; kind?: NoteKind | undefined; text?: string | undefined; place?: string | null | undefined }) {
+  async updateTruckEvent(
+    id: number,
+    patch: {
+      day?: string | undefined
+      kind?: NoteKind | undefined
+      text?: string | undefined
+      place?: string | null | undefined
+      time?: string | null | undefined
+      /** "Usuń — nie było zmiany" on a change typed over an automatic one. */
+      suppress?: boolean | undefined
+    },
+  ) {
     const row = await this.db.selectFrom('board_notes').selectAll().where('id', '=', id).where('scope', '=', 'truck_day').where('deleted', '=', 0).executeTakeFirst()
     if (!row) throw new BoardError('EVENT_NOT_FOUND', 'Nie ma takiego zdarzenia.', 404)
     const set: Record<string, unknown> = {}
@@ -1604,6 +1781,11 @@ export class BoardService {
         if (!code) throw new BoardError('PLACE_UNKNOWN', `Nie znam miejsca „${raw}”. Dodaj je w słowniku miejsc.`)
         set['place_code'] = code
       }
+    }
+    if (patch.time !== undefined) set['time'] = eventTime(patch.time)
+    if (patch.suppress !== undefined) {
+      if (!row.auto_key) throw new BoardError('NOT_AUTO', 'To zdarzenie nie zastępuje automatycznej zmiany naczepy — usuń je zwykłym „Usuń”.')
+      set['suppress'] = patch.suppress ? 1 : 0
     }
     if (Object.keys(set).length === 0) return
     await this.db.updateTable('board_notes').set(set).where('id', '=', id).execute()
@@ -1633,6 +1815,7 @@ export class BoardService {
     const row = await this.requireOrder(orderNo)
     if (AT_OVERRIDES.has(field)) value = await this.resolveAtOverride(row, field as 'load_at' | 'unload_at', value)
     if (field === 'prz') value = await this.checkPrzOverride(row, value)
+    if (field === 'coload') value = await this.checkCoLoadOverride(orderNo, value)
     const appValue = overrideAppValue(field, row)
     const now = this.now()
     await this.db.transaction().execute(async trx => {
@@ -1656,6 +1839,18 @@ export class BoardService {
         .execute()
     })
     await this.refreshIssues()
+  }
+
+  /** "Doładunek do zlecenia": a number of an order on the board (not this one), or '-' = not a co-load. */
+  private async checkCoLoadOverride(orderNo: string, raw: string): Promise<string> {
+    const clean = raw.trim()
+    if (clean === '-' || clean.toLowerCase() === 'nie') return '-'
+    const main = normalizeOrderNo(clean)
+    if (!main) throw new BoardError('BAD_ORDER_NO', 'Wpisz numer zlecenia głównego, np. 79-1234-26.')
+    if (main === orderNo) throw new BoardError('BAD_ORDER_NO', 'Zlecenie nie może być doładunkiem do samego siebie.')
+    const exists = await this.db.selectFrom('board_orders').select('order_no').where('order_no', '=', main).executeTakeFirst()
+    if (!exists) throw new BoardError('ORDER_NOT_FOUND', `Nie ma zlecenia ${main} na tablicy.`)
+    return main
   }
 
   async clearOverride(orderNo: string, field: string) {
@@ -1824,7 +2019,7 @@ export class BoardService {
           carrier: d.carrier,
           notes: d.notes,
           active: d.active,
-          trucks: ctx.drivers.trucksOf(d.id, today, truckIds).map(id => ({ id, plate: ctx.fleet.plateOn(ctx.fleet.byId(id)!, today) })),
+          trucks: ctx.drivers.trucksOf(d.id, today, truckIds, this.nowTime()).map(id => ({ id, plate: ctx.fleet.plateOn(ctx.fleet.byId(id)!, today) })),
           avsec: avsec ? { validTo: avsec.valid_to, number: avsec.number, files: filesOf.get(avsec.id) ?? 0, ...certStatus(avsec.valid_to, today) } : null,
           certCount: own.length,
           warnings: certWarnings(
@@ -1877,6 +2072,7 @@ export class BoardService {
           id,
           today,
           ctx.fleet.trucks.map(t => t.id),
+          this.nowTime(),
         )
         .map(tid => ({ id: tid, plate: ctx.fleet.plateOn(ctx.fleet.byId(tid)!, today) })),
       history,
@@ -1948,8 +2144,15 @@ export class BoardService {
    * `driverId` null = no driver. With `releaseOther` the driver leaves any other tractor he is on
    * that day (drivers move between a carrier's tractors).
    */
-  async setDriverChange(input: { truckId: number; day: string; driverId: number | null; releaseOther?: boolean | undefined }): Promise<{ released: string[] }> {
+  async setDriverChange(input: {
+    truckId: number
+    day: string
+    driverId: number | null
+    releaseOther?: boolean | undefined
+    time?: string | null | undefined
+  }): Promise<{ released: string[] }> {
     if (!isRealDay(input.day)) throw new BoardError('BAD_DATE', 'Podaj poprawną datę.')
+    const time = eventTime(input.time)
     const truck = await this.db.selectFrom('board_trucks').select('id').where('id', '=', input.truckId).executeTakeFirst()
     if (!truck) throw new BoardError('TRUCK_NOT_FOUND', 'Nie ma takiego auta.', 404)
     if (input.driverId !== null && !(await this.db.selectFrom('board_drivers').select('id').where('id', '=', input.driverId).executeTakeFirst())) {
@@ -1963,14 +2166,16 @@ export class BoardService {
             input.driverId,
             input.day,
             ctx.fleet.trucks.map(t => t.id).filter(id => id !== input.truckId),
+            time,
           )
         : []
     await this.db.transaction().execute(async trx => {
+      // The driver leaving another tractor leaves it at the same hour.
       const upsert = async (truckId: number, driverId: number | null) =>
         trx
           .insertInto('board_driver_changes')
-          .values({ truck_id: truckId, driver_id: driverId, day: input.day, created_by: this.actor(), created_at: this.now() })
-          .onConflict(oc => oc.columns(['truck_id', 'day']).doUpdateSet({ driver_id: driverId, created_by: this.actor(), created_at: this.now() }))
+          .values({ truck_id: truckId, driver_id: driverId, day: input.day, time, created_by: this.actor(), created_at: this.now() })
+          .onConflict(oc => oc.columns(['truck_id', 'day']).doUpdateSet({ driver_id: driverId, time, created_by: this.actor(), created_at: this.now() }))
           .execute()
       await upsert(input.truckId, input.driverId)
       for (const other of others) {
@@ -1981,10 +2186,11 @@ export class BoardService {
     return { released }
   }
 
-  async updateDriverChange(id: number, patch: { day?: string | undefined; driverId?: number | null | undefined }) {
+  async updateDriverChange(id: number, patch: { day?: string | undefined; driverId?: number | null | undefined; time?: string | null | undefined }) {
     const row = await this.db.selectFrom('board_driver_changes').selectAll().where('id', '=', id).executeTakeFirst()
     if (!row) throw new BoardError('CHANGE_NOT_FOUND', 'Nie ma takiej zmiany kierowcy.', 404)
     const day = patch.day ?? row.day
+    const time = patch.time !== undefined ? eventTime(patch.time) : row.time
     if (!isRealDay(day)) throw new BoardError('BAD_DATE', 'Podaj poprawną datę.')
     const driverId = patch.driverId !== undefined ? patch.driverId : row.driver_id
     if (driverId !== null && !(await this.db.selectFrom('board_drivers').select('id').where('id', '=', driverId).executeTakeFirst())) {
@@ -1996,7 +2202,7 @@ export class BoardService {
     }
     await this.db
       .updateTable('board_driver_changes')
-      .set({ day, driver_id: driverId, created_by: this.actor(), created_at: this.now() })
+      .set({ day, time, driver_id: driverId, created_by: this.actor(), created_at: this.now() })
       .where('id', '=', id)
       .execute()
   }
@@ -2180,7 +2386,7 @@ export class BoardService {
     const today = this.today()
     return ctx.fleet.trucks.map(truck => {
       const { driver: _legacyDriver, phone: _legacyPhone, ...t } = truck
-      const d = ctx.drivers.driverOn(t.id, today)
+      const d = ctx.drivers.driverOn(t.id, today, this.nowTime())
       return { ...t, currentPlate: ctx.fleet.plateOn(truck, today), driverId: d?.id ?? null, driver: d?.name ?? '', retiredOn: retiredOn(truck) }
     })
   }
@@ -2263,6 +2469,11 @@ export class BoardService {
   /** The board's "today": the Polish date. */
   private today(): string {
     return warsawNow(this.now()).slice(0, 10)
+  }
+
+  /** Polish hour now ("HH:MM") — driver changes with an hour switch at it (28.10.2026). */
+  private nowTime(): string {
+    return warsawNow(this.now()).slice(11, 16)
   }
 
   async createTruck(input: { plate: string; validFrom: string; carrier?: string; driver?: string; phone?: string; trailerPlate?: string }) {
@@ -2464,6 +2675,19 @@ export class BoardService {
   }
 }
 
+/** "1 773 €" (no decimals unless there are cents). */
+function eurText(n: number): string {
+  return `${n.toLocaleString('pl-PL', { maximumFractionDigits: 2 }).replace(/\u00a0/g, ' ')} €`
+}
+
+/** Optional hour of a day event or a driver change ("7:05" → "07:05"; empty = none). */
+function eventTime(raw: string | null | undefined): string | null {
+  if (raw === undefined || raw === null || !raw.trim()) return null
+  const t = normTime(raw)
+  if (!t) throw new BoardError('BAD_TIME', 'Wpisz godzinę jako GG:MM, np. 14:00 — albo zostaw pole puste.')
+  return t
+}
+
 /** Text for "Kopiuj" (sent to clients in English). */
 function copyTextFor(plate: string, trailer: string | null, typeEn: string, driver: DriverRecord | null): string {
   return `Truck ${plate}, Trailer ${trailer ?? '—'} (${typeEn}), Driver: ${driver?.name ?? ''}${driver?.phone ? ` ${formatPhone(driver.phone)}` : ''}`
@@ -2474,7 +2698,14 @@ function legDriversOf(o: ComputedOrder, l: ComputedLeg, ctx: BoardContext): LegD
   if (l.kind !== 'fleet' || l.truckId === null) return { drivers: [], text: '', manual: false }
   const ov = l.index === 0 ? (o.overrides['driver'] ?? o.overrides['driver:0']) : o.overrides[`driver:${l.index}`]
   const manual = ov ? Number(ov.value) : null
-  return ctx.drivers.legDrivers(l.truckId, l.startDate, l.endDate, manual !== null && Number.isInteger(manual) && manual > 0 ? manual : null)
+  return ctx.drivers.legDrivers(
+    l.truckId,
+    l.startDate,
+    l.endDate,
+    manual !== null && Number.isInteger(manual) && manual > 0 ? manual : null,
+    l.startTime,
+    l.endTime,
+  )
 }
 
 /** "Warszawa → Budapeszt (przez Kraków)" */

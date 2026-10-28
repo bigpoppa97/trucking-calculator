@@ -64,6 +64,7 @@ const WEEK: WeekView = {
           missing: false,
           noCarrier: false,
           draft: false,
+          coLoadOf: null,
           inWeek: true,
           noteLines: [],
           serviceConflict: null,
@@ -114,6 +115,9 @@ const ORDER: OrderDetails = {
     przManual: null,
     przErrors: [],
     trailer: 'TR1111P',
+    skonto: false,
+    coLoad: null,
+    coLoads: [],
   },
   legs: [
     {
@@ -127,6 +131,8 @@ const ORDER: OrderDetails = {
       startDate: '2026-09-22',
       endDate: '2026-09-23',
       amount: 1300,
+      amountGross: null,
+      coLoad: false,
       revAlloc: 1500,
       kmLoaded: 680,
       kmEmpty: 0,
@@ -488,8 +494,8 @@ const TRUCK_VIEW = (): TruckView => {
       copyText: 'Truck AA1050H',
       required: [REQUIRED_TRUCK],
       driverChanges: [
-        { id: 31, day: '2026-09-23', driverId: 5, driver: 'Kierowca A', createdBy: 'Dyspozytor', createdAt: '2026-09-20T08:00:00Z' },
-        { id: 30, day: '2000-01-01', driverId: 6, driver: 'Kierowca B', createdBy: 'migracja', createdAt: '2026-09-01T08:00:00Z' },
+        { id: 31, day: '2026-09-23', time: null, driverId: 5, driver: 'Kierowca A', createdBy: 'Dyspozytor', createdAt: '2026-09-20T08:00:00Z' },
+        { id: 30, day: '2000-01-01', time: null, driverId: 6, driver: 'Kierowca B', createdBy: 'migracja', createdAt: '2026-09-01T08:00:00Z' },
       ],
     },
     from: '2026-09-21',
@@ -516,6 +522,7 @@ const TRUCK_VIEW = (): TruckView => {
         noCarrier: false,
         missing: false,
         draft: false,
+        coLoadOf: null,
         driver: 'Kierowca A',
         driverManual: false,
       },
@@ -623,7 +630,7 @@ describe('Kierowcy', () => {
     await userEvent.selectOptions(select, '6')
     expect(within(dialog).getByRole('checkbox', { name: /Kierowca B jeździ teraz na AA2050H/ })).toBeChecked()
     await userEvent.click(within(dialog).getByRole('button', { name: 'Zapisz zmianę' }))
-    expect(api.setDriverChange).toHaveBeenCalledWith({ truckId: 1, day: '2026-09-24', driverId: 6, releaseOther: true })
+    expect(api.setDriverChange).toHaveBeenCalledWith({ truckId: 1, day: '2026-09-24', driverId: 6, releaseOther: true, time: null })
     expect(await screen.findByRole('status')).toHaveTextContent('AA2050H: od 24.09 bez kierowcy.')
   })
 
@@ -933,7 +940,8 @@ describe('paczka 26.10.2026', () => {
     const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
     expect(await within(panel).findByText('Przepinka (ręczna poprawka)')).toBeInTheDocument()
     expect(within(panel).queryByText('Przepinka z uwag')).not.toBeInTheDocument()
-    expect(within(panel).getByText(/Wpisana na tablicy: Wojciech/)).toBeInTheDocument()
+    expect(within(panel).getByText('Wpisana na tablicy 12.10.26 (Wojciech)')).toBeInTheDocument()
+    expect(within(panel).queryByText(/Obowiązuje/)).not.toBeInTheDocument()
   })
 
   it('"Czy była przepinka?" opens both orders; a withdrawn tractor with a later order can be brought back', async () => {
@@ -1002,5 +1010,171 @@ describe('paczka 26.10.2026', () => {
     })
     render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
     expect(await screen.findByText(/Dane z importu .*\(export \(26\)\.xlsx\) · uzupełnienie .*\(2 zlecenia z export \(27\)\.xlsx\)\./)).toBeInTheDocument()
+  })
+})
+
+describe('paczka 28.10.2026', () => {
+  it('review items in the order panel have the same buttons as in "Do sprawdzenia"; "Popraw wpis przepinki" opens the form filled in', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue({
+      ...ORDER,
+      order: { ...ORDER.order, notesApp: 'PRZ LCJ 22.09 AA1050H>AA2050H 1420/600' },
+      issues: [
+        { id: 41, kind: 'PRZ_AMOUNT_MISMATCH', ref: '79-1000-26', message: 'Kwota AA1050H we wpisie PRZ (1420 €) różni się od kosztu w aplikacji (1300 €).', details: { plate: 'AA1050H', amount: 1420, cost: 1300 } },
+        { id: 42, kind: 'ROUTE_GAP', ref: '79-9013-26', message: 'Czy była przepinka? AA1050H: …', details: { orders: ['79-1000-26', '79-9013-26'] } },
+      ],
+    })
+    api.resolveIssue.mockResolvedValue({ ok: true })
+    const changed = vi.fn()
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} onIssuesChanged={changed} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    await within(panel).findByText(/różni się od kosztu/)
+    // The panel is the order already — no "Otwórz zlecenie"; the other order of the pair can be opened.
+    expect(within(panel).queryByRole('button', { name: 'Otwórz zlecenie' })).not.toBeInTheDocument()
+    expect(within(panel).queryByRole('button', { name: 'Otwórz 79-1000-26' })).not.toBeInTheDocument()
+
+    await userEvent.click(within(panel).getByRole('button', { name: 'Popraw wpis przepinki' }))
+    expect(within(panel).getByLabelText('Co poprawić')).toHaveValue('prz')
+    expect(within(panel).getByLabelText('Nowa wartość')).toHaveValue('PRZ LCJ 22.09 AA1050H>AA2050H 1420/600')
+
+    await userEvent.click(within(panel).getAllByRole('button', { name: 'W porządku' })[0]!)
+    expect(api.resolveIssue).toHaveBeenCalledWith(41, 'dismiss', {})
+    await waitFor(() => expect(changed).toHaveBeenCalled())
+
+    await userEvent.click(within(panel).getByRole('button', { name: 'Otwórz 79-9013-26' }))
+    await waitFor(() => expect(api.order).toHaveBeenLastCalledWith('79-9013-26'))
+  })
+
+  it('skonto: the leg shows the amount after it and the PRZ amount', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue({ ...ORDER, order: { ...ORDER.order, skonto: true }, legs: [{ ...ORDER.legs[0]!, amount: 1576, amountGross: 1600 }] })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText(/kwota 1\D?576 € \(1\D?600 € − 1,5% skonta\)/)).toBeInTheDocument()
+    expect(within(panel).getByText(/po 1,5% skonta/)).toBeInTheDocument()
+  })
+
+  it('doładunek: light purple tile with "doładunek", a legend entry, and the main order one click away', async () => {
+    const week = structuredClone(WEEK)
+    week.trucks[0]!.bars[0] = { ...week.trucks[0]!.bars[0]!, coLoadOf: '79-9020-26', kmLoaded: 0, kmEmpty: 0 }
+    api.week.mockResolvedValue(week)
+    api.order.mockResolvedValue({
+      ...ORDER,
+      order: { ...ORDER.order, coLoad: { of: '79-9020-26', valid: true, source: 'notes', problem: null } },
+      legs: [{ ...ORDER.legs[0]!, coLoad: true, kmLoaded: 0, kmEmpty: 0 }],
+    })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    expect(await screen.findByText('Doładunek')).toBeInTheDocument() // legend
+    const tile = await screen.findByRole('button', { name: /79-1000-26, doładunek do 79-9020-26/ })
+    expect(within(tile).getByText(/doładunek/)).toBeInTheDocument()
+    await userEvent.click(tile)
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText('Doładunek do 79-9020-26')).toBeInTheDocument()
+    expect(within(panel).getByText(/doładunek — bez własnych km/)).toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Otwórz 79-9020-26' }))
+    await waitFor(() => expect(api.order).toHaveBeenLastCalledWith('79-9020-26'))
+    // "Doładunek do zlecenia" is a correction too.
+    await userEvent.click(await within(panel).findByRole('button', { name: 'Popraw ręcznie' }))
+    expect(within(within(panel).getByLabelText('Co poprawić')).getByRole('option', { name: 'Doładunek do zlecenia' })).toBeInTheDocument()
+  })
+
+  const withTrailerChange = (): WeekView => ({
+    ...WEEK,
+    trucks: [
+      {
+        ...WEEK.trucks[0]!,
+        events: [
+          { id: null, day: '2026-09-23', kind: 'trailer', text: 'BUD: TR1111P → TR2222P', auto: true, place: 'BUD', placeName: 'Budapeszt (Vecsés)', time: null, autoKey: '79-1000-26:0:TR1111P>TR2222P', autoDay: '2026-09-23', autoText: 'BUD: TR1111P → TR2222P' },
+        ],
+      },
+    ],
+  })
+
+  it('the gray trailer-change chip opens a dialog: day, hour, place, description — saved over the automatic one', async () => {
+    api.week.mockResolvedValue(withTrailerChange())
+    api.places.mockResolvedValue([{ code: 'WAW', name: 'Warszawa', country: 'PL', lat: 52.17, lon: 20.97, kind: 'airport', aliases: [] }] as never)
+    api.addEvent.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Naczepa: BUD: TR1111P → TR2222P (wykryta automatycznie)' }))
+    const dialog = screen.getByRole('dialog', { name: 'Zmiana naczepy · AA1050H' })
+    expect(within(dialog).getByLabelText('Miejsce (tylko informacja — km nie zmienia)')).toHaveValue('Budapeszt (Vecsés)')
+    expect(within(dialog).getByLabelText('Opis')).toHaveValue('TR1111P → TR2222P')
+    fireEvent.change(within(dialog).getByLabelText('Dzień'), { target: { value: '2026-09-22' } })
+    fireEvent.change(within(dialog).getByLabelText('Godzina (opcjonalnie)'), { target: { value: '14:00' } })
+    const place = within(dialog).getByLabelText('Miejsce (tylko informacja — km nie zmienia)')
+    await userEvent.clear(place)
+    await userEvent.type(place, 'Warszawa')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Zapisz' }))
+    expect(api.addEvent).toHaveBeenCalledWith({
+      truckId: 1,
+      day: '2026-09-22',
+      kind: 'trailer',
+      text: 'TR1111P → TR2222P',
+      place: 'Warszawa',
+      time: '14:00',
+      autoKey: '79-1000-26:0:TR1111P>TR2222P',
+    })
+    expect(await screen.findByRole('status')).toHaveTextContent('Zapisano zmianę naczepy: 22.09 14:00.')
+  })
+
+  it('"Usuń — nie było zmiany" hides the automatic change after a confirmation; a typed one can go back to automatic', async () => {
+    api.week.mockResolvedValue(withTrailerChange())
+    api.places.mockResolvedValue([])
+    api.addEvent.mockResolvedValue({ ok: true })
+    const { unmount } = render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /wykryta automatycznie/ }))
+    let dialog = screen.getByRole('dialog')
+    expect(within(dialog).queryByRole('button', { name: 'Przywróć automatyczną' })).not.toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Usuń — nie było zmiany' }))
+    expect(api.addEvent).not.toHaveBeenCalled()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Usuń' }))
+    expect(api.addEvent).toHaveBeenCalledWith({ truckId: 1, day: '2026-09-23', kind: 'trailer', text: 'BUD: TR1111P → TR2222P', autoKey: '79-1000-26:0:TR1111P>TR2222P', suppress: true })
+    unmount()
+
+    const typed = withTrailerChange()
+    typed.trucks[0]!.events = [
+      { id: 9, day: '2026-09-22', kind: 'trailer', text: 'TR1111P → TR2222P', auto: false, place: 'WAW', placeName: 'Warszawa', time: '14:00', createdBy: 'Wojciech', createdAt: '2026-10-28T10:00:00Z', autoKey: '79-1000-26:0:TR1111P>TR2222P', autoDay: '2026-09-23', autoText: 'BUD: TR1111P → TR2222P' },
+    ]
+    api.week.mockResolvedValue(typed)
+    api.deleteNote.mockResolvedValue({ ok: true })
+    api.updateEvent.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const chip = await screen.findByRole('button', { name: 'Naczepa: 14:00 · WAW: TR1111P → TR2222P' })
+    await userEvent.click(chip)
+    dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(/Automatycznie: 23\.09 · BUD: TR1111P → TR2222P/)).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Godzina (opcjonalnie)')).toHaveValue('14:00')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Przywróć automatyczną' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Przywróć' }))
+    expect(api.deleteNote).toHaveBeenCalledWith(9)
+  })
+
+  it('day events and driver changes take an optional hour', async () => {
+    const week = structuredClone(WEEK)
+    week.trucks[0]!.events = [{ id: null, day: '2026-09-23', kind: 'driver', text: 'Kierowca: Kierowca B → Kierowca A', auto: false, driverChangeId: 31, driverId: 5, time: '14:00' }]
+    api.week.mockResolvedValue(week)
+    api.drivers.mockResolvedValue(DRIVERS)
+    api.updateDriverChange.mockResolvedValue({ ok: true })
+    api.addEvent.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const chip = await screen.findByRole('button', { name: 'Kierowca: Kierowca B → Kierowca A' })
+    expect(chip).toHaveTextContent('14:00 → Kierowca A')
+    await userEvent.click(chip)
+    let dialog = screen.getByRole('dialog')
+    const hour = within(dialog).getByLabelText('Godzina (opcjonalnie)')
+    expect(hour).toHaveValue('14:00')
+    fireEvent.change(hour, { target: { value: '15:30' } })
+    await waitFor(() => expect(within(within(dialog).getByLabelText('Kierowca')).getByRole('option', { name: /Kierowca A/ })).toBeInTheDocument())
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Zapisz zmianę' }))
+    expect(api.updateDriverChange).toHaveBeenCalledWith(31, { day: '2026-09-23', driverId: 5, time: '15:30' })
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Dodaj zdarzenie: AA1050H, 24.09' }))
+    dialog = screen.getByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText('Opis'), 'pauza')
+    fireEvent.change(within(dialog).getByLabelText('Godzina (opcjonalnie)'), { target: { value: '06:00' } })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Zapisz' }))
+    expect(api.addEvent).toHaveBeenCalledWith({ truckId: 1, day: '2026-09-24', kind: 'note', text: 'pauza', time: '06:00' })
   })
 })

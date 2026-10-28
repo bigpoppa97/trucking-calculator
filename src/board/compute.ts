@@ -1,11 +1,11 @@
 import type { Kysely, Selectable } from 'kysely'
 import type { BoardOrdersTable, DB } from '../db/schema.js'
-import type { BoardContext } from './context.js'
+import { sameCarrier, type BoardContext } from './context.js'
 import { DistanceService, type DistanceResult } from './distances.js'
 import { parsePrz, resolveSwapDate, type PrzEntry } from './prz.js'
 import { parseFerries } from './ferry.js'
 import { parseNumberInput } from './amount.js'
-import { aliasKey, normalizePlate, splitPlaces } from './normalize.js'
+import { aliasKey, foldDiacritics, normalizePlate, splitPlaces } from './normalize.js'
 import { parseAtValue } from './times.js'
 
 /**
@@ -28,7 +28,18 @@ import { parseAtValue } from './times.js'
  *    to that day everywhere (12.10.2026)
  *  - a preliminary order (draft, "W-…") runs on the truck it was entered for;
  *    without both rates its money is left out of the totals (km still count)
+ *  - skonto (28.10.2026): when the application's cost equals the export truck's PRZ amount
+ *    less 1.5% (or the sum of both amounts, same carrier), the carrier pays the skonto —
+ *    the board counts the amount after it (the application's cost), not a mismatch
+ *  - doładunek (co-load, 28.10.2026): "Doładunek do <order>" in the notes (or the board
+ *    correction) = the truck carries it alongside the main order: 0 km of its own, out of
+ *    the km sequence and the route checks; money counts as usual
  */
+
+/** Skonto for quick payment some carriers give (28.10.2026). */
+export const SKONTO_RATE = 0.015
+/** Rounding allowed between the PRZ amount less skonto and the application's cost (EUR). */
+export const SKONTO_TOLERANCE = 0.5
 
 export type LegKind = 'fleet' | 'own' | 'other'
 export type Exclusion = 'cancelled' | 'unconfirmed' | 'manual' | null
@@ -51,6 +62,8 @@ export interface ComputedLeg {
   endTime: string | null
   stops: Stop[]
   amount: number | null
+  /** PRZ amount before skonto when the leg's amount is after it (28.10.2026); null = no skonto. */
+  amountGross: number | null
   revAlloc: number | null
   trailer: string | null
   trailerRaw: string
@@ -62,6 +75,8 @@ export interface ComputedLeg {
   /** Km corrected by hand ("Km razem", or the older loaded / empty corrections). */
   kmManual: boolean
   przRole: 'none' | 'from' | 'to'
+  /** Leg of a co-load (doładunek) riding with its main order on the same truck: no km of its own. */
+  coLoad: boolean
 }
 
 export interface ComputedPrz {
@@ -124,6 +139,16 @@ export interface ComputedOrder {
   prz: ComputedPrz | null
   przErrors: string[]
   przExtraEntries: number
+  /** The application's cost is the PRZ amount(s) less skonto — the legs carry the amount after it. */
+  skonto: boolean
+  /**
+   * Co-load (doładunek) of another order (28.10.2026): from the notes or the board correction.
+   * `valid` = the main order is on the board, not cancelled, and on the same truck — only then
+   * the order has no km of its own; otherwise it is a normal order and goes to review.
+   */
+  coLoad: CoLoadInfo | null
+  /** Orders riding as co-loads with this one (valid ones only). */
+  coLoads: string[]
   legs: ComputedLeg[]
   overrides: Record<string, OverrideInfo>
   missing: boolean
@@ -135,6 +160,20 @@ export interface ComputedOrder {
    * plate made such an order vanish without a review item).
    */
   fleetByExport: boolean
+}
+
+export interface CoLoadInfo {
+  /** Main order number. */
+  of: string
+  source: 'notes' | 'manual'
+  valid: boolean
+  /**
+   * Why it is not treated as a co-load: the main order is missing, cancelled or on another
+   * truck; 'no_ref' = the notes say "doładunek" without an order number (`of` is '').
+   */
+  problem: 'missing' | 'cancelled' | 'other_truck' | 'self' | 'no_ref' | null
+  /** Plate(s) of the main order's fleet truck(s), for the review message. */
+  mainPlates: string[]
 }
 
 export interface ComputeWindow {
@@ -176,8 +215,70 @@ export async function computeOrders(
 
   const orders: ComputedOrder[] = rows.map(row => buildOrder(row, overridesByOrder.get(row.order_no) ?? {}, ctx))
 
+  // Main orders of co-loads outside the window: loaded only to check them.
+  const known = new Set(orderNos)
+  const missingMains = [...new Set(orders.map(o => o.coLoad?.of).filter((no): no is string => !!no && !known.has(no)))]
+  const extra: ComputedOrder[] = []
+  if (missingMains.length > 0) {
+    const [mainRows, mainOverrides] = await Promise.all([
+      db.selectFrom('board_orders').selectAll().where('order_no', 'in', missingMains).execute(),
+      db.selectFrom('board_overrides').selectAll().where('active', '=', 1).where('order_no', 'in', missingMains).orderBy('id').execute(),
+    ])
+    for (const row of mainRows) {
+      const rec: Record<string, OverrideInfo> = {}
+      for (const o of mainOverrides.filter(x => x.order_no === row.order_no)) {
+        rec[o.field] = { value: o.value, appValue: o.app_value, createdAt: o.created_at, createdBy: o.created_by }
+      }
+      extra.push(buildOrder(row, rec, ctx))
+    }
+  }
+  linkCoLoads(orders, extra)
+
   await attachKilometres(db, ctx, distances, orders, window)
   return orders
+}
+
+/**
+ * "Doładunek do 79-1234-26" in the notes (28.10.2026): case and Polish letters do not matter,
+ * "do", "zlecenia" and the "-S" suffix are optional. Returns the main order number or null.
+ */
+export function parseCoLoad(text: string): string | null {
+  const folded = foldDiacritics(text).toUpperCase()
+  const m = /DOLADUN[A-Z]*\W*(?:DO\W*)?(?:(?:ZLECENIA|ZLECENIE|ZLEC|ZL)\W*)?(?:NR\W*)?(\d{1,4})\s*-\s*(\d{1,6})\s*-\s*(\d{2})(?!\d)/.exec(folded)
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null
+}
+
+/** Order number typed on the board ("79-1234-26", "79-1234-26-S", "79 1234 26"); null = not one. */
+export function normalizeOrderNo(raw: string): string | null {
+  const m = /^\s*(\d{1,4})\s*[- ]\s*(\d{1,6})\s*[- ]\s*(\d{2})(?:\s*-?\s*S)?\s*$/i.exec(raw)
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null
+}
+
+/** Settles which co-loads ride with their main order; `extra` = main orders outside the window. */
+export function linkCoLoads(orders: ComputedOrder[], extra: ComputedOrder[] = []): void {
+  const byNo = new Map<string, ComputedOrder>()
+  for (const o of [...extra, ...orders]) byNo.set(o.orderNo, o)
+  for (const o of orders) {
+    const c = o.coLoad
+    if (!c || c.problem === 'no_ref') continue
+    const main = byNo.get(c.of)
+    const fleetTrucks = (x: ComputedOrder) => new Set(x.legs.filter(l => l.kind === 'fleet' && l.truckId !== null).map(l => l.truckId!))
+    c.mainPlates = main ? [...new Set(main.legs.filter(l => l.kind === 'fleet').map(l => l.plate))] : []
+    if (c.of === o.orderNo) c.problem = 'self'
+    else if (!main) c.problem = 'missing'
+    else if (main.excluded === 'cancelled' || main.noCarrier) c.problem = 'cancelled'
+    else {
+      const trucks = fleetTrucks(main)
+      const shared = o.legs.filter(l => l.kind === 'fleet' && l.truckId !== null && trucks.has(l.truckId))
+      if (shared.length === 0) c.problem = 'other_truck'
+      else {
+        c.problem = null
+        c.valid = true
+        for (const l of shared) l.coLoad = true
+        if (!main.coLoads.includes(o.orderNo)) main.coLoads.push(o.orderNo)
+      }
+    }
+  }
 }
 
 type OrderRow = Selectable<BoardOrdersTable>
@@ -234,6 +335,7 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
 
   const legs: ComputedLeg[] = []
   let prz: ComputedPrz | null = null
+  let skonto = false
   const baseLeg = {
     orderNo: row.order_no,
     trailer,
@@ -246,6 +348,8 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     kmEstimated: false,
     kmManual: false,
     revAlloc: null,
+    amountGross: null,
+    coLoad: false,
   }
 
   if (entry) {
@@ -304,6 +408,7 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
       amount: entry.amountTo,
       przRole: 'to',
     })
+    skonto = applySkonto(legs, row, ctx, loadDate)
   } else {
     const c = classify(row.sub_plate, loadDate)
     legs.push({
@@ -373,6 +478,9 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     prz,
     przErrors: parsed.errors,
     przExtraEntries: Math.max(0, parsed.entries.length - 1),
+    skonto,
+    coLoad: coLoadOf(row, overrides),
+    coLoads: [],
     legs,
     overrides,
     missing: row.missing_since_import_id !== null,
@@ -380,6 +488,58 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     hasFleetLeg: legs.some(l => l.kind === 'fleet'),
     fleetByExport: !isDraft && ctx.fleet.truckFor(row.sub_plate, loadDate) !== null,
   }
+}
+
+/**
+ * Skonto (28.10.2026: PRZ amount 1000, cost in the application 985 = 1000 − 1.5%).
+ * When the export truck's PRZ amount matches the cost exactly (or both amounts of one carrier
+ * together do), nothing changes. Otherwise, when the amount less SKONTO_RATE matches it (or
+ * the same-carrier sum less SKONTO_RATE), those legs get the application's cost split in
+ * proportion to their PRZ amounts — what the department really pays. Returns true when applied.
+ */
+function applySkonto(legs: ComputedLeg[], row: OrderRow, ctx: BoardContext, loadDate: string): boolean {
+  const cost = row.cost_eur
+  if (cost === null) return false
+  const own = legs.find(l => l.plate === row.sub_plate)
+  if (!own || own.amount === null) return false
+  const sameCarrierLegs = legs.filter(l => {
+    const t = ctx.fleet.truckFor(l.plate, loadDate)
+    return t !== null && sameCarrier(t.carrier, row.carrier)
+  })
+  const sum = sameCarrierLegs.reduce((s, l) => s + (l.amount ?? 0), 0)
+  const near = (a: number) => Math.abs(a - cost) <= SKONTO_TOLERANCE
+  if (near(own.amount) || (sameCarrierLegs.length > 1 && near(sum))) return false
+  const after = (n: number) => n * (1 - SKONTO_RATE)
+  let target: ComputedLeg[] | null = null
+  if (near(after(own.amount))) target = [own]
+  else if (sameCarrierLegs.length > 1 && sameCarrierLegs.includes(own) && near(after(sum))) target = sameCarrierLegs
+  if (!target) return false
+  const gross = target.reduce((s, l) => s + (l.amount ?? 0), 0)
+  if (gross <= 0) return false
+  let left = cost
+  target.forEach((l, i) => {
+    const g = l.amount ?? 0
+    const net = i === target!.length - 1 ? round2(left) : round2((cost * g) / gross)
+    left -= net
+    l.amountGross = g
+    l.amount = net
+  })
+  return true
+}
+
+/** Co-load mark: the board correction ("-" = not a co-load) wins over the notes. */
+function coLoadOf(row: OrderRow, overrides: Record<string, OverrideInfo>): CoLoadInfo | null {
+  const manual = overrides['coload']?.value
+  if (manual !== undefined) {
+    const of = normalizeOrderNo(manual)
+    return of ? { of, source: 'manual', valid: false, problem: null, mainPlates: [] } : null
+  }
+  const of = parseCoLoad(row.notes_app)
+  if (of) return { of, source: 'notes', valid: false, problem: null, mainPlates: [] }
+  if (foldDiacritics(row.notes_app).toUpperCase().includes('DOLADUN')) {
+    return { of: '', source: 'notes', valid: false, problem: 'no_ref', mainPlates: [] }
+  }
+  return null
 }
 
 /** First stop after the start that is the swap place (by place code, else by the folded name); -1 = none. */
@@ -431,6 +591,12 @@ async function attachKilometres(
     if (order.noCarrier) continue
     for (const leg of order.legs) {
       if (leg.kind !== 'fleet' || leg.truckId === null) continue
+      // A co-load rides inside its main order's run: no km, the next empty run starts after the main order.
+      if (leg.coLoad) {
+        leg.kmLoaded = 0
+        leg.kmEmpty = 0
+        continue
+      }
       const list = byTruck.get(leg.truckId) ?? []
       list.push(leg)
       byTruck.set(leg.truckId, list)

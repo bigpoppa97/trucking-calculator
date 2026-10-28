@@ -40,6 +40,8 @@ export const DERIVED_KINDS = [
   'DRAFT_STALE',
   // 26.10.2026: two consecutive orders of a truck too far apart for the time between them — a relay?
   'ROUTE_GAP',
+  // 28.10.2026: a co-load (doładunek) whose main order is missing, cancelled or on another truck.
+  'COLOAD',
 ] as const
 
 export type DerivedKind = (typeof DERIVED_KINDS)[number]
@@ -87,6 +89,31 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
         message: `Zlecenie wstępne ${ref} (rozładunek ${fmtDate(o.unloadDate)}) nadal nie ma zlecenia z aplikacji. Zostawić je czy usunąć?`,
         details: { unloadDate: o.unloadDate },
         fingerprint: o.unloadDate,
+      })
+    }
+
+    if (o.coLoad && !o.coLoad.valid && counted) {
+      const c = o.coLoad
+      const said = c.source === 'manual' ? `jest oznaczone na tablicy jako doładunek do ${c.of}` : `ma w uwagach „Doładunek do ${c.of}”`
+      const plate = o.legs.find(l => l.kind === 'fleet')?.plate ?? o.subPlate
+      const normal = ' Do tego czasu liczę je jako zwykłe zlecenie (z własnymi km).'
+      const message =
+        c.problem === 'no_ref'
+          ? `W uwagach zlecenia ${ref} jest „doładunek”, ale bez numeru zlecenia głównego. Dopisz go (np. „Doładunek do 79-1234-26”) albo wskaż w panelu: Popraw ręcznie → Doładunek do zlecenia.`
+          : c.problem === 'self'
+            ? `Zlecenie ${ref} ${said} — czyli do samego siebie. Popraw numer zlecenia głównego.`
+            : c.problem === 'cancelled'
+              ? `Zlecenie ${ref} ${said}, ale ${c.of} jest anulowane.${normal}`
+              : c.problem === 'other_truck'
+                ? `Zlecenie ${ref} ${said}, ale ${c.of} jedzie innym autem (${c.mainPlates.join(', ') || 'spoza floty'}) niż ${ref} (${plate}).${normal}`
+                : `Zlecenie ${ref} ${said}, ale zlecenia ${c.of} nie ma na tablicy.${normal}`
+      out.push({
+        key: `COLOAD:${ref}`,
+        kind: 'COLOAD',
+        ref,
+        message,
+        details: { of: c.of, problem: c.problem, source: c.source, mainPlates: c.mainPlates },
+        fingerprint: `${c.of}|${c.problem ?? ''}|${c.mainPlates.join(',')}|${plate}`,
       })
     }
 
@@ -153,7 +180,8 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
               return t !== null && sameCarrier(t.carrier, o.carrier)
             })
             .reduce((sum, x) => sum + x.amount, 0)
-          if (Math.abs(amount - o.costApp) > 0.5 && Math.abs(sameCarrierSum - o.costApp) > 0.5) {
+          // Skonto (28.10.2026): the cost is the amount less 1.5% — not a mismatch (compute.ts).
+          if (!o.skonto && Math.abs(amount - o.costApp) > 0.5 && Math.abs(sameCarrierSum - o.costApp) > 0.5) {
             out.push({
               key: `PRZ_AMOUNT_MISMATCH:${ref}`,
               kind: 'PRZ_AMOUNT_MISMATCH',
@@ -340,7 +368,8 @@ export function routeGaps(orders: ComputedOrder[], ctx: BoardContext): IssueDraf
     // Same set of legs as the empty-run computation (compute.ts).
     if (o.excluded !== null || o.noCarrier) continue
     for (const leg of o.legs) {
-      if (leg.kind !== 'fleet' || leg.truckId === null) continue
+      // A co-load rides inside its main order — no empty run of its own (28.10.2026).
+      if (leg.kind !== 'fleet' || leg.truckId === null || leg.coLoad) continue
       const list = byTruck.get(leg.truckId) ?? []
       list.push(leg)
       byTruck.set(leg.truckId, list)

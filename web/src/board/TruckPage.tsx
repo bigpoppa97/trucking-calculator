@@ -5,7 +5,7 @@ import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { PHASE_LABELS, RequiredBadges, SERVICE_COLORS, ServiceDialog, defaultServiceDay, serviceTitle } from './serviceUi.js'
 import { TruckTimeline, nowFractionFor } from './TruckTimeline.js'
-import { EventDialog, EventEditDialog, Kpi, Total, readShowMoney, writeShowMoney } from './WeekPage.js'
+import { EventDialog, EventEditDialog, Kpi, Total, TrailerChangeDialog, readShowMoney, writeShowMoney } from './WeekPage.js'
 import { DriverChangeDialog, DriverWarnings } from './driversUi.js'
 
 /**
@@ -74,6 +74,7 @@ export function TruckPage({
   backLabel = 'Tablica',
   onShowOnBoard,
   onOpenDriver,
+  onIssuesChanged,
 }: {
   truckId: number
   date: string
@@ -85,6 +86,8 @@ export function TruckPage({
   onShowOnBoard?: (orderNo: string) => void
   /** Driver page with certificates. */
   onOpenDriver?: (driverId: number) => void
+  /** A review item was settled (the counter in the menu). */
+  onIssuesChanged?: () => void
 }) {
   const [view, setView] = useState<TruckView | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -96,8 +99,9 @@ export function TruckPage({
   const [serviceForm, setServiceForm] = useState<{ service?: Service; day?: string } | null>(null)
   const [eventTarget, setEventTarget] = useState<{ row: WeekTruck; day: string } | null>(null)
   const [eventEdit, setEventEdit] = useState<WeekEvent | null>(null)
+  const [trailerChange, setTrailerChange] = useState<WeekEvent | null>(null)
   const [copied, setCopied] = useState(false)
-  const [driverForm, setDriverForm] = useState<{ day: string; change?: { id: number; driverId: number | null } } | null>(null)
+  const [driverForm, setDriverForm] = useState<{ day: string; change?: { id: number; driverId: number | null; time: string | null } } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
   const period = truckPeriod(date, mode)
@@ -286,8 +290,8 @@ export function TruckPage({
                 <ul className="mt-1 flex flex-col gap-0.5">
                   {t.driverChanges.map(c => (
                     <li key={c.id}>
-                      <button type="button" onClick={() => setDriverForm({ day: c.day, change: { id: c.id, driverId: c.driverId } })} className="underline">
-                        {c.day <= '2000-01-01' ? 'od początku tablicy' : `od ${dm(c.day)}`}
+                      <button type="button" onClick={() => setDriverForm({ day: c.day, change: { id: c.id, driverId: c.driverId, time: c.time } })} className="underline">
+                        {c.day <= '2000-01-01' ? 'od początku tablicy' : `od ${dm(c.day)}${c.time ? ` ${c.time}` : ''}`}
                       </button>
                       : <span className="font-semibold text-[#15181C]">{c.driver}</span>
                     </li>
@@ -404,9 +408,10 @@ export function TruckPage({
                     onAddEvent={day => setEventTarget({ row: w.row, day })}
                     onOpenService={s => setServiceForm({ service: s })}
                     onOpenDriverChange={e =>
-                      e.driverChangeId !== undefined && setDriverForm({ day: e.day, change: { id: e.driverChangeId, driverId: e.driverId ?? null } })
+                      e.driverChangeId !== undefined && setDriverForm({ day: e.day, change: { id: e.driverChangeId, driverId: e.driverId ?? null, time: e.time ?? null } })
                     }
                     onOpenEvent={setEventEdit}
+                    onOpenTrailerChange={setTrailerChange}
                   />
                   <div className="grid grid-cols-2 content-start gap-x-3 gap-y-1.5 border-l border-[#E3E6E1] px-3.5 py-3 text-[13px]">
                     {showMoney && (
@@ -429,7 +434,18 @@ export function TruckPage({
             ))}
           </div>
         </div>
-        {selected && <OrderPanel orderNo={selected} showMoney={showMoney} onClose={() => setSelected(null)} onChanged={() => void load()} />}
+        {selected && (
+          <OrderPanel
+            orderNo={selected}
+            showMoney={showMoney}
+            onClose={() => setSelected(null)}
+            onChanged={() => {
+              void load()
+              onIssuesChanged?.()
+            }}
+            onOpenOrder={setSelected}
+          />
+        )}
       </section>
 
       <section className="mx-6 mt-5 rounded-xl border border-[#D5D9D3] bg-white">
@@ -527,6 +543,11 @@ export function TruckPage({
                           </button>
                           {o.legCount > 1 && <span className="ml-1 text-xs text-[#545B63]">odc. {o.legIndex + 1}/{o.legCount}</span>}
                           {o.prz && <span className="ml-1 text-xs font-semibold text-[#1E4E9C]">PRZ</span>}
+                          {o.coLoadOf && (
+                            <span className="ml-1 rounded bg-[#E9E0F5] px-1 text-xs font-semibold text-[#2E1F47]" title={`Doładunek do ${o.coLoadOf} — bez własnych km`}>
+                              doładunek
+                            </span>
+                          )}
                           {status && <span className="ml-1 text-xs">({status})</span>}
                         </td>
                         <td className={`px-2 py-2 ${o.excluded === 'cancelled' ? 'line-through' : ''}`}>{o.title}</td>
@@ -609,6 +630,19 @@ export function TruckPage({
           onClose={() => setEventEdit(null)}
           onSaved={message => {
             setEventEdit(null)
+            setNotice(message ?? null)
+            void load()
+          }}
+        />
+      )}
+      {trailerChange && (
+        <TrailerChangeDialog
+          truckId={t.id}
+          plate={t.plate}
+          event={trailerChange}
+          onClose={() => setTrailerChange(null)}
+          onSaved={message => {
+            setTrailerChange(null)
             setNotice(message ?? null)
             void load()
           }}

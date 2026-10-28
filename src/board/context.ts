@@ -278,7 +278,7 @@ export async function loadBoardContext(db: Kysely<DB>): Promise<BoardContext> {
     fleet,
     drivers: new DriverIndex(
       drivers.map(d => ({ id: d.id, name: d.name, phone: d.phone, carrier: d.carrier, notes: d.notes, active: d.active === 1 })),
-      driverChanges.map(c => ({ id: c.id, truckId: c.truck_id, driverId: c.driver_id, day: c.day, createdBy: c.created_by, createdAt: c.created_at })),
+      driverChanges.map(c => ({ id: c.id, truckId: c.truck_id, driverId: c.driver_id, day: c.day, time: c.time ?? null, createdBy: c.created_by, createdAt: c.created_at })),
     ),
     trailers: new TrailerIndex(
       trailers.map(t => ({ plate: t.plate, typePl: t.type_pl, typeEn: t.type_en, notes: t.notes, carrier: t.carrier, activeTo: t.active_to })),

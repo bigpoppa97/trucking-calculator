@@ -38,6 +38,9 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
    zwykle oznacza brak wpisu przepinki, stawka/km poza zakresem — kwotę w PLN.
 4. Przepinka: w uwagach zlecenia klienta w aplikacji `PRZ GORZYCZKI 26.04 WGM4518U>KN1050H 700/400`
    (miejsce, data, auto oddające > auto przejmujące, kwota dla każdego auta). Marża = stawka klienta − suma kwot.
+   **Skonto**: gdy koszt w aplikacji to kwota auta z eksportu minus 1,5% (np. 1600 → 1576; albo suma obu kwot, gdy
+   oba auta są jednego przewoźnika), to nie błąd — tablica liczy kwotę po skoncie, a panel pokazuje
+   „kwota 1 576 € (1 600 € − 1,5% skonta)”. Inna różnica nadal trafia do „Do sprawdzenia”.
 5. Prom (płaci dział, więc pomniejsza marżę): w tych samych uwagach `PROM 1180` (kwota w EUR, przecinek
    dziesiętny, np. `PROM 1180,50`; po kwocie można dopisać opis, np. `PROM 1180 Finnlines HEL-TRA`). Kilka wpisów
    się sumuje; wpis bez kwoty trafia do „Do sprawdzenia”. Ręczna poprawka „Koszt dodatkowy” zastępuje prom z uwag,
@@ -57,7 +60,12 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
    (Zostaw / Usuń). Edycja i usuwanie: panel zlecenia.
 
 9. Zdarzenia dnia (notatka, pauza, naczepa, pozycja auta): „+” pod dniem; kliknięcie w znaczek → popraw albo usuń.
-   Miejsce przesuwa początek pustego dojazdu tylko w „Pozycji auta” — w innych zdarzeniach jest tylko informacją.
+   Godzina jest opcjonalna (znaczek „14:00 · …”). Miejsce przesuwa początek pustego dojazdu tylko w „Pozycji auta” —
+   w innych zdarzeniach jest tylko informacją.
+   **Zmiana naczepy** wykryta automatycznie (szary, przerywany znaczek „WAW: AB1234P → AB5678P”): kliknięcie →
+   dzień, godzina, miejsce, opis. Od tego dnia i godziny auto ma nową naczepę (kolumna po lewej, „Kopiuj”, serwisy
+   naczepy); miejsce to tylko informacja. „Usuń — nie było zmiany” chowa znaczek; „Przywróć automatyczną” wraca do
+   wykrytej. Gdy automatyczna zmiana zniknie (np. poprawiona naczepa w zleceniu), wpis zostaje jako zwykła „Naczepa”.
 10. Kilometry inne niż policzone: panel zlecenia → „Popraw ręcznie” → „Km razem” (wszystkie km auta na zleceniu,
    z ładunkiem i pustym dojazdem). Pusty dojazd zostaje wyliczony przez tablicę, reszta liczy się jako z ładunkiem.
    Starsze poprawki „Km z ładunkiem” / „Km puste” działają dalej (widać je w „Ręcznych poprawkach”, można usunąć).
@@ -65,8 +73,16 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
    (z godzinami: pusty dojazd liczony 70 km/h + 4 h zapasu, bo godzina rozładunku z eksportu to koniec okna; bez godzin:
    ponad 500 km pustych tego samego dnia albo załadunek przed rozładunkiem poprzedniego). Zwykle to przepinka bez
    wpisu PRZ — wpisz ją w jednym z dwóch zleceń (z uwag w aplikacji albo „Popraw ręcznie” → „Wpis przepinki (PRZ)”;
-   ręczny wpis panel podpisuje „Przepinka (ręczna poprawka)”), albo popraw datę / godzinę. „W porządku” wycisza
+   ręczny wpis panel podpisuje „Wpisana na tablicy DD.MM.RR (kto)”), albo popraw datę / godzinę. „W porządku” wycisza
    pozycję, dopóki nie zmienią się daty, godziny albo miejsca.
+12. **Doładunek**: w uwagach zlecenia `Doładunek do 79-1234-26` (wielkość liter i polskie znaki bez znaczenia, „do”
+   i „-S” opcjonalne) albo panel → „Popraw ręcznie” → „Doładunek do zlecenia” (`-` = to nie doładunek, wbrew uwagom).
+   Doładunek jedzie w trasie zlecenia głównego tym samym autem: bez własnych km (z ładunkiem i pustych), nie zmienia
+   kolejnych pustych dojazdów ani „Czy była przepinka?”; kwoty liczą się normalnie (i liczy się jako zlecenie).
+   Kafelek jasnofioletowy z „doładunek”; panel: „Doładunek do X” z przyciskiem, zlecenie główne: „Doładunki: …”.
+   Zlecenie główne na innym aucie, nie ma go na tablicy albo anulowane → zwykłe zlecenie i pozycja w „Do sprawdzenia”.
+13. Pozycje „Do sprawdzenia” danego zlecenia (pomarańczowe pola w panelu) mają te same przyciski co na liście —
+   można je rozwiązać od razu z panelu; przy różnicy kwot przepinki „Popraw wpis przepinki” otwiera wpis do poprawy.
 
 Ręczne poprawki (panel zlecenia → „Popraw ręcznie”) obowiązują, dopóki aplikacja nie zmieni tej samej wartości —
 wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
@@ -92,10 +108,11 @@ wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
   do 15 MB — „Podgląd” w nowej karcie, „Pobierz” do wysłania klientowi, „Kopiuj dane” po angielsku.
   Na żółto 30 dni przed końcem ważności, na czerwono po terminie (też przy kierowcy na tablicy).
 - **Zmiana kierowcy**: „+” pod dniem → Rodzaj „Zmiana kierowcy” (albo „Zmień kierowcę” na stronie zestawu).
-  Od tego dnia tablica pokazuje nowego kierowcę; jeśli jeździł innym autem, tamto zostaje bez kierowcy.
-  Zmianę na tablicy można kliknąć i poprawić albo usunąć.
+  Od tego dnia (i opcjonalnie godziny) tablica pokazuje nowego kierowcę; jeśli jeździł innym autem, tamto zostaje
+  bez kierowcy. Zmianę na tablicy („14:00 → B”) można kliknąć i poprawić albo usunąć.
 - **Kierowca zlecenia** liczy się sam: zmiana między dniem załadunku a rozładunku → obaj („A → B (zmiana dd.mm)”),
-  w dniu załadunku → nowy, w dniu rozładunku → stary. Wyjątki: panel zlecenia → „Popraw ręcznie” → Kierowca.
+  w dniu załadunku → nowy, w dniu rozładunku → stary. Z godziną: przed godziną załadunku → nowy, od godziny
+  rozładunku → stary, pomiędzy → obaj („A → B (zmiana 28.10 14:00)”). Wyjątki: panel zlecenia → „Popraw ręcznie” → Kierowca.
 - **Ciągniki** mają tylko numer, przewoźnika i status; **stały ciągnik naczepy** ustawiasz w zakładce Naczepy.
   - Nowe tablice albo inny ciągnik przewoźnika w miejsce starego: „Nowy numer / nowy ciągnik” od dnia — ten sam
     wiersz, kierowca i historia.

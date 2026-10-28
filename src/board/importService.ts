@@ -538,6 +538,7 @@ export const OVERRIDE_FIELD_LABELS: Record<string, string> = {
   'driver:1': 'kierowca, 2. odcinek',
   load_at: 'załadunek',
   unload_at: 'rozładunek',
+  coload: 'doładunek',
 }
 
 /** Short label of an order for history lines: "W-3 (Wiedeń → Wilno, 13.10)". */

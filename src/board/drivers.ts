@@ -5,7 +5,10 @@
  *  - an order: the driver on the loading day, plus every change strictly
  *    between loading and unloading ("A → B (zmiana 11.10)");
  *    a change on the unloading day belongs to the next order;
- *  - a manual correction in the order panel wins.
+ *  - a manual correction in the order panel wins;
+ *  - a change with an hour (28.10.2026): before the loading hour = the new driver loads,
+ *    at or after the unloading hour = the old one unloads, in between = both
+ *    ("A → B (zmiana 28.10 14:00)"); the driver "now" switches at that hour.
  */
 
 export const FROM_THE_BEGINNING = '2000-01-01'
@@ -24,13 +27,15 @@ export interface DriverChange {
   truckId: number
   driverId: number | null
   day: string
+  /** "HH:MM" or null (the whole day, from its start). */
+  time: string | null
   createdBy: string
   createdAt: string
 }
 
 export interface LegDrivers {
   /** Driver(s) in order of driving; a null driver = nobody assigned. */
-  drivers: Array<{ id: number | null; name: string; from: string }>
+  drivers: Array<{ id: number | null; name: string; from: string; fromTime?: string | null }>
   /** "A → B (zmiana 11.10)" or "A" or "—". */
   text: string
   manual: boolean
@@ -42,7 +47,7 @@ export class DriverIndex {
 
   constructor(drivers: DriverRecord[], changes: DriverChange[]) {
     for (const d of drivers) this.byId.set(d.id, d)
-    for (const c of [...changes].sort((a, b) => a.day.localeCompare(b.day) || a.id - b.id)) {
+    for (const c of [...changes].sort((a, b) => a.day.localeCompare(b.day) || (a.time ?? '').localeCompare(b.time ?? '') || a.id - b.id)) {
       const list = this.changesByTruck.get(c.truckId) ?? []
       list.push(c)
       this.changesByTruck.set(c.truckId, list)
@@ -57,24 +62,28 @@ export class DriverIndex {
     return this.changesByTruck.get(truckId) ?? []
   }
 
-  /** The change in force on that day (null = no change recorded yet). */
-  changeOn(truckId: number, day: string): DriverChange | null {
+  /**
+   * The change in force on that day (null = no change recorded yet). With `time` (now, on
+   * today) a change later that day with an hour is not in force yet; without it every change
+   * of the day counts.
+   */
+  changeOn(truckId: number, day: string, time?: string | null): DriverChange | null {
     let found: DriverChange | null = null
     for (const c of this.changesOf(truckId)) {
-      if (c.day <= day) found = c
+      if (c.day < day || (c.day === day && (!time || !c.time || c.time <= time))) found = c
       else break
     }
     return found
   }
 
-  driverOn(truckId: number, day: string): DriverRecord | null {
-    const c = this.changeOn(truckId, day)
+  driverOn(truckId: number, day: string, time?: string | null): DriverRecord | null {
+    const c = this.changeOn(truckId, day, time)
     return c?.driverId ? (this.byId.get(c.driverId) ?? null) : null
   }
 
   /** Tractors the driver is on that day (normally one). */
-  trucksOf(driverId: number, day: string, truckIds: number[]): number[] {
-    return truckIds.filter(t => this.changeOn(t, day)?.driverId === driverId)
+  trucksOf(driverId: number, day: string, truckIds: number[], time?: string | null): number[] {
+    return truckIds.filter(t => this.changeOn(t, day, time)?.driverId === driverId)
   }
 
   name(id: number | null): string {
@@ -82,22 +91,43 @@ export class DriverIndex {
     return this.byId.get(id)?.name ?? '?'
   }
 
-  /** Driver(s) of a leg from loading to unloading, or the manual correction (driver id). */
-  legDrivers(truckId: number, startDate: string, endDate: string, manualDriverId?: number | null): LegDrivers {
+  /**
+   * Driver(s) of a leg from loading to unloading, or the manual correction (driver id).
+   * Hours of the leg (loading / unloading, "HH:MM") place a change with an hour on the
+   * loading or unloading day; without hours the day rule holds (a change on the loading day
+   * is before it, one on the unloading day after it).
+   */
+  legDrivers(
+    truckId: number,
+    startDate: string,
+    endDate: string,
+    manualDriverId?: number | null,
+    startTime?: string | null,
+    endTime?: string | null,
+  ): LegDrivers {
     if (manualDriverId !== undefined && manualDriverId !== null) {
       const name = this.name(manualDriverId)
       return { drivers: [{ id: manualDriverId, name, from: startDate }], text: name, manual: true }
     }
-    const first = this.changeOn(truckId, startDate)
+    const where = (c: DriverChange): 'before' | 'during' | 'after' => {
+      if (c.day < startDate || (c.day === startDate && (!c.time || !startTime || c.time <= startTime))) return 'before'
+      if (c.day > endDate || (c.day === endDate && (!c.time || !endTime || c.time >= endTime))) return 'after'
+      return 'during'
+    }
+    let first: DriverChange | null = null
+    const during: DriverChange[] = []
+    for (const c of this.changesOf(truckId)) {
+      const w = where(c)
+      if (w === 'before') first = c
+      else if (w === 'during') during.push(c)
+    }
     const drivers: LegDrivers['drivers'] = []
     if (first) drivers.push({ id: first.driverId, name: this.name(first.driverId), from: startDate })
-    for (const c of this.changesOf(truckId)) {
-      if (c.day > startDate && c.day < endDate) drivers.push({ id: c.driverId, name: this.name(c.driverId), from: c.day })
-    }
+    for (const c of during) drivers.push({ id: c.driverId, name: this.name(c.driverId), from: c.day, fromTime: c.time })
     const names = drivers.filter((d, i) => i === 0 || d.id !== drivers[i - 1]!.id)
     if (names.length === 0) return { drivers: [], text: '—', manual: false }
     if (names.length === 1) return { drivers: names, text: names[0]!.name, manual: false }
-    const swaps = names.slice(1).map(d => `${d.from.slice(8, 10)}.${d.from.slice(5, 7)}`)
+    const swaps = names.slice(1).map(d => `${d.from.slice(8, 10)}.${d.from.slice(5, 7)}${d.fromTime ? ` ${d.fromTime}` : ''}`)
     return { drivers: names, text: `${names.map(d => d.name).join(' → ')} (zmiana ${swaps.join(', ')})`, manual: false }
   }
 }

@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { boardApi, errorMessage, type NoteKind, type Service, type WeekEvent, type WeekTruck, type WeekView } from './boardApi.js'
 import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, ordersLabel, ordersWithDrafts, pair, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
 import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { RequiredBadges, SERVICE_COLORS, ServiceDialog } from './serviceUi.js'
 import { DriverChangeDialog, DriverWarnings } from './driversUi.js'
-import { TruckTimeline, nowFractionFor } from './TruckTimeline.js'
+import { COLOAD_COLORS, TruckTimeline, nowFractionFor } from './TruckTimeline.js'
 import { DraftDialog } from './DraftDialog.js'
 
 /**
@@ -44,6 +44,7 @@ export function WeekPage({
   onDateChange,
   onOpenTruck,
   onOpenDriver,
+  onIssuesChanged,
 }: {
   focus: WeekFocus | null
   initialDate?: string
@@ -53,6 +54,8 @@ export function WeekPage({
   onOpenTruck?: (truckId: number, date: string) => void
   /** Driver page with certificates. */
   onOpenDriver?: (driverId: number) => void
+  /** A review item was settled (the counter in the menu). */
+  onIssuesChanged?: () => void
 }) {
   const [date, setDate] = useState(focus?.date ?? initialDate ?? todayIso())
   const [view, setView] = useState<WeekView | null>(null)
@@ -66,6 +69,7 @@ export function WeekPage({
   const [serviceTarget, setServiceTarget] = useState<{ truck: WeekTruck; service: Service } | null>(null)
   const [driverChange, setDriverChange] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
   const [eventEdit, setEventEdit] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
+  const [trailerChange, setTrailerChange] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => {
@@ -161,6 +165,7 @@ export function WeekPage({
           <Legend color="#DCE5F2" label="Zlecenie" />
           <Legend color="#DCE5F2" label="Przepinka" dashed />
           <Legend color="#F4F6FA" label="Zlecenie wstępne" dashedGray />
+          <Legend color={COLOAD_COLORS.bg} label="Doładunek" />
           <Legend color="#F4C77A" label="Do sprawdzenia" />
           <Legend color="#ECEEF0" label="Załadunek w poprzednim tygodniu" border />
           <Legend color={SERVICE_COLORS.light} label="Serwis" />
@@ -254,6 +259,7 @@ export function WeekPage({
                   {...(onOpenDriver ? { onOpenDriver } : {})}
                   onOpenDriverChange={event => setDriverChange({ truck, event })}
                   onOpenEvent={event => setEventEdit({ truck, event })}
+                  onOpenTrailerChange={event => setTrailerChange({ truck, event })}
                 />
               ))}
             </div>
@@ -264,7 +270,11 @@ export function WeekPage({
               orderNo={selected}
               showMoney={showMoney}
               onClose={() => setSelected(null)}
-              onChanged={() => void load()}
+              onChanged={() => {
+                void load()
+                onIssuesChanged?.()
+              }}
+              onOpenOrder={setSelected}
             />
           )}
         </section>
@@ -294,11 +304,24 @@ export function WeekPage({
           }}
         />
       )}
+      {trailerChange && (
+        <TrailerChangeDialog
+          truckId={trailerChange.truck.id}
+          plate={trailerChange.truck.plate}
+          event={trailerChange.event}
+          onClose={() => setTrailerChange(null)}
+          onSaved={message => {
+            setTrailerChange(null)
+            setNotice(message ?? null)
+            void load()
+          }}
+        />
+      )}
       {driverChange && driverChange.event.driverChangeId !== undefined && (
         <DriverChangeDialog
           truck={driverChange.truck}
           day={driverChange.event.day}
-          change={{ id: driverChange.event.driverChangeId, driverId: driverChange.event.driverId ?? null }}
+          change={{ id: driverChange.event.driverChangeId, driverId: driverChange.event.driverId ?? null, time: driverChange.event.time ?? null }}
           onClose={() => setDriverChange(null)}
           onSaved={() => {
             setDriverChange(null)
@@ -394,6 +417,7 @@ interface TruckRowProps {
   onOpenDriver?: (driverId: number) => void
   onOpenDriverChange: (e: WeekEvent) => void
   onOpenEvent: (e: WeekEvent) => void
+  onOpenTrailerChange: (e: WeekEvent) => void
 }
 
 function TruckRow({
@@ -414,6 +438,7 @@ function TruckRow({
   onOpenDriver,
   onOpenDriverChange,
   onOpenEvent,
+  onOpenTrailerChange,
 }: TruckRowProps) {
   const openDriver = onOpenDriver && truck.driverId !== null ? () => onOpenDriver(truck.driverId!) : undefined
   const t = truck.totals
@@ -489,6 +514,7 @@ function TruckRow({
         onOpenService={onOpenService}
         onOpenDriverChange={onOpenDriverChange}
         onOpenEvent={onOpenEvent}
+        onOpenTrailerChange={onOpenTrailerChange}
       />
 
       <div className="flex flex-col gap-1.5 border-l border-[#E3E6E1] px-3.5 py-3 text-[13px]">
@@ -538,6 +564,7 @@ export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck
   const [kind, setKind] = useState<DialogKind>('note')
   const [text, setText] = useState('')
   const [place, setPlace] = useState('')
+  const [time, setTime] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const needsPlace = kind === 'position'
@@ -552,6 +579,7 @@ export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck
         kind,
         text: text.trim() || EVENT_LABELS[kind] || 'Notatka',
         ...(place.trim() ? { place: place.trim() } : {}),
+        ...(time.trim() ? { time: time.trim() } : {}),
       })
       onSaved()
     } catch (e) {
@@ -585,16 +613,22 @@ export function EventDialog({ truck, day, onClose, onSaved }: { truck: WeekTruck
           </button>
         </div>
         <div className="flex flex-col gap-3 text-sm">
-          <label className="flex flex-col gap-1 font-semibold">
-            Rodzaj
-            <select value={kind} onChange={e => setKind(e.target.value as DialogKind)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal">
-              {EVENT_KINDS.map(k => (
-                <option key={k} value={k}>
-                  {DIALOG_LABELS[k]}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="grid grid-cols-[minmax(0,1fr)_150px] gap-2">
+            <label className="flex flex-col gap-1 font-semibold">
+              Rodzaj
+              <select value={kind} onChange={e => setKind(e.target.value as DialogKind)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal">
+                {EVENT_KINDS.map(k => (
+                  <option key={k} value={k}>
+                    {DIALOG_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 font-semibold">
+              Godzina (opcjonalnie)
+              <input type="time" value={time} onChange={e => setTime(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal" />
+            </label>
+          </div>
           <label className="flex flex-col gap-1 font-semibold">
             Opis
             <input
@@ -641,6 +675,7 @@ export function EventEditDialog({ plate, event, onClose, onSaved }: { plate: str
   const [day, setDay] = useState(event.day)
   const [text, setText] = useState(event.text)
   const [place, setPlace] = useState(event.place ?? '')
+  const [time, setTime] = useState(event.time ?? '')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -669,6 +704,7 @@ export function EventEditDialog({ plate, event, onClose, onSaved }: { plate: str
             </h2>
             <p className="text-sm text-[#545B63]">
               {dm(event.day)}
+              {event.time ? ` ${event.time}` : ''}
               {event.createdBy ? ` · dodał ${event.createdBy}` : ''}
               {event.createdAt ? `, ${stamp(event.createdAt)}` : ''}
             </p>
@@ -678,20 +714,24 @@ export function EventEditDialog({ plate, event, onClose, onSaved }: { plate: str
           </button>
         </div>
         <div className="flex flex-col gap-3 text-sm">
-          <div className="grid grid-cols-2 gap-2">
-            <label className="flex flex-col gap-1 font-semibold">
-              Rodzaj
-              <select value={kind} onChange={e => setKind(e.target.value as NoteKind)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal">
-                {kinds.map(k => (
-                  <option key={k} value={k}>
-                    {EVENT_LABELS[k]}
-                  </option>
-                ))}
-              </select>
-            </label>
+          <label className="flex flex-col gap-1 font-semibold">
+            Rodzaj
+            <select value={kind} onChange={e => setKind(e.target.value as NoteKind)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal">
+              {kinds.map(k => (
+                <option key={k} value={k}>
+                  {EVENT_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="grid grid-cols-[minmax(0,1fr)_150px] gap-2">
             <label className="flex flex-col gap-1 font-semibold">
               Dzień
               <input type="date" value={day} onChange={e => setDay(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal" />
+            </label>
+            <label className="flex flex-col gap-1 font-semibold">
+              Godzina (opcjonalnie)
+              <input type="time" value={time} onChange={e => setTime(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal" />
             </label>
           </div>
           <label className="flex flex-col gap-1 font-semibold">
@@ -742,12 +782,199 @@ export function EventEditDialog({ plate, event, onClose, onSaved }: { plate: str
                           ...(day !== event.day ? { day } : {}),
                           ...(text.trim() !== event.text ? { text: text.trim() } : {}),
                           ...(place.trim() !== (event.place ?? '') ? { place: place.trim() } : {}),
+                          ...(time.trim() !== (event.time ?? '') ? { time: time.trim() || null } : {}),
                         }),
                       'Zapisano zdarzenie.',
                     )
                   }
                   className="h-11 rounded-lg bg-[#1E4E9C] px-4 font-semibold text-white disabled:opacity-60"
                 >
+                  Zapisz
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Zmiana naczepy (28.10.2026): an automatic change (gray chip, from the trailers in the orders)
+ * or a board entry typed over one. Day, hour and place can be corrected — from that moment the
+ * truck has the new trailer (left column, "Kopiuj", trailer services); the place is information
+ * only (no km). "Usuń — nie było zmiany" hides the change; "Przywróć automatyczną" drops the entry.
+ */
+export function TrailerChangeDialog({
+  truckId,
+  plate,
+  event,
+  onClose,
+  onSaved,
+}: {
+  truckId: number
+  plate: string
+  event: WeekEvent
+  onClose: () => void
+  onSaved: (message?: string) => void
+}) {
+  const id = useId()
+  const typed = event.id !== null && !event.auto
+  const autoText = event.autoText ?? event.text
+  // The automatic text starts with the place code ("BUD: TR100 → TR200"); the place has its own field.
+  const bare = (t: string) => (event.auto && event.place && t.startsWith(`${event.place}: `) ? t.slice(event.place.length + 2) : t)
+  const [day, setDay] = useState(event.day)
+  const [time, setTime] = useState(event.time ?? '')
+  const [place, setPlace] = useState(event.placeName ?? event.place ?? '')
+  const [text, setText] = useState(bare(event.text))
+  const [places, setPlaces] = useState<string[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [confirm, setConfirm] = useState<'dismiss' | 'restore' | null>(null)
+
+  useEffect(() => {
+    boardApi
+      .places()
+      .then(list => setPlaces(list.map(p => p.name)))
+      .catch(() => setPlaces([]))
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const run = async (fn: () => Promise<unknown>, message: string) => {
+    setSaving(true)
+    setError(null)
+    try {
+      await fn()
+      onSaved(message)
+    } catch (e) {
+      setError(errorMessage(e, 'Nie udało się zapisać zmiany naczepy.'))
+      setSaving(false)
+    }
+  }
+
+  const save = () => {
+    if (!day) return setError('Podaj dzień zmiany.')
+    const hour = time.trim() || null
+    const description = text.trim() || bare(autoText)
+    void run(
+      () =>
+        typed
+          ? boardApi.updateEvent(event.id!, { day, time: hour, text: description, place: place.trim() || null })
+          : boardApi.addEvent({
+              truckId,
+              day,
+              kind: 'trailer',
+              text: description,
+              ...(place.trim() ? { place: place.trim() } : {}),
+              time: hour,
+              autoKey: event.autoKey!,
+            }),
+      `Zapisano zmianę naczepy: ${dm(day)}${hour ? ` ${hour}` : ''}.`,
+    )
+  }
+
+  const dismiss = () =>
+    void run(
+      () =>
+        typed
+          ? boardApi.updateEvent(event.id!, { suppress: true })
+          : boardApi.addEvent({ truckId, day: event.day, kind: 'trailer', text: autoText, autoKey: event.autoKey!, suppress: true }),
+      'Zmiana naczepy usunięta z tablicy — nie było jej.',
+    )
+
+  const field = 'h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal'
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+      <div className="max-h-[calc(100vh-32px)] w-full max-w-md overflow-y-auto rounded-xl bg-white p-5 shadow-2xl">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h2 id={`${id}-title`} className="text-lg font-bold">
+              Zmiana naczepy · {plate}
+            </h2>
+            <p className="text-sm text-[#545B63]">
+              {typed
+                ? `Poprawiona na tablicy${event.createdBy ? ` (${event.createdBy}${event.createdAt ? `, ${stamp(event.createdAt)}` : ''})` : ''}. Automatycznie: ${event.autoDay ? dm(event.autoDay) : ''} · ${autoText}.`
+                : `Wykryta automatycznie z naczep w zleceniach: ${dm(event.day)} · ${autoText}.`}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Zamknij" className="flex h-11 w-11 flex-none items-center justify-center rounded-lg border border-[#D5D9D3]">
+            <Icon name="close" size={18} />
+          </button>
+        </div>
+        <datalist id={`${id}-places`}>
+          {places.map(p => (
+            <option key={p} value={p} />
+          ))}
+        </datalist>
+        <div className="flex flex-col gap-3 text-sm">
+          <div className="grid grid-cols-[minmax(0,1fr)_150px] gap-2">
+            <label className="flex flex-col gap-1 font-semibold">
+              Dzień
+              <input type="date" value={day} onChange={e => setDay(e.target.value)} className={field} />
+            </label>
+            <label className="flex flex-col gap-1 font-semibold">
+              Godzina (opcjonalnie)
+              <input type="time" value={time} onChange={e => setTime(e.target.value)} className={`${field} px-2`} />
+            </label>
+          </div>
+          <label className="flex flex-col gap-1 font-semibold">
+            Miejsce (tylko informacja — km nie zmienia)
+            <input value={place} onChange={e => setPlace(e.target.value)} list={`${id}-places`} placeholder="np. Warszawa albo WAW" className={field} />
+          </label>
+          <label className="flex flex-col gap-1 font-semibold">
+            Opis
+            <input value={text} onChange={e => setText(e.target.value)} className={field} />
+          </label>
+          <p className="text-xs text-[#545B63]">Od tego dnia{time.trim() ? ' i godziny' : ''} auto ma nową naczepę — w kolumnie po lewej, w „Kopiuj” i przy serwisach naczepy.</p>
+          {error && (
+            <p role="alert" className="rounded bg-red-50 px-3 py-2 text-red-800">
+              {error}
+            </p>
+          )}
+          {confirm ? (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <span className="font-semibold">
+                {confirm === 'dismiss' ? 'Usunąć zmianę naczepy z tablicy?' : 'Wrócić do zmiany wykrytej automatycznie?'}
+              </span>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() =>
+                  confirm === 'dismiss' ? dismiss() : void run(() => boardApi.deleteNote(event.id!), 'Przywrócono automatyczną zmianę naczepy.')
+                }
+                className="h-11 rounded-lg bg-[#B42318] px-4 font-semibold text-white disabled:opacity-60"
+              >
+                {confirm === 'dismiss' ? 'Usuń' : 'Przywróć'}
+              </button>
+              <button type="button" onClick={() => setConfirm(null)} className="h-11 rounded-lg border border-[#C9CEC6] px-4 font-semibold">
+                Anuluj
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="mr-auto flex flex-wrap gap-2">
+                <button type="button" onClick={() => setConfirm('dismiss')} className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-semibold text-[#B42318]">
+                  Usuń — nie było zmiany
+                </button>
+                {typed && (
+                  <button type="button" onClick={() => setConfirm('restore')} className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-semibold">
+                    Przywróć automatyczną
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={onClose} className="h-11 rounded-lg border border-[#C9CEC6] px-4 font-semibold">
+                  Anuluj
+                </button>
+                <button type="button" disabled={saving} onClick={save} className="h-11 rounded-lg bg-[#1E4E9C] px-4 font-semibold text-white disabled:opacity-60">
                   Zapisz
                 </button>
               </div>

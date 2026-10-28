@@ -291,6 +291,10 @@ export interface BoardNotesTable {
   created_by: string
   created_at: string
   deleted: ColumnType<number, number | undefined, number>
+  // Migration 0016 (28.10.2026): optional hour; a trailer change typed over an automatic one.
+  time: ColumnType<string | null, string | null | undefined, string | null>
+  auto_key: ColumnType<string | null, string | null | undefined, string | null>
+  suppress: ColumnType<number, number | undefined, number>
 }
 
 // Migration 0011 — Serwis (unavailability periods of a tractor or a trailer).
@@ -340,6 +344,8 @@ export interface BoardDriverChangesTable {
   day: string // YYYY-MM-DD; 2000-01-01 = from the beginning
   created_by: string
   created_at: string
+  /** Hour of the change ("HH:MM", migration 0016); null = the whole day (from its start). */
+  time: ColumnType<string | null, string | null | undefined, string | null>
 }
 
 export interface BoardDriverCertsTable {
