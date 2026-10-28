@@ -10,7 +10,15 @@ import { IssueActions } from './issueActions.js'
  * notes, open review items, manual corrections and the change history.
  */
 
-const KIND_LABEL = { fleet: 'Twoje auto', own: 'flota własna — poza działem', other: 'spoza floty — poza działem' } as const
+/** Legs of a relay that are not the department's: said so (28.10.2026: the department's own leg needs no label). */
+const KIND_LABEL = { fleet: null, own: 'flota własna — poza działem', other: 'spoza floty — poza działem' } as const
+
+/** Km of a leg in the panel: one number, loaded + empty run ("1 016 km"). */
+function legKm(l: OrderDetails['legs'][number]): string {
+  if (l.coLoad) return 'doładunek — bez własnych km'
+  const total = l.kmLoaded === null && l.kmEmpty === null ? null : (l.kmLoaded ?? 0) + (l.kmEmpty ?? 0)
+  return `${km(total, l.kmEstimated)}${l.kmManual ? ' (poprawione)' : ''}`
+}
 
 export function OrderPanel({
   orderNo,
@@ -280,27 +288,13 @@ export function OrderPanel({
                 <span className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
                   <span className="font-mono font-semibold">{l.plate}</span>
                   <span>{l.stops.length > 1 ? l.stops.join(' → ') : `${l.from} → ${l.to}`}</span>
-                  <span className="text-xs text-[#545B63]">{KIND_LABEL[l.kind]}</span>
+                  {KIND_LABEL[l.kind] && <span className="text-xs text-[#545B63]">{KIND_LABEL[l.kind]}</span>}
                 </span>
+                {/* Dates and one km figure (28.10.2026): amounts are in the tiles below, loaded / empty km on the board. */}
                 <span className="font-mono text-[12.5px] text-[#545B63]">
                   {dm(l.startDate)}–{dm(l.endDate)}
-                  {showMoney && ` · kwota ${eur(l.amount)}${l.amountGross !== null ? ` (${eur(l.amountGross)} − 1,5% skonta)` : ''} · przychód ${eur(l.revAlloc)}`}
+                  {l.kind === 'fleet' && ` · ${legKm(l)}`}
                 </span>
-                {l.kind === 'fleet' && l.coLoad && (
-                  <span className="font-mono text-[12.5px] text-[#545B63]">doładunek — bez własnych km (są na zleceniu {o.coLoad?.of ?? 'głównym'})</span>
-                )}
-                {l.kind === 'fleet' && !l.coLoad && (
-                  <span className="font-mono text-[12.5px] text-[#545B63]">
-                    z ładunkiem {km(l.kmLoaded, l.kmEstimated)} · dojazd pusty {km(l.kmEmpty, l.kmEstimated)}
-                    {l.kmEmptyFrom ? ` (z: ${l.kmEmptyFrom})` : ' (brak poprzedniego zlecenia)'}
-                    {l.kmManual && (
-                      <span title="Kilometry poprawione ręcznie w „Popraw ręcznie”">
-                        {' '}
-                        · razem {km((l.kmLoaded ?? 0) + (l.kmEmpty ?? 0), false)} (poprawione)
-                      </span>
-                    )}
-                  </span>
-                )}
                 {l.kind === 'fleet' && (
                   <span className="text-[13px]">
                     <span className="text-[#545B63]">Kierowca:</span> <span className="font-semibold">{l.driver || '—'}</span>

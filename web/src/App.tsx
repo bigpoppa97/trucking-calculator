@@ -17,6 +17,23 @@ import { boardApi } from './board/boardApi.js'
 import { todayIso } from './board/format.js'
 import { loadScreen, saveScreen } from './lib/calcSession.js'
 
+/**
+ * Height of the sticky app header as the CSS variable `--app-header-h` — the board's row of
+ * days sticks right under it (28.10.2026). The header wraps on narrow screens, so it is measured.
+ */
+let headerObserver: ResizeObserver | null = null
+function trackHeaderHeight(el: HTMLElement | null): void {
+  headerObserver?.disconnect()
+  headerObserver = null
+  if (!el) return
+  const set = () => document.documentElement.style.setProperty('--app-header-h', `${el.offsetHeight}px`)
+  set()
+  if (typeof ResizeObserver !== 'undefined') {
+    headerObserver = new ResizeObserver(set)
+    headerObserver.observe(el)
+  }
+}
+
 type Screen = 'board' | 'review' | 'fleet' | 'calculator' | 'users'
 type CalcScreen = 'calculator' | 'routes' | 'config' | 'history'
 
@@ -165,7 +182,7 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-[#EEF0EC] font-sans text-[#15181C]">
-      <header className="sticky top-0 z-30 bg-[#15181C] text-[#EEF0EC]">
+      <header ref={trackHeaderHeight} className="sticky top-0 z-30 bg-[#15181C] text-[#EEF0EC]">
         <div className="flex flex-wrap items-center gap-x-6 px-4 sm:px-6">
           <span className="pt-3 text-[15px] font-bold tracking-tight sm:py-3">
             Tablica floty <span className="font-normal text-[#9AA3AC]">· spedycja</span>

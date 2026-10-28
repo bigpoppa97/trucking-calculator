@@ -168,7 +168,6 @@ export function TruckPage({
     mode === 'month'
       ? `${MONTHS_NOM[Number(date.slice(5, 7)) - 1]} ${date.slice(0, 4)}`
       : `Tydzień ${view.weeks[0]?.weekNumber ?? ''} · ${weekRangeLabel(view.from, view.to)}`
-  const olderPlates = [...t.plates].filter(p => p.validTo).sort((a, b) => b.validFrom.localeCompare(a.validFrom))
   const truckForForms = { id: t.id, plate: t.plate, trailer: t.trailer }
 
   return (
@@ -240,18 +239,6 @@ export function TruckPage({
           <div className="flex min-w-[180px] flex-col gap-1">
             <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Ciągnik</span>
             <span className="font-mono text-lg font-semibold">{t.plate}</span>
-            {olderPlates.length > 0 && (
-              <details className="text-xs text-[#545B63]">
-                <summary className="cursor-pointer">Historia numerów ({olderPlates.length})</summary>
-                <ul className="mt-1 flex flex-col gap-0.5">
-                  {olderPlates.map(p => (
-                    <li key={`${p.plate}-${p.validFrom}`}>
-                      <span className="font-mono">{p.plate}</span> do {fmtDay(p.validTo)}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            )}
             {!t.active && <span className="self-start rounded bg-[#ECEEEA] px-2 py-0.5 text-xs font-semibold text-[#545B63]">ukryty na tablicy</span>}
             {t.retiredOn && (
               <span className="self-start rounded bg-[#ECEEEA] px-2 py-0.5 text-xs font-semibold text-[#545B63]">wycofany z działu — ostatni dzień {fmtDay(t.retiredOn)}</span>

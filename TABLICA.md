@@ -40,7 +40,7 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
    (miejsce, data, auto oddające > auto przejmujące, kwota dla każdego auta). Marża = stawka klienta − suma kwot.
    **Skonto**: gdy koszt w aplikacji to kwota auta z eksportu minus 1,5% (np. 1600 → 1576; albo suma obu kwot, gdy
    oba auta są jednego przewoźnika), to nie błąd — tablica liczy kwotę po skoncie, a panel pokazuje
-   „kwota 1 576 € (1 600 € − 1,5% skonta)”. Inna różnica nadal trafia do „Do sprawdzenia”.
+   „Kwoty dla aut … · po 1,5% skonta”. Inna różnica nadal trafia do „Do sprawdzenia”.
 5. Prom (płaci dział, więc pomniejsza marżę): w tych samych uwagach `PROM 1180` (kwota w EUR, przecinek
    dziesiętny, np. `PROM 1180,50`; po kwocie można dopisać opis, np. `PROM 1180 Finnlines HEL-TRA`). Kilka wpisów
    się sumuje; wpis bez kwoty trafia do „Do sprawdzenia”. Ręczna poprawka „Koszt dodatkowy” zastępuje prom z uwag,
@@ -86,6 +86,10 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
 
 Ręczne poprawki (panel zlecenia → „Popraw ręcznie”) obowiązują, dopóki aplikacja nie zmieni tej samej wartości —
 wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
+
+Tablica: wiersz z dniami zostaje u góry ekranu przy przewijaniu. Kolumna auta: ciągnik (i jego serwisy wymagane),
+naczepa (i jej serwisy), kierowca z telefonem (i ostrzeżenia AVSEC), przewoźnik. Panel zlecenia przy odcinku pokazuje
+daty i km razem (z ładunkiem + pusty dojazd); kwoty są w kafelkach pod odcinkami.
 
 ## Serwis i strona zestawu
 

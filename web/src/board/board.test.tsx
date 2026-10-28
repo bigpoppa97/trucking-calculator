@@ -205,14 +205,15 @@ describe('WeekPage', () => {
     expect(screen.queryByText('Marża tygodnia')).not.toBeInTheDocument()
   })
 
-  it('opens the order panel with legs and km split', async () => {
+  it('opens the order panel: a leg shows its dates and one km figure (no amounts, no loaded / empty split)', async () => {
     api.week.mockResolvedValue(WEEK)
     api.order.mockResolvedValue(ORDER)
     render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
     await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
     const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
     expect(await within(panel).findByText('Klient testowy')).toBeInTheDocument()
-    expect(within(panel).getByText(/z ładunkiem ≈680 km · dojazd pusty ≈0 km/)).toBeInTheDocument()
+    expect(within(panel).getByText('22.09–23.09 · ≈680 km')).toBeInTheDocument()
+    expect(within(panel).queryByText(/Twoje auto|z ładunkiem|dojazd pusty|kwota|przychód \d/)).not.toBeInTheDocument()
 
     await userEvent.keyboard('{Escape}')
     expect(screen.queryByRole('complementary', { name: 'Szczegóły zlecenia' })).not.toBeInTheDocument()
@@ -541,7 +542,7 @@ describe('TruckPage (strona zestawu)', () => {
     expect(await screen.findByRole('heading', { name: 'AA1050H' })).toBeInTheDocument()
     expect(api.truckView).toHaveBeenCalledWith(1, '2026-09-23', '2026-09-23')
     expect(screen.getByText('Aktywne zlecenie')).toBeInTheDocument()
-    expect(screen.getByText('Historia numerów (1)')).toBeInTheDocument()
+    expect(screen.queryByText(/Historia numerów/)).not.toBeInTheDocument() // removed 28.10.2026
     expect(screen.getByText('Serwisy')).toBeInTheDocument()
 
     const servicesTab = screen.getByRole('tabpanel')
@@ -911,7 +912,7 @@ describe('paczka 26.10.2026', () => {
     render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
     await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
     const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
-    expect(await within(panel).findByText(/razem 1\D?250 km \(poprawione\)/)).toBeInTheDocument()
+    expect(await within(panel).findByText(/· 1\D?250 km \(poprawione\)/)).toBeInTheDocument()
     expect(within(panel).getByText(/Km razem:/)).toBeInTheDocument()
     expect(within(panel).getByText(/Km z ładunkiem:/)).toBeInTheDocument() // an older correction stays visible
     await userEvent.click(within(panel).getByRole('button', { name: 'Popraw ręcznie' }))
@@ -1046,14 +1047,15 @@ describe('paczka 28.10.2026', () => {
     await waitFor(() => expect(api.order).toHaveBeenLastCalledWith('79-9013-26'))
   })
 
-  it('skonto: the leg shows the amount after it and the PRZ amount', async () => {
+  it('skonto: told in the "Kwoty dla aut" tile', async () => {
     api.week.mockResolvedValue(WEEK)
     api.order.mockResolvedValue({ ...ORDER, order: { ...ORDER.order, skonto: true }, legs: [{ ...ORDER.legs[0]!, amount: 1576, amountGross: 1600 }] })
     render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
     await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
     const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
-    expect(await within(panel).findByText(/kwota 1\D?576 € \(1\D?600 € − 1,5% skonta\)/)).toBeInTheDocument()
-    expect(within(panel).getByText(/po 1,5% skonta/)).toBeInTheDocument()
+    // The leg has no amounts since 28.10.2026 (afternoon) — skonto is told in the "Kwoty dla aut" tile.
+    expect(await within(panel).findByText(/po 1,5% skonta/)).toBeInTheDocument()
+    expect(within(panel).queryByText(/kwota 1\D?576/)).not.toBeInTheDocument()
   })
 
   it('doładunek: light purple tile with "doładunek", a legend entry, and the main order one click away', async () => {
@@ -1176,5 +1178,33 @@ describe('paczka 28.10.2026', () => {
     fireEvent.change(within(dialog).getByLabelText('Godzina (opcjonalnie)'), { target: { value: '06:00' } })
     await userEvent.click(within(dialog).getByRole('button', { name: 'Zapisz' }))
     expect(api.addEvent).toHaveBeenCalledWith({ truckId: 1, day: '2026-09-24', kind: 'note', text: 'pauza', time: '06:00' })
+  })
+})
+
+describe('paczka 28.10.2026 (popołudnie)', () => {
+  it('the row of days sticks under the app header and follows the horizontal scroll of the board', async () => {
+    api.week.mockResolvedValue(WEEK)
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const head = await screen.findByTestId('board-days')
+    expect(head).toHaveClass('sticky')
+    expect(head.style.top).toBe('var(--app-header-h, 48px)')
+    expect(within(head).getByText('dziś')).toBeInTheDocument()
+    const body = head.nextElementSibling as HTMLElement
+    body.scrollLeft = 120
+    fireEvent.scroll(body)
+    expect(head.scrollLeft).toBe(120)
+  })
+
+  it('the truck column reads: tractor, trailer, driver with phone, carrier', async () => {
+    api.week.mockResolvedValue(WEEK)
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const plate = await screen.findByText('AA1050H')
+    const trailer = screen.getByText('TR1111P')
+    const driver = screen.getByText(/Kierowca A/)
+    const carrier = screen.getByText('Przewoźnik A')
+    const after = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(after(plate, trailer)).toBe(true)
+    expect(after(trailer, driver)).toBe(true)
+    expect(after(driver, carrier)).toBe(true)
   })
 })

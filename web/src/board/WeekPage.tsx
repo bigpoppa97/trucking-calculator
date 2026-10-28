@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { boardApi, errorMessage, type NoteKind, type Service, type WeekEvent, type WeekTruck, type WeekView } from './boardApi.js'
 import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, ordersLabel, ordersWithDrafts, pair, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
 import { Icon } from './Icon.js'
@@ -71,6 +71,8 @@ export function WeekPage({
   const [eventEdit, setEventEdit] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
   const [trailerChange, setTrailerChange] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  /** The row of days sticks under the app header; it follows the board's horizontal scroll. */
+  const dayHeadRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (focus) {
@@ -215,9 +217,16 @@ export function WeekPage({
 
       {view.trucks.length > 0 && (
         <section className="relative px-6">
-          <div className="overflow-x-auto rounded-xl border border-[#D5D9D3] bg-white">
+          {/* Row of days: sticks to the top of the screen while scrolling down (28.10.2026). It sits outside the
+              horizontal scroller (a scroll box would hold it), so it follows that scroll by hand. */}
+          <div
+            ref={dayHeadRef}
+            data-testid="board-days"
+            className="sticky z-20 overflow-hidden rounded-t-xl border border-b-0 border-[#D5D9D3] bg-[#F7F8F6]"
+            style={{ top: 'var(--app-header-h, 48px)' }}
+          >
             <div className="min-w-[1120px]">
-              <div className="grid grid-cols-[236px_minmax(0,1fr)_184px] rounded-t-xl border-b border-[#D5D9D3] bg-[#F7F8F6]">
+              <div className="grid grid-cols-[236px_minmax(0,1fr)_184px] border-b border-[#D5D9D3]">
                 <div className="flex items-center px-3.5 py-2.5 text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Auto</div>
                 <div className="grid grid-cols-7 gap-x-1 px-2">
                   {view.days.map((d, i) => {
@@ -238,7 +247,15 @@ export function WeekPage({
                   Tydzień
                 </div>
               </div>
-
+            </div>
+          </div>
+          <div
+            className="overflow-x-auto rounded-b-xl border border-t-0 border-[#D5D9D3] bg-white"
+            onScroll={e => {
+              if (dayHeadRef.current) dayHeadRef.current.scrollLeft = e.currentTarget.scrollLeft
+            }}
+          >
+            <div className="min-w-[1120px]">
               {view.trucks.map(truck => (
                 <TruckRow
                   key={truck.id}
@@ -473,9 +490,12 @@ function TruckRow({
             {copied ? 'Skopiowano' : 'Kopiuj'}
           </button>
         </div>
-        <span className="truncate text-[13px] text-[#545B63]" title={truck.carrier}>
-          {truck.carrier || 'przewoźnik — uzupełnij we Flocie'}
+        {/* Order of the column (28.10.2026): tractor, trailer, driver, carrier — each with its own warnings under it. */}
+        <RequiredBadges services={truck.required.filter(s => s.target === 'truck')} onOpen={onOpenService} />
+        <span className="self-start rounded bg-[#EEF0EC] px-1.5 py-0.5 text-xs">
+          <span className="font-mono font-semibold">{truck.trailer ?? '—'}</span> · {truck.trailerTypePl}
         </span>
+        <RequiredBadges services={truck.required.filter(s => s.target === 'trailer')} onOpen={onOpenService} />
         <span className="text-[13px]">
           {openDriver ? (
             <button
@@ -493,11 +513,9 @@ function TruckRow({
           {truck.phone && <span className="text-[#545B63]">· {truck.phone}</span>}
         </span>
         <DriverWarnings warnings={truck.driverWarnings} onOpen={openDriver} />
-        <RequiredBadges services={truck.required.filter(s => s.target === 'truck')} onOpen={onOpenService} />
-        <span className="mt-0.5 self-start rounded bg-[#EEF0EC] px-1.5 py-0.5 text-xs">
-          <span className="font-mono font-semibold">{truck.trailer ?? '—'}</span> · {truck.trailerTypePl}
+        <span className="truncate text-[13px] text-[#545B63]" title={truck.carrier}>
+          {truck.carrier || 'przewoźnik — uzupełnij we Flocie'}
         </span>
-        <RequiredBadges services={truck.required.filter(s => s.target === 'trailer')} onOpen={onOpenService} />
       </div>
 
       <TruckTimeline
