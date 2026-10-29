@@ -5,7 +5,7 @@ import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { RequiredBadges, SERVICE_COLORS, ServiceDialog } from './serviceUi.js'
 import { DriverChangeDialog, DriverWarnings } from './driversUi.js'
-import { COLOAD_COLORS, TruckTimeline, nowFractionFor } from './TruckTimeline.js'
+import { COLOAD_COLORS, DayGrid, TruckTimeline, nowFractionFor } from './TruckTimeline.js'
 import { DraftDialog } from './DraftDialog.js'
 
 /**
@@ -13,6 +13,35 @@ import { DraftDialog } from './DraftDialog.js'
  * bars from loading to unloading, services in a strip under them, events
  * under the bars, week totals per truck and for the department.
  */
+
+/** Row of days above the board (29.10.2026): stands out from the white rows. */
+const HEAD_VARIANTS = {
+  dark: {
+    bg: '#2B323A',
+    border: '#2B323A',
+    bottom: '#15181C',
+    line: 'rgba(255,255,255,0.14)',
+    label: '#AEB6BF',
+    day: '#F3F4F1',
+    date: '#C9CED6',
+    weekend: '#9AA3AC',
+    todayBg: '#3B6FD1',
+    todayFg: '#FFFFFF',
+  },
+  light: {
+    bg: '#DCE3EC',
+    border: '#B9C3CF',
+    bottom: '#8E9AA8',
+    line: '#BCC6D2',
+    label: '#3D444C',
+    day: '#15181C',
+    date: '#3D444C',
+    weekend: '#5E6670',
+    todayBg: '#1E4E9C',
+    todayFg: '#FFFFFF',
+  },
+} as const
+const HEAD = HEAD_VARIANTS.dark
 
 export const MONEY_KEY = 'tablica.showMoney'
 
@@ -222,28 +251,37 @@ export function WeekPage({
           <div
             ref={dayHeadRef}
             data-testid="board-days"
-            className="sticky z-20 overflow-hidden rounded-t-xl border border-b-0 border-[#D5D9D3] bg-[#F7F8F6]"
-            style={{ top: 'var(--app-header-h, 48px)' }}
+            className="sticky z-20 overflow-hidden rounded-t-xl border border-b-0"
+            style={{ top: 'var(--app-header-h, 48px)', background: HEAD.bg, borderColor: HEAD.border }}
           >
             <div className="min-w-[1120px]">
-              <div className="grid grid-cols-[236px_minmax(0,1fr)_184px] border-b border-[#D5D9D3]">
-                <div className="flex items-center px-3.5 py-2.5 text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Auto</div>
-                <div className="grid grid-cols-7 gap-x-1 px-2">
-                  {view.days.map((d, i) => {
-                    const isToday = d === view.today
-                    return (
-                      <div
-                        key={d}
-                        className={`my-1 flex items-baseline gap-1.5 rounded-md px-2 py-2 text-[13px] ${isToday ? 'bg-[#E3EAF6] font-bold text-[#1E4E9C]' : 'font-semibold text-[#545B63]'}`}
-                      >
-                        <span>{DAY_NAMES[i]}</span>
-                        <span className="font-mono text-xs">{dm(d)}</span>
-                        {isToday && <span className="text-[11px] uppercase tracking-wide">dziś</span>}
-                      </div>
-                    )
-                  })}
+              <div className="grid grid-cols-[236px_minmax(0,1fr)_184px]" style={{ borderBottom: `2px solid ${HEAD.bottom}` }}>
+                <div className="flex items-center px-3.5 py-3 text-[11.5px] font-bold uppercase tracking-wider" style={{ color: HEAD.label }}>
+                  Auto
                 </div>
-                <div className="flex items-center border-l border-[#E3E6E1] px-3.5 py-2.5 text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">
+                <div className="relative" style={{ borderLeft: `1px solid ${HEAD.line}` }}>
+                  <DayGrid todayIndex={null} line={HEAD.line} />
+                  <div className="relative grid h-full grid-cols-7 gap-x-1 px-2">
+                    {view.days.map((d, i) => {
+                      const isToday = d === view.today
+                      const weekend = i >= 5
+                      return (
+                        <div
+                          key={d}
+                          className="flex items-baseline gap-1.5 px-2 py-3 text-[14px]"
+                          style={isToday ? { background: HEAD.todayBg, color: HEAD.todayFg } : { color: weekend ? HEAD.weekend : HEAD.day }}
+                        >
+                          <span className="font-bold">{DAY_NAMES[i]}</span>
+                          <span className="font-mono text-[12.5px] font-semibold" style={isToday ? undefined : { color: weekend ? HEAD.weekend : HEAD.date }}>
+                            {dm(d)}
+                          </span>
+                          {isToday && <span className="ml-auto text-[10.5px] font-bold uppercase tracking-wider">dziś</span>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+                <div className="flex items-center px-3.5 py-3 text-[11.5px] font-bold uppercase tracking-wider" style={{ color: HEAD.label, borderLeft: `1px solid ${HEAD.line}` }}>
                   Tydzień
                 </div>
               </div>

@@ -118,6 +118,28 @@ export interface TruckTimelineProps {
   onOpenTrailerChange?: ((e: WeekEvent) => void) | undefined
 }
 
+/** Left edge of day `d` (0–7) in a week area with 8 px padding and 4 px gaps between the columns (bars, events, header). */
+export function dayEdge(d: number): string {
+  return `calc(6px + (100% - 12px) * ${d} / 7)`
+}
+
+/**
+ * Day columns behind the bars (29.10.2026): a thin line on each day boundary, like spreadsheet
+ * gridlines, and today's column faintly tinted. Bars and chips lie on top of it.
+ */
+export function DayGrid({ todayIndex, line = '#E4E7E2', today = '#F2F6FC' }: { todayIndex: number | null; line?: string; today?: string }) {
+  return (
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+      {todayIndex !== null && (
+        <div className="absolute inset-y-0" style={{ left: dayEdge(todayIndex), width: 'calc((100% - 12px) / 7)', background: today }} />
+      )}
+      {[1, 2, 3, 4, 5, 6].map(d => (
+        <div key={d} className="absolute inset-y-0 w-px" style={{ left: dayEdge(d), background: line }} />
+      ))}
+    </div>
+  )
+}
+
 /** Chip text of a day event: "14:00 · POZ: TEST" with an hour and a place (the hour first — long chips are cut at the end). */
 export function eventChipText(e: WeekEvent): string {
   return `${e.time ? `${e.time} · ` : ''}${e.place && !e.auto ? `${e.place}: ` : ''}${e.text}`
@@ -140,9 +162,11 @@ export function TruckTimeline({
   onOpenTrailerChange,
 }: TruckTimelineProps) {
   const bars = placeBars(row.bars)
+  const todayIndex = nowFraction !== null ? Math.min(6, Math.floor(nowFraction * 7)) : null
   return (
     <div className="relative min-w-0 p-2">
-      <div className="grid gap-x-1 gap-y-1.5" style={{ gridAutoRows: '50px', gridTemplateColumns: 'repeat(14, minmax(0, 1fr))' }}>
+      <DayGrid todayIndex={todayIndex} />
+      <div className="relative grid gap-x-1 gap-y-1.5" style={{ gridAutoRows: '50px', gridTemplateColumns: 'repeat(14, minmax(0, 1fr))' }}>
         {bars.map(b => {
           const isSel = selected === b.orderNo
           const c = barColors(b, isSel)
@@ -216,7 +240,7 @@ export function TruckTimeline({
         })}
       </div>
       <ServiceStrip services={row.services} weekStart={weekStart} onOpen={onOpenService} />
-      <div className="mt-1.5 grid grid-cols-7 gap-1">
+      <div className="relative mt-1.5 grid grid-cols-7 gap-1">
         {days.map(day => (
           <div key={day} className="flex min-w-0 flex-col items-start gap-1">
             {row.events
