@@ -15,7 +15,8 @@ import { parseAtValue } from './times.js'
  * Rules (agreed with the department, see the spec in the project):
  *  - margin = client rate − sum of the amounts the trucks get; counted whole
  *  - a PRZ entry splits the order into two legs at the swap place/date; the
- *    amounts in the entry are what each truck gets
+ *    amounts in the entry are what each truck gets; a leg outside the department
+ *    is credited with its amount, the department's leg(s) with the rest
  *  - status A (client) = cancelled, N = unconfirmed → shown, not counted
  *  - status A on the forwarding order without PRZ = the truck does not carry it
  *    (noCarrier): off the week board, out of results, no review item
@@ -434,11 +435,19 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
   const margin = rev !== null && amountsTotal !== null ? round2(rev - amountsTotal) : null
   const marginPct = margin !== null && rev ? round2((margin / rev) * 100) : null
 
-  // Revenue allocation per leg in proportion to the amounts (for per-truck stats).
+  // Revenue per leg (per-truck stats). A leg outside the department (own fleet, another carrier)
+  // gets exactly its amount — its margin is already inside it — so the department's whole margin
+  // stays on its truck (29.10.2026: own fleet 700 of 2000 with our truck at 1000 → our leg 1300,
+  // margin 300, not a share of it). Department legs share the rest in proportion to their amounts.
   if (rev !== null) {
-    const sum = legs.reduce((s, l) => s + (l.amount ?? 0), 0)
-    for (const l of legs) {
-      l.revAlloc = sum > 0 ? round2((rev * (l.amount ?? 0)) / sum) : round2(rev / legs.length)
+    const ours = legs.filter(l => l.kind === 'fleet')
+    const outside = ours.length > 0 && ours.length < legs.length ? legs.filter(l => l.kind !== 'fleet') : []
+    for (const l of outside) l.revAlloc = round2(l.amount ?? 0)
+    const shared = outside.length > 0 ? ours : legs
+    const pool = rev - outside.reduce((s, l) => s + (l.amount ?? 0), 0)
+    const sum = shared.reduce((s, l) => s + (l.amount ?? 0), 0)
+    for (const l of shared) {
+      l.revAlloc = sum > 0 ? round2((pool * (l.amount ?? 0)) / sum) : round2(pool / shared.length)
     }
   }
 

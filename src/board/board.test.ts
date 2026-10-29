@@ -1888,3 +1888,37 @@ describe('paczka 29.10.2026 — average week revenue per truck, chips at their h
     expect(row.events.find(e => e.kind === 'trailer')).toMatchObject({ auto: true, day: '2026-09-23', time: '15:30' })
   })
 })
+
+describe('29.10.2026 — relay with a truck outside the department: our truck keeps the whole margin', () => {
+  it('the outside leg is credited with its amount, our leg with the rest (truck totals = order margin)', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-90-26', from: 'Warszawa', ld: '2026-09-20', to: 'Berlin', ud: '2026-09-20', rev: 900, cost: null, own: 'KN5692K' },
+        { no: '79-1-26', from: 'Wien', ld: '2026-09-22', to: 'Wilno', ud: '2026-09-23', rev: 2000, cost: 1000, sub: 'AA1001A', trailer: 'TR100', notes: 'PRZ WAW 22.09 AA1001A>KN5692K 1000/700' },
+        { no: '79-2-26', from: 'Warszawa', ld: '2026-09-24', to: 'Budapest', ud: '2026-09-25', rev: 1400, cost: 1000, sub: 'AA1001A', trailer: 'TR100' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const d = await board.orderDetails('79-1-26')
+    expect(d.order.margin).toBe(300)
+    expect(d.legs.map(l => [l.plate, l.kind, l.amount, l.revAlloc])).toEqual([
+      ['AA1001A', 'fleet', 1000, 1300],
+      ['KN5692K', 'own', 700, 700],
+    ])
+    const row = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!
+    expect(row.totals.margin).toBe(700) // 300 + 400, as the two orders' margins
+    expect(row.bars.find(b => b.orderNo === '79-1-26')?.margin).toBe(300)
+  })
+
+  it('two department trucks on a relay still share the revenue in proportion to their amounts', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-1-26', from: 'Wien', ld: '2026-09-22', to: 'Wilno', ud: '2026-09-23', rev: 3000, cost: 1000, sub: 'AA1001A', trailer: 'TR100', notes: 'PRZ WAW 22.09 AA1001A>BB2001B 1000/1000' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    expect((await board.orderDetails('79-1-26')).legs.map(l => l.revAlloc)).toEqual([1500, 1500])
+  })
+})
