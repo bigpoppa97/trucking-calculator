@@ -1855,3 +1855,36 @@ describe('paczka 28.10.2026 — skonto, doładunek, trailer change and driver ch
     expect(row.driver).toBe('Krzysztof Z.')
   })
 })
+
+describe('paczka 29.10.2026 — average week revenue per truck, chips at their hour', () => {
+  it('"Średni obrót na auto": the trucks\' revenue (ours / the carriers\') ÷ trucks on the board that week', async () => {
+    await board.importFile(
+      await xlsx([
+        { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1500, cost: 1200, sub: 'AA1001A', trailer: 'TR100' },
+        { no: '79-2-26', from: 'Warszawa', ld: '2026-09-23', to: 'Budapest', ud: '2026-09-24', rev: 1200, cost: 900, sub: 'BB2001B', carrier: 'Beta Trans', trailer: 'TR960PE' },
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const k = (await board.weekView('2026-09-21')).kpis
+    expect(k.trucks).toBe(3) // AA1002A has no order, it still counts
+    expect(k.revenuePerTruck).toBe(900)
+    expect(k.carrierPerTruck).toBe(700)
+  })
+
+  it('an automatic trailer change stands at the loading hour of the order with the new trailer', async () => {
+    await board.importFile(
+      await xlsx(
+        [
+          { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1450, cost: 1250, sub: 'AA1001A', trailer: 'TR100', lh: '08:00 — —', uh: '— — 13:00' },
+          { no: '79-2-26', from: 'Budapest', ld: '2026-09-23', to: 'Warszawa', ud: '2026-09-24', rev: 1200, cost: 1000, sub: 'AA1001A', trailer: 'TR200', lh: '15:30 — —', uh: '— — 12:00' },
+        ],
+        HOURS_HEADERS,
+      ),
+      'a.xlsx',
+      'daily',
+    )
+    const row = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!
+    expect(row.events.find(e => e.kind === 'trailer')).toMatchObject({ auto: true, day: '2026-09-23', time: '15:30' })
+  })
+})

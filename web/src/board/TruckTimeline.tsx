@@ -9,55 +9,99 @@ import { SERVICE_COLORS, ServiceStrip } from './serviceUi.js'
  * row per truck) and the set page (one row per week).
  */
 
-/** Columns are half days (14 per week): day d = columns 2d+1 … 2d+2. */
+/**
+ * Positions inside a truck-week are in days from Monday 00:00 (0–7). The area has 7 day columns
+ * with 4 px gaps (bars, chips, the row of days above and the day lines share it), so a moment
+ * is placed in its day column in proportion to the hour (29.10.2026).
+ */
+export const BAR_MIN_DAYS = 0.5
+/** Room a chip takes for stacking (it is at most one day wide and may run into the next day). */
+export const CHIP_DAYS = 0.95
+
+/** "HH:MM" → fraction of a day; null when unknown. */
+function dayFraction(time: string | null | undefined): number | null {
+  const m = /^(\d{1,2}):(\d{2})/.exec(time ?? '')
+  if (!m) return null
+  return Math.min(1, (Number(m[1]) * 60 + Number(m[2])) / 1440)
+}
+
+/**
+ * CSS offset of a start position x (days) in the content box: a whole day begins its own column.
+ * `box` = the content width in CSS terms ('100%' inside the inner boxes; the padded outer box is 100% − 16 px).
+ */
+export function startCss(x: number, box = '100%'): string {
+  const gaps = Math.max(0, Math.min(6, Math.floor(x + 1e-9)))
+  return `calc((${box} - 24px) * ${(x / 7).toFixed(6)} + ${gaps * 4}px)`
+}
+
+/** CSS offset of an end position x (days): a whole day ends at the end of the previous column. */
+export function endCss(x: number): string {
+  const gaps = Math.max(0, Math.min(6, Math.ceil(x - 1e-9) - 1))
+  return `calc((100% - 24px) * ${(x / 7).toFixed(6)} + ${gaps * 4}px)`
+}
+
 export interface PlacedBar extends WeekBar {
-  colStart: number
-  colEnd: number
+  /** Days from Monday 00:00, clipped to the week; `end` includes the minimum width. */
+  start: number
+  end: number
   lane: number
 }
 
 /**
- * Rows ("lanes") for the bars of one truck-week. Bars cover whole days; two
- * orders that share a day go in one row when the first is unloaded before
- * the second is loaded (both hours known, 12.10.2026) — the shared day is
- * then split in half between them.
+ * Bars from the loading hour to the unloading hour (29.10.2026); a missing hour = the whole day
+ * (loading from its start, unloading to its end). A short bar is at least BAR_MIN_DAYS wide so the
+ * route can be read. Bars go into rows ("lanes"): one row holds orders that do not overlap.
  */
 export function placeBars(bars: WeekBar[]): PlacedBar[] {
-  const lanes: Array<{ end: number; last: PlacedBar }> = []
-  const placed: PlacedBar[] = []
-  const sorted = [...bars].sort(
-    (a, b) => a.startDay - b.startDay || (a.startTime ?? '00:00').localeCompare(b.startTime ?? '00:00') || a.endDay - b.endDay,
-  )
-  for (const b of sorted) {
-    const s = Math.max(0, b.startDay)
-    const e = Math.min(6, b.endDay)
-    const bar: PlacedBar = { ...b, colStart: 2 * s + 1, colEnd: 2 * e + 3, lane: 0 }
-    const shares = (lane: { end: number; last: PlacedBar }) =>
-      b.startDay >= 0 &&
-      lane.end === s &&
-      lane.last.endDay === b.startDay &&
-      lane.last.endDate === b.startDate &&
-      lane.last.endTime !== null &&
-      b.startTime !== null &&
-      lane.last.endTime <= b.startTime &&
-      // a one-day bar that already starts at noon cannot also end at noon
-      lane.last.colStart < 2 * s + 2
-    let index = lanes.findIndex(lane => lane.end < s)
-    const shared = lanes.findIndex(shares)
-    if (shared !== -1 && (index === -1 || shared < index)) {
-      index = shared
-      const prev = lanes[shared]!.last
-      prev.colEnd = 2 * s + 2
-      bar.colStart = 2 * s + 2
+  const items = bars.map(b => {
+    const startFrac = b.startDay < 0 ? 0 : (dayFraction(b.startTime) ?? 0)
+    const endFrac = b.endDay > 6 ? 1 : (dayFraction(b.endTime) ?? 1)
+    let start = Math.max(0, Math.min(7, Math.max(0, b.startDay) + startFrac))
+    let end = Math.max(0, Math.min(7, Math.min(6, b.endDay) + endFrac))
+    if (end - start < BAR_MIN_DAYS) {
+      end = Math.min(7, start + BAR_MIN_DAYS)
+      start = Math.min(start, end - BAR_MIN_DAYS)
     }
-    if (index === -1) {
-      index = lanes.length
-      lanes.push({ end: e, last: bar })
-    } else lanes[index] = { end: e, last: bar }
-    bar.lane = index + 1
-    placed.push(bar)
-  }
-  return placed
+    return { b, start, end }
+  })
+  items.sort((x, y) => x.start - y.start || x.end - y.end)
+  const laneEnds: number[] = []
+  return items.map(({ b, start, end }) => {
+    let lane = laneEnds.findIndex(e => e <= start + 1e-9)
+    if (lane === -1) {
+      lane = laneEnds.length
+      laneEnds.push(end)
+    } else laneEnds[lane] = end
+    return { ...b, start, end, lane: lane + 1 }
+  })
+}
+
+export interface PlacedEvent {
+  event: WeekEvent
+  /** Days from Monday 00:00: the event's hour, or the start of its day. */
+  x: number
+  lane: number
+}
+
+/** Day events under the bars at their hour (29.10.2026); chips that would overlap go to the next row. */
+export function placeEvents(events: WeekEvent[], days: string[]): PlacedEvent[] {
+  const items = events
+    .map(event => {
+      const d = days.indexOf(event.day)
+      return d < 0 ? null : { event, x: d + (dayFraction(event.time) ?? 0) }
+    })
+    .filter((it): it is { event: WeekEvent; x: number } => it !== null)
+    .sort((a, b) => a.x - b.x)
+  const laneEnds: number[] = []
+  return items.map(({ event, x }) => {
+    const from = Math.min(x, 7 - CHIP_DAYS)
+    let lane = laneEnds.findIndex(e => e <= from + 1e-9)
+    if (lane === -1) {
+      lane = laneEnds.length
+      laneEnds.push(from + CHIP_DAYS)
+    } else laneEnds[lane] = from + CHIP_DAYS
+    return { event, x, lane }
+  })
 }
 
 /** Co-load riding with another order ("doładunek", 28.10.2026): light purple. */
@@ -118,10 +162,36 @@ export interface TruckTimelineProps {
   onOpenTrailerChange?: ((e: WeekEvent) => void) | undefined
 }
 
+/** Left edge of day `d` (0–7) in a week area with 8 px padding and 4 px gaps between the columns (bars, events, header). */
+export function dayEdge(d: number): string {
+  return `calc(6px + (100% - 12px) * ${d} / 7)`
+}
+
+/**
+ * Day columns behind the bars (29.10.2026): a thin line on each day boundary, like spreadsheet
+ * gridlines, and today's column faintly tinted. Bars and chips lie on top of it.
+ */
+export function DayGrid({ todayIndex, line = '#E4E7E2', today = '#F2F6FC' }: { todayIndex: number | null; line?: string; today?: string }) {
+  return (
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+      {todayIndex !== null && (
+        <div className="absolute inset-y-0" style={{ left: dayEdge(todayIndex), width: 'calc((100% - 12px) / 7)', background: today }} />
+      )}
+      {[1, 2, 3, 4, 5, 6].map(d => (
+        <div key={d} className="absolute inset-y-0 w-px" style={{ left: dayEdge(d), background: line }} />
+      ))}
+    </div>
+  )
+}
+
 /** Chip text of a day event: "14:00 · POZ: TEST" with an hour and a place (the hour first — long chips are cut at the end). */
 export function eventChipText(e: WeekEvent): string {
   return `${e.time ? `${e.time} · ` : ''}${e.place && !e.auto ? `${e.place}: ` : ''}${e.text}`
 }
+
+const LANE_H = 50
+const LANE_GAP = 6
+const CHIP_ROW_H = 24
 
 export function TruckTimeline({
   row,
@@ -140,9 +210,14 @@ export function TruckTimeline({
   onOpenTrailerChange,
 }: TruckTimelineProps) {
   const bars = placeBars(row.bars)
+  const lanes = bars.reduce((m, b) => Math.max(m, b.lane), 0)
+  const chips = placeEvents(row.events, days)
+  const chipRows = chips.reduce((m, c) => Math.max(m, c.lane + 1), 0)
+  const todayIndex = nowFraction !== null ? Math.min(6, Math.floor(nowFraction * 7)) : null
   return (
     <div className="relative min-w-0 p-2">
-      <div className="grid gap-x-1 gap-y-1.5" style={{ gridAutoRows: '50px', gridTemplateColumns: 'repeat(14, minmax(0, 1fr))' }}>
+      <DayGrid todayIndex={todayIndex} />
+      <div className="relative" style={{ height: lanes > 0 ? lanes * LANE_H + (lanes - 1) * LANE_GAP : 0 }}>
         {bars.map(b => {
           const isSel = selected === b.orderNo
           const c = barColors(b, isSel)
@@ -164,10 +239,14 @@ export function TruckTimeline({
           return (
             <div
               key={b.key}
-              className="relative flex min-w-0 items-stretch rounded-[7px]"
+              data-testid={`bar-${b.key}`}
+              className="absolute flex min-w-0 items-stretch rounded-[7px]"
               style={{
-                gridColumn: `${b.colStart} / ${b.colEnd}`,
-                gridRow: b.lane,
+                top: (b.lane - 1) * (LANE_H + LANE_GAP),
+                height: LANE_H,
+                left: startCss(b.start),
+                // 3 px of air before the next bar in the same row
+                width: `calc(${endCss(b.end)} - ${startCss(b.start)} - 3px)`,
                 background: c.bg,
                 color: c.fg,
                 outline: c.outline,
@@ -216,66 +295,33 @@ export function TruckTimeline({
         })}
       </div>
       <ServiceStrip services={row.services} weekStart={weekStart} onOpen={onOpenService} />
-      <div className="mt-1.5 grid grid-cols-7 gap-1">
-        {days.map(day => (
-          <div key={day} className="flex min-w-0 flex-col items-start gap-1">
-            {row.events
-              .filter(e => e.day === day)
-              .map((e, i) =>
-                e.driverChangeId !== undefined && onOpenDriverChange ? (
-                  <button
-                    key={`d${e.driverChangeId}`}
-                    type="button"
-                    onClick={() => onOpenDriverChange(e)}
-                    aria-label={e.text}
-                    title={`${e.text}${e.time ? ` (od ${e.time})` : ''} — kliknij, żeby poprawić albo usunąć`}
-                    className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#9AB3DA] bg-[#EEF3FB] px-2 py-0.5 text-[11.5px] text-[#1E3A6E] hover:border-[#1E4E9C]"
-                  >
-                    <Icon name="driver" size={12} />
-                    <span className="truncate">
-                      {e.time ? `${e.time} ` : ''}→ {e.text.split(' → ').pop()?.replace(/^Kierowca: /, '')}
-                    </span>
-                  </button>
-                ) : e.autoKey && onOpenTrailerChange ? (
-                  <button
-                    key={e.id !== null ? `n${e.id}` : `a${e.autoKey}`}
-                    type="button"
-                    onClick={() => onOpenTrailerChange(e)}
-                    aria-label={`Naczepa: ${eventChipText(e)}${e.auto ? ' (wykryta automatycznie)' : ''}`}
-                    title={
-                      e.auto
-                        ? 'Wykryte automatycznie z naczep w zleceniach — kliknij, żeby poprawić dzień, godzinę albo miejsce'
-                        : `Naczepa${e.placeName ? ` · ${e.placeName}` : ''}${e.createdBy ? ` · ${e.createdBy}` : ''}${e.createdAt ? `, ${stamp(e.createdAt)}` : ''}\n${e.text}\nPoprawione na tablicy (automatycznie: ${e.autoDay ? dm(e.autoDay) : ''}) — kliknij, żeby zmienić.`
-                    }
-                    className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] text-[#3D444C] hover:border-[#545B63] ${e.auto ? 'border-dashed border-[#9AA3AC] bg-[#F7F8F6]' : 'border-[#D5D9D3] bg-white'}`}
-                  >
-                    <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
-                    <span className="truncate">{eventChipText(e)}</span>
-                  </button>
-                ) : !e.auto && e.id !== null && onOpenEvent ? (
-                  <button
-                    key={`n${e.id}`}
-                    type="button"
-                    onClick={() => onOpenEvent(e)}
-                    aria-label={`${EVENT_LABELS[e.kind] ?? 'Zdarzenie'}: ${eventChipText(e)}`}
-                    title={`${EVENT_LABELS[e.kind] ?? 'Zdarzenie'}${e.placeName ? ` · ${e.placeName}` : ''}${e.createdBy ? ` · ${e.createdBy}` : ''}${e.createdAt ? `, ${stamp(e.createdAt)}` : ''}\n${e.text}\nKliknij, żeby poprawić albo usunąć.`}
-                    className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#D5D9D3] bg-white px-2 py-0.5 text-[11.5px] text-[#3D444C] hover:border-[#9AA3AC]"
-                  >
-                    <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
-                    <span className="truncate">{eventChipText(e)}</span>
-                  </button>
-                ) : (
-                  <span
-                    key={`${e.id ?? 'auto'}-${i}`}
-                    title={e.auto ? 'Wykryte automatycznie z naczep w zleceniach' : EVENT_LABELS[e.kind]}
-                    className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] ${e.auto ? 'border-dashed border-[#9AA3AC] bg-[#F7F8F6]' : 'border-[#D5D9D3] bg-white'} text-[#3D444C]`}
-                  >
-                    <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
-                    <span className="truncate">{eventChipText(e)}</span>
-                  </span>
-                ),
-              )}
-            {onAddEvent && (
+      {chipRows > 0 && (
+        <div className="relative mt-1.5" style={{ height: chipRows * CHIP_ROW_H }}>
+          {chips.map(({ event: e, x, lane }, i) => (
+            <div
+              key={e.driverChangeId !== undefined ? `d${e.driverChangeId}` : e.id !== null ? `n${e.id}` : `a${e.autoKey ?? i}`}
+              className="absolute flex"
+              style={{
+                top: lane * CHIP_ROW_H,
+                // at its hour; a chip late on Sunday is moved left to stay inside the week
+                left: `min(${startCss(x)}, calc(100% - (100% - 24px) * ${CHIP_DAYS / 7}))`,
+                maxWidth: `calc((100% - 24px) * ${CHIP_DAYS / 7})`,
+              }}
+            >
+              <EventChip
+                e={e}
+                onOpenDriverChange={onOpenDriverChange}
+                onOpenEvent={onOpenEvent}
+                onOpenTrailerChange={onOpenTrailerChange}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+      {onAddEvent && (
+        <div className="relative mt-1 grid grid-cols-7 gap-1">
+          {days.map(day => (
+            <div key={day}>
               <button
                 type="button"
                 onClick={() => onAddEvent(day)}
@@ -284,18 +330,89 @@ export function TruckTimeline({
               >
                 <Icon name="plus" size={13} />
               </button>
-            )}
-          </div>
-        ))}
-      </div>
+            </div>
+          ))}
+        </div>
+      )}
       {nowFraction !== null && (
         <div
           aria-hidden="true"
           className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-[#C2410C]"
-          style={{ left: `calc(8px + (100% - 16px) * ${nowFraction})` }}
+          style={{ left: `calc(8px + ${startCss(nowFraction * 7, '(100% - 16px)')})` }}
         />
       )}
     </div>
+  )
+}
+
+/** One day event under the bars: driver change, trailer change (automatic or typed over), board event. */
+function EventChip({
+  e,
+  onOpenDriverChange,
+  onOpenEvent,
+  onOpenTrailerChange,
+}: {
+  e: WeekEvent
+  onOpenDriverChange?: ((e: WeekEvent) => void) | undefined
+  onOpenEvent?: ((e: WeekEvent) => void) | undefined
+  onOpenTrailerChange?: ((e: WeekEvent) => void) | undefined
+}) {
+  if (e.driverChangeId !== undefined && onOpenDriverChange) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenDriverChange(e)}
+        aria-label={e.text}
+        title={`${e.text}${e.time ? ` (od ${e.time})` : ''} — kliknij, żeby poprawić albo usunąć`}
+        className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#9AB3DA] bg-[#EEF3FB] px-2 py-0.5 text-[11.5px] text-[#1E3A6E] hover:border-[#1E4E9C]"
+      >
+        <Icon name="driver" size={12} />
+        <span className="truncate">
+          {e.time ? `${e.time} ` : ''}→ {e.text.split(' → ').pop()?.replace(/^Kierowca: /, '')}
+        </span>
+      </button>
+    )
+  }
+  if (e.autoKey && onOpenTrailerChange) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenTrailerChange(e)}
+        aria-label={`Naczepa: ${eventChipText(e)}${e.auto ? ' (wykryta automatycznie)' : ''}`}
+        title={
+          e.auto
+            ? 'Wykryte automatycznie z naczep w zleceniach — kliknij, żeby poprawić dzień, godzinę albo miejsce'
+            : `Naczepa${e.placeName ? ` · ${e.placeName}` : ''}${e.createdBy ? ` · ${e.createdBy}` : ''}${e.createdAt ? `, ${stamp(e.createdAt)}` : ''}\n${e.text}\nPoprawione na tablicy (automatycznie: ${e.autoDay ? dm(e.autoDay) : ''}) — kliknij, żeby zmienić.`
+        }
+        className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] text-[#3D444C] hover:border-[#545B63] ${e.auto ? 'border-dashed border-[#9AA3AC] bg-[#F7F8F6]' : 'border-[#D5D9D3] bg-white'}`}
+      >
+        <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
+        <span className="truncate">{eventChipText(e)}</span>
+      </button>
+    )
+  }
+  if (!e.auto && e.id !== null && onOpenEvent) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenEvent(e)}
+        aria-label={`${EVENT_LABELS[e.kind] ?? 'Zdarzenie'}: ${eventChipText(e)}`}
+        title={`${EVENT_LABELS[e.kind] ?? 'Zdarzenie'}${e.placeName ? ` · ${e.placeName}` : ''}${e.createdBy ? ` · ${e.createdBy}` : ''}${e.createdAt ? `, ${stamp(e.createdAt)}` : ''}\n${e.text}\nKliknij, żeby poprawić albo usunąć.`}
+        className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#D5D9D3] bg-white px-2 py-0.5 text-[11.5px] text-[#3D444C] hover:border-[#9AA3AC]"
+      >
+        <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
+        <span className="truncate">{eventChipText(e)}</span>
+      </button>
+    )
+  }
+  return (
+    <span
+      title={e.auto ? 'Wykryte automatycznie z naczep w zleceniach' : EVENT_LABELS[e.kind]}
+      className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] ${e.auto ? 'border-dashed border-[#9AA3AC] bg-[#F7F8F6]' : 'border-[#D5D9D3] bg-white'} text-[#3D444C]`}
+    >
+      <Icon name={EVENT_ICON[e.kind] ?? 'note'} size={12} />
+      <span className="truncate">{eventChipText(e)}</span>
+    </span>
   )
 }
 

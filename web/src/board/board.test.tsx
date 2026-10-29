@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { Driver, DriverDetails, FleetTruck, Issue, OrderDetails, Service, TruckView, WeekView } from './boardApi.js'
+import type { Driver, DriverDetails, FleetTruck, Issue, OrderDetails, Service, TruckView, WeekEvent, WeekView } from './boardApi.js'
 import { WeekPage } from './WeekPage.js'
 import { TruckPage, parseTruckHash, truckHash } from './TruckPage.js'
 import { DriverPage, parseDriverHash } from './DriverPage.js'
 import { ReviewPage } from './ReviewPage.js'
 import { FleetPage } from './FleetPage.js'
-import { placeBars } from './TruckTimeline.js'
+import { placeBars, placeEvents } from './TruckTimeline.js'
 import { ordersWithDrafts } from './format.js'
 import type { WeekBar } from './boardApi.js'
 
@@ -18,6 +18,7 @@ vi.mock('./boardApi.js', async importOriginal => {
 })
 
 const { boardApi } = await import('./boardApi.js')
+const round = (n: number) => Math.round(n * 1000) / 1000
 const api = vi.mocked(boardApi)
 
 const WEEK: WeekView = {
@@ -76,7 +77,7 @@ const WEEK: WeekView = {
       totals: { revenue: 1500, carrier: 1300, cost: 1300, margin: 200, km: 680, kmEmpty: 0, legs: 1, kmEstimated: true },
     },
   ],
-  kpis: { margin: 200, revenue: 1500, cost: 1300, orders: 1, drafts: 0, km: 680, kmEmpty: 0, revenuePerKm: 2.21, costPerKm: 1.91, kmEstimated: true, openIssues: 2 },
+  kpis: { margin: 200, revenue: 1500, cost: 1300, orders: 1, drafts: 0, km: 680, kmEmpty: 0, revenuePerKm: 2.21, costPerKm: 1.91, kmEstimated: true, openIssues: 2, trucks: 1, revenuePerTruck: 1500, carrierPerTruck: 1300 },
   lastImport: { importedAt: '2026-09-23T08:00:00Z', filename: 'export.xlsx', supplement: null },
 }
 
@@ -768,26 +769,38 @@ describe('paczka 12.10.2026', () => {
     expect(ordersWithDrafts(27, 5)).toBe('27 zleceń (w tym 5 wstępnych)')
   })
 
-  it('two orders sharing a day go in one row when the first is unloaded before the second is loaded', () => {
-    const a = bar({ key: 'a', orderNo: 'A', startDay: 1, endDay: 2, startDate: '2026-09-22', endDate: '2026-09-23', endTime: '16:00' })
+  it('bars run from the loading hour to the unloading hour; orders that do not overlap share a row', () => {
+    const a = bar({ key: 'a', orderNo: 'A', startDay: 1, endDay: 2, startDate: '2026-09-22', endDate: '2026-09-23', startTime: '06:00', endTime: '16:00' })
     const b = bar({ key: 'b', orderNo: 'B', startDay: 2, endDay: 2, startDate: '2026-09-23', endDate: '2026-09-23', startTime: '17:00', endTime: '23:00' })
     const placed = placeBars([a, b])
-    expect(placed.map(p => [p.orderNo, p.lane, p.colStart, p.colEnd])).toEqual([
-      ['A', 1, 3, 6],
-      ['B', 1, 6, 7],
+    expect(placed.map(p => [p.orderNo, p.lane, round(p.start), round(p.end)])).toEqual([
+      ['A', 1, 1.25, 2.667],
+      ['B', 1, 2.708, 3.208], // 6 h, stretched to the minimum width of half a day
     ])
-    // Unknown hour or loading before the unloading: two rows, whole days.
-    expect(placeBars([a, { ...b, startTime: null }]).map(p => p.lane)).toEqual([1, 2])
-    expect(placeBars([a, { ...b, startTime: '12:00' }]).map(p => [p.lane, p.colStart])).toEqual([
-      [1, 3],
-      [2, 5],
+    // Unknown hours = whole days: they overlap on the shared day → two rows.
+    expect(placeBars([{ ...a, endTime: null }, { ...b, startTime: null }]).map(p => [p.lane, round(p.start), round(p.end)])).toEqual([
+      [1, 1.25, 3],
+      [2, 2, 2.958],
     ])
-    // A one-day bar that already starts at noon cannot end at noon too.
-    const c = bar({ key: 'c', orderNo: 'C', startDay: 2, endDay: 2, startDate: '2026-09-23', endDate: '2026-09-23', startTime: '23:30', endTime: '23:59' })
-    expect(placeBars([a, b, c]).map(p => [p.orderNo, p.lane])).toEqual([
-      ['A', 1],
-      ['B', 1],
-      ['C', 2],
+    // Loading before the other's unloading → two rows.
+    expect(placeBars([a, { ...b, startTime: '12:00' }]).map(p => p.lane)).toEqual([1, 2])
+    // Clipped at the week's edges; "‹" / "›" stay on the bar.
+    const long = bar({ key: 'l', orderNo: 'L', startDay: -1, endDay: 7, startDate: '2026-09-20', endDate: '2026-09-28', startTime: '10:00', endTime: '10:00' })
+    expect(placeBars([long]).map(p => [p.start, p.end])).toEqual([[0, 7]])
+  })
+
+  it('day events stand at their hour; ones that would overlap go to the next row', () => {
+    const days = WEEK.days
+    const ev = (over: Partial<WeekEvent>): WeekEvent => ({ id: 1, day: '2026-09-25', kind: 'note', text: 'x', auto: false, ...over })
+    const placed = placeEvents(
+      [ev({ id: 1, day: '2026-09-25', time: '20:00' }), ev({ id: 2, day: '2026-09-26' }), ev({ id: 3, day: '2026-09-22' }), ev({ id: 4, day: '2026-09-23' })],
+      days,
+    )
+    expect(placed.map(p => [p.event.id, round(p.x), p.lane])).toEqual([
+      [3, 1, 0],
+      [4, 2, 0],
+      [1, 4.833, 0],
+      [2, 5, 1], // the 20:00 chip runs into Saturday
     ])
   })
 
@@ -1206,5 +1219,28 @@ describe('paczka 28.10.2026 (popołudnie)', () => {
     expect(after(plate, trailer)).toBe(true)
     expect(after(trailer, driver)).toBe(true)
     expect(after(driver, carrier)).toBe(true)
+  })
+})
+
+describe('paczka 29.10.2026', () => {
+  it('"Średni obrót na auto" in place of "Km razem": ours in bold, the carriers\' below; hidden with the amounts', async () => {
+    api.week.mockResolvedValue({ ...WEEK, kpis: { ...WEEK.kpis, trucks: 8, revenuePerTruck: 4574, carrierPerTruck: 3748 } })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    expect(await screen.findByText('Średni obrót na auto')).toBeInTheDocument()
+    expect(screen.getByText('4 574 €')).toBeInTheDocument()
+    expect(screen.getByText('przewoźnik 3 748 € · 8 aut')).toBeInTheDocument()
+    expect(screen.queryByText(/w tym puste/)).not.toBeInTheDocument()
+    await userEvent.click(screen.getByLabelText('Pokaż kwoty'))
+    expect(screen.queryByText('Średni obrót na auto')).not.toBeInTheDocument()
+  })
+
+  it('a chip with an hour stands at that hour of its day', async () => {
+    const week = structuredClone(WEEK)
+    week.trucks[0]!.events = [{ id: null, day: '2026-09-25', kind: 'driver', text: 'Kierowca: Kierowca A → Kierowca B', auto: false, driverChangeId: 31, driverId: 6, time: '18:00' }]
+    api.week.mockResolvedValue(week)
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const chip = await screen.findByRole('button', { name: 'Kierowca: Kierowca A → Kierowca B' })
+    // Friday (day 4) at 18:00 = 4.75 days from Monday.
+    expect((chip.parentElement as HTMLElement).style.left).toContain('0.678571')
   })
 })

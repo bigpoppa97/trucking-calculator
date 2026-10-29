@@ -87,9 +87,13 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
 Ręczne poprawki (panel zlecenia → „Popraw ręcznie”) obowiązują, dopóki aplikacja nie zmieni tej samej wartości —
 wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
 
-Tablica: wiersz z dniami zostaje u góry ekranu przy przewijaniu. Kolumna auta: ciągnik (i jego serwisy wymagane),
-naczepa (i jej serwisy), kierowca z telefonem (i ostrzeżenia AVSEC), przewoźnik. Panel zlecenia przy odcinku pokazuje
-daty i km razem (z ładunkiem + pusty dojazd); kwoty są w kafelkach pod odcinkami.
+Tablica: wiersz z dniami (ciemny pasek, „dziś” na niebiesko) zostaje u góry ekranu przy przewijaniu; cienkie linie
+oddzielają dni, kolumna „dziś” jest lekko podbarwiona. Pasek zlecenia zaczyna się o godzinie załadunku i kończy o godzinie
+rozładunku (bez godziny — cały dzień; najkrótszy pasek ma pół dnia); znaczki zdarzeń stoją przy swojej godzinie
+(automatyczna zmiana naczepy — przy godzinie załadunku). Kolumna auta: ciągnik (i jego serwisy wymagane), naczepa
+(i jej serwisy), kierowca z telefonem (i ostrzeżenia AVSEC), przewoźnik. Kafelek „Średni obrót na auto”: przychód aut
+tygodnia ÷ liczba aut na tablicy (pod spodem — przewoźnika). Panel zlecenia przy odcinku pokazuje daty i km razem
+(z ładunkiem + pusty dojazd); kwoty są w kafelkach pod odcinkami.
 
 ## Serwis i strona zestawu
 

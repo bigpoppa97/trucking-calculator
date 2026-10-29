@@ -219,6 +219,10 @@ export interface WeekView {
     costPerKm: number | null
     kmEstimated: boolean
     openIssues: number
+    /** Trucks on the board this week and their average week revenue: ours / the carriers' (29.10.2026). */
+    trucks: number
+    revenuePerTruck: number | null
+    carrierPerTruck: number | null
   }
   /** Last full export; `supplement` = a partial one (a few orders) imported after it. */
   lastImport: { importedAt: string; filename: string; supplement: { importedAt: string; filename: string; orders: number } | null } | null

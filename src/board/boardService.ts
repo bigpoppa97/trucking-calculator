@@ -347,6 +347,13 @@ export interface WeekView {
     costPerKm: number | null
     kmEstimated: boolean
     openIssues: number
+    /**
+     * "Średni obrót na auto" (29.10.2026): the trucks' week revenue (ours / the carriers', as in the
+     * truck column "Przychód") ÷ the trucks on the board that week. Null without trucks.
+     */
+    trucks: number
+    revenuePerTruck: number | null
+    carrierPerTruck: number | null
   }
   /** Last full export; `supplement` = a partial one imported after it (a few last-minute orders). */
   lastImport: { importedAt: string; filename: string; supplement: { importedAt: string; filename: string; orders: number } | null } | null
@@ -609,6 +616,7 @@ export class BoardService {
     const cost = weekOrders.reduce((s, o) => s + (o.amountsTotal ?? 0), 0)
     const legRevenue = trucks.reduce((s, t) => s + t.totals.revenue, 0)
     const legCost = trucks.reduce((s, t) => s + t.totals.cost, 0)
+    const legCarrier = trucks.reduce((s, t) => s + t.totals.carrier, 0)
     const km = trucks.reduce((s, t) => s + t.totals.km, 0)
     const kmEmpty = trucks.reduce((s, t) => s + t.totals.kmEmpty, 0)
     // The last full export, and a partial one after it ("uzupełnienie", 26.10.2026).
@@ -652,6 +660,9 @@ export class BoardService {
         costPerKm: km > 0 ? round2(legCost / km) : null,
         kmEstimated: trucks.some(t => t.totals.kmEstimated),
         openIssues: Number(openIssues?.n ?? 0),
+        trucks: trucks.length,
+        revenuePerTruck: trucks.length > 0 ? round2(legRevenue / trucks.length) : null,
+        carrierPerTruck: trucks.length > 0 ? round2(legCarrier / trucks.length) : null,
       },
       lastImport,
     }
@@ -839,7 +850,8 @@ export class BoardService {
             auto: true,
             place: c.place,
             placeName: c.place ? ctx.places.name(c.place) : null,
-            time: null,
+            // at the loading hour of the order with the new trailer (29.10.2026: chips stand at their hour)
+            time: c.leg.startTime,
             autoKey: c.key,
             autoDay: c.day,
             autoText: c.text,
