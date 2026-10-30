@@ -79,6 +79,10 @@ export const OVERRIDE_FIELDS = [
   'unload_at',
   // Co-load (doładunek) of another order (28.10.2026): the main order number, '-' = not a co-load.
   'coload',
+  // "Anuluj zlecenie" (30.10.2026): '1' = cancelled on the board — off the board, out of the
+  // results and the review queue until taken back. Replaces "Wyłącz z wyników" ('exclude') in
+  // the panel; older 'exclude' entries still count and can be removed.
+  'cancel',
 ] as const
 /** Loading / unloading date and hour typed on the board (12.10.2026). */
 const AT_OVERRIDES = new Set(['load_at', 'unload_at'])
@@ -774,8 +778,10 @@ export class BoardService {
       for (const c of autoChanges.get(truckId) ?? []) {
         if (c.entry && c.entry.suppress === 0 && c.entry.day) moved.set(c.leg, { day: c.entry.day, time: c.entry.time })
       }
+      // Orders the truck does not carry (cancelled — in the application or on the board —,
+      // unconfirmed, carrier cancelled) give it no trailer, like the automatic changes above.
       const steps = (legsByTruck.get(truckId) ?? [])
-        .filter(x => x.l.trailer)
+        .filter(x => x.l.trailer && !x.o.excluded && !x.o.noCarrier)
         .map(x => {
           const m = moved.get(x.l)
           return { trailer: x.l.trailer!, since: m?.day ?? x.l.startDate, at: m ? m.time : null }
@@ -886,8 +892,11 @@ export class BoardService {
           .filter(r => r.status === 'planned' && r.target === 'truck' && r.truck_id === truck.id)
           .flatMap(r => coveredDays.get(r.id) ?? [])
         // A cancelled forwarding order (no PRZ) is not this truck's job any more — off the board
-        // (still listed on the truck page). Decision of 09.10.2026.
-        const visible = legs.filter(x => !x.o.noCarrier && x.l.endDate >= start && x.l.startDate <= end)
+        // (still listed on the truck page). Decision of 09.10.2026. The same for an order
+        // cancelled on the board ("Anuluj zlecenie", 30.10.2026).
+        const visible = legs.filter(
+          x => !x.o.noCarrier && x.o.excluded !== 'cancelled_board' && x.l.endDate >= start && x.l.startDate <= end,
+        )
         const bars: WeekBar[] = visible.map(({ o, l }) => {
           const conflict =
             o.excluded || o.noCarrier ? [] : [...new Set(truckServiceDays.filter(d => d >= l.startDate && d <= l.endDate))].sort()
@@ -1100,7 +1109,7 @@ export class BoardService {
     if (todayRow) {
       header = { trailer: todayRow.trailer, trailerTypePl: todayRow.trailerTypePl, copyText: todayRow.copyText, required: todayRow.required }
     } else {
-      const latest = [...todayLegs].reverse().find(x => x.l.startDate <= today && x.l.trailer)
+      const latest = [...todayLegs].reverse().find(x => x.l.startDate <= today && x.l.trailer && !x.o.excluded && !x.o.noCarrier)
       const trailer = latest?.l.trailer ?? truck.trailerPlate
       const rec = trailer ? ctx.trailers.get(trailer) : undefined
       const typeEn = rec?.typeEn ?? 'cooler 2.61m rollerbed'
@@ -1391,7 +1400,9 @@ export class BoardService {
             ? value === '-'
               ? 'nie jest doładunkiem'
               : `do ${value}`
-            : value
+            : field === 'cancel'
+              ? 'anulowane na tablicy'
+              : value
     const history = [
       ...changes.map(c => ({
         at: c.created_at,
@@ -1406,10 +1417,19 @@ export class BoardService {
                   ? `zastąpiło zlecenie wstępne ${c.new_value ?? c.old_value ?? ''}`
                   : `${FIELD_LABELS[c.field] ?? c.field}: ${c.old_value ?? '—'} → ${c.new_value ?? '—'} (zmiana w aplikacji)`,
       })),
-      ...overrides.map(ov => ({
-        at: ov.created_at,
-        text: `ręczna poprawka (${OVERRIDE_FIELD_LABELS[ov.field] ?? ov.field}): ${overrideDisplay(ov.field, ov.value)}${ov.active ? '' : ` — zastąpiona: ${ov.superseded_note ?? ''}`}`,
-      })),
+      ...overrides
+        .filter(ov => ov.field !== 'cancel')
+        .map(ov => ({
+          at: ov.created_at,
+          text: `ręczna poprawka (${OVERRIDE_FIELD_LABELS[ov.field] ?? ov.field}): ${overrideDisplay(ov.field, ov.value)}${ov.active ? '' : ` — zastąpiona: ${ov.superseded_note ?? ''}`}`,
+        })),
+      // "Anuluj zlecenie" / "Przywróć" (30.10.2026): two plain lines, with who.
+      ...overrides
+        .filter(ov => ov.field === 'cancel')
+        .flatMap(ov => [
+          { at: ov.created_at, text: `anulowane na tablicy (${ov.created_by})` },
+          ...(ov.active || !ov.superseded_at ? [] : [{ at: ov.superseded_at, text: ov.superseded_note ?? 'przywrócone na tablicę' }]),
+        ]),
     ].sort((a, b) => a.at.localeCompare(b.at))
 
     return {
@@ -1454,6 +1474,11 @@ export class BoardService {
         margin: o.margin,
         marginPct: o.marginPct,
         excluded: o.excluded,
+        /** "Anuluj zlecenie" on the board (30.10.2026): who and when; null = not cancelled on the board. */
+        cancelledOnBoard:
+          o.excluded === 'cancelled_board' && o.overrides['cancel']
+            ? { createdBy: o.overrides['cancel'].createdBy, createdAt: o.overrides['cancel'].createdAt }
+            : null,
         noCarrier: o.noCarrier,
         missing: o.missing,
         notesApp: o.notesApp,
@@ -1825,6 +1850,10 @@ export class BoardService {
       if (!driver) throw new BoardError('DRIVER_NOT_FOUND', 'Wybierz kierowcę z listy.')
     }
     const row = await this.requireOrder(orderNo)
+    if (field === 'cancel') {
+      if (row.draft === 1) throw new BoardError('DRAFT_CANCEL', 'Zlecenie wstępne usuń przyciskiem „Usuń”.')
+      value = '1'
+    }
     if (AT_OVERRIDES.has(field)) value = await this.resolveAtOverride(row, field as 'load_at' | 'unload_at', value)
     if (field === 'prz') value = await this.checkPrzOverride(row, value)
     if (field === 'coload') value = await this.checkCoLoadOverride(orderNo, value)
@@ -1849,6 +1878,17 @@ export class BoardService {
           created_at: now,
         })
         .execute()
+      // Cancelled on the board: the order's import events are handled too — "zniknęło" (the
+      // application deleted it) and superseded corrections no longer need a decision.
+      if (field === 'cancel') {
+        await trx
+          .updateTable('board_issues')
+          .set({ status: 'resolved', resolution: 'cancelled-on-board', resolved_by: this.actor(), updated_at: now })
+          .where('ref', '=', orderNo)
+          .where('kind', 'in', ['DISAPPEARED', 'OVERRIDE_SUPERSEDED'])
+          .where('status', '=', 'open')
+          .execute()
+      }
     })
     await this.refreshIssues()
   }
@@ -1866,9 +1906,11 @@ export class BoardService {
   }
 
   async clearOverride(orderNo: string, field: string) {
+    // "Przywróć" of a cancelled order (30.10.2026) is told in the history with who did it.
+    const note = field === 'cancel' ? `przywrócone na tablicę (${this.actor()})` : 'usunięta ręcznie'
     await this.db
       .updateTable('board_overrides')
-      .set({ active: 0, superseded_at: this.now(), superseded_note: 'usunięta ręcznie' })
+      .set({ active: 0, superseded_at: this.now(), superseded_note: note })
       .where('order_no', '=', orderNo)
       .where('field', '=', field)
       .where('active', '=', 1)

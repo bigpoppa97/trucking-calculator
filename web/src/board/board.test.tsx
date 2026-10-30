@@ -109,6 +109,7 @@ const ORDER: OrderDetails = {
     margin: 200,
     marginPct: 13.33,
     excluded: null,
+    cancelledOnBoard: null,
     noCarrier: false,
     missing: false,
     notesApp: '',
@@ -1242,5 +1243,50 @@ describe('paczka 29.10.2026', () => {
     const chip = await screen.findByRole('button', { name: 'Kierowca: Kierowca A → Kierowca B' })
     // Friday (day 4) at 18:00 = 4.75 days from Monday.
     expect((chip.parentElement as HTMLElement).style.left).toContain('0.678571')
+  })
+})
+
+describe('30.10.2026 — "Anuluj zlecenie"', () => {
+  it('is the last option of "Popraw ręcznie": no value to type, a red button, "Wróć" instead of "Anuluj"', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue(ORDER)
+    api.setOverride.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    await userEvent.click(await within(panel).findByRole('button', { name: 'Popraw ręcznie' }))
+    const select = within(panel).getByLabelText('Co poprawić')
+    const options = within(select).getAllByRole('option').map(o => o.textContent)
+    expect(options[options.length - 1]).toBe('Anuluj zlecenie')
+    expect(options).not.toContain('Wyłącz z wyników (1 = tak)')
+    await userEvent.selectOptions(select, 'cancel')
+    expect(within(panel).queryByLabelText('Nowa wartość')).not.toBeInTheDocument()
+    expect(within(panel).getByText(/zniknie z tablicy/)).toBeInTheDocument()
+    expect(within(panel).queryByRole('button', { name: 'Anuluj' })).not.toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Wróć' })).toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Anuluj zlecenie' }))
+    expect(api.setOverride).toHaveBeenCalledWith('79-1000-26', 'cancel', '1')
+  })
+
+  it('a cancelled order says so with who and when, and "Przywróć zlecenie" takes it back', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue({
+      ...ORDER,
+      order: { ...ORDER.order, excluded: 'cancelled_board', cancelledOnBoard: { createdBy: 'Wojciech', createdAt: '2026-10-30T09:15:00Z' } },
+      overrides: [{ field: 'cancel', value: '1', display: 'anulowane na tablicy', createdAt: '2026-10-30T09:15:00Z' }],
+    })
+    api.clearOverride.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText('Anulowane na tablicy')).toBeInTheDocument()
+    expect(within(panel).getByText('Anulowane 30.10.26 (Wojciech)')).toBeInTheDocument()
+    // Only in its own box, not as a correction to remove.
+    expect(within(panel).getByText('Brak — liczby pochodzą z aplikacji.')).toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Popraw ręcznie' }))
+    const options = within(within(panel).getByLabelText('Co poprawić')).getAllByRole('option').map(o => o.textContent)
+    expect(options).not.toContain('Anuluj zlecenie')
+    await userEvent.click(within(panel).getByRole('button', { name: 'Przywróć zlecenie' }))
+    expect(api.clearOverride).toHaveBeenCalledWith('79-1000-26', 'cancel')
   })
 })

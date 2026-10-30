@@ -511,17 +511,19 @@ export function TruckPage({
                     const status =
                       o.excluded === 'cancelled'
                         ? 'anulowane'
-                        : o.excluded === 'unconfirmed'
-                          ? 'niezatwierdzone'
-                          : o.excluded === 'manual'
-                            ? 'wyłączone'
-                            : o.noCarrier
-                              ? 'anulowane u przewoźnika'
-                              : o.missing
-                                ? 'zniknęło'
-                                : o.draft
-                                  ? 'wstępne'
-                                  : null
+                        : o.excluded === 'cancelled_board'
+                          ? 'anulowane na tablicy'
+                          : o.excluded === 'unconfirmed'
+                            ? 'niezatwierdzone'
+                            : o.excluded === 'manual'
+                              ? 'wyłączone'
+                              : o.noCarrier
+                                ? 'anulowane u przewoźnika'
+                                : o.missing
+                                  ? 'zniknęło'
+                                  : o.draft
+                                    ? 'wstępne'
+                                    : null
                     return (
                       <tr key={`${o.orderNo}|${o.legIndex}`} className={`border-b border-[#ECEEEA] ${off ? 'text-[#8A939C]' : ''}`}>
                         <td className="px-2 py-2">
@@ -537,7 +539,7 @@ export function TruckPage({
                           )}
                           {status && <span className="ml-1 text-xs">({status})</span>}
                         </td>
-                        <td className={`px-2 py-2 ${o.excluded === 'cancelled' ? 'line-through' : ''}`}>{o.title}</td>
+                        <td className={`px-2 py-2 ${o.excluded === 'cancelled' || o.excluded === 'cancelled_board' ? 'line-through' : ''}`}>{o.title}</td>
                         <td className="px-2 py-2 font-mono">{dm(o.startDate)}</td>
                         <td className="px-2 py-2 font-mono">{dm(o.endDate)}</td>
                         <td className="px-2 py-2">

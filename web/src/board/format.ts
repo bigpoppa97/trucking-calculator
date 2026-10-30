@@ -118,6 +118,8 @@ export const OVERRIDE_LABELS: Record<string, string> = {
   load_at: 'Załadunek (data i godzina)',
   unload_at: 'Rozładunek (data i godzina)',
   coload: 'Doładunek do zlecenia',
+  // 30.10.2026: replaces "Wyłącz z wyników" in the list (older entries still shown and removable).
+  cancel: 'Anuluj zlecenie',
 }
 
 /** "Km razem" of a leg: km_total (leg 0) or km_total:1 (leg 1). */
@@ -140,19 +142,21 @@ export function overrideLabel(field: string, legs: LegKindRef[]): string {
 /**
  * Fields offered in "Popraw ręcznie". Kilometres (26.10.2026): one "Km razem" — all km of
  * the truck on the order — for the department's leg; a second one only when both legs of a
- * relay are the department's trucks.
+ * relay are the department's trucks. "Anuluj zlecenie" (30.10.2026) last, and not for an order
+ * already cancelled on the board (that one has "Przywróć").
  */
-export function fixOptions(legs: LegKindRef[]): Array<{ field: string; label: string }> {
+export function fixOptions(legs: LegKindRef[], cancelled = false): Array<{ field: string; label: string }> {
   const opt = (field: string) => ({ field, label: overrideLabel(field, legs) })
   const km = legs.filter(l => l.kind === 'fleet').map(l => opt(kmTotalField(l.index)))
   return [
-    ...['rev', 'cost', 'extra_cost', 'trailer', 'prz', 'exclude'].map(opt),
+    ...['rev', 'cost', 'extra_cost', 'trailer', 'prz'].map(opt),
     ...km,
     opt('driver'),
     ...(legs.length > 1 ? [opt('driver:1')] : []),
     opt('load_at'),
     opt('unload_at'),
     opt('coload'),
+    ...(cancelled ? [] : [opt('cancel')]),
   ]
 }
 

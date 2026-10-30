@@ -18,6 +18,9 @@ import { parseAtValue } from './times.js'
  *    amounts in the entry are what each truck gets; a leg outside the department
  *    is credited with its amount, the department's leg(s) with the rest
  *  - status A (client) = cancelled, N = unconfirmed → shown, not counted
+ *  - "Anuluj zlecenie" on the board (30.10.2026, correction "cancel") = cancelled by the
+ *    department: off the week board, out of results and the review queue; listed on the
+ *    truck page; stays until someone takes it back ("Przywróć") — the application never lifts it
  *  - status A on the forwarding order without PRZ = the truck does not carry it
  *    (noCarrier): off the week board, out of results, no review item
  *  - PROM <amount> in the notes = ferry paid by the department → extra cost
@@ -43,7 +46,8 @@ export const SKONTO_RATE = 0.015
 export const SKONTO_TOLERANCE = 0.5
 
 export type LegKind = 'fleet' | 'own' | 'other'
-export type Exclusion = 'cancelled' | 'unconfirmed' | 'manual' | null
+/** cancelled = status A in the application; cancelled_board = "Anuluj zlecenie" on the board (30.10.2026). */
+export type Exclusion = 'cancelled' | 'cancelled_board' | 'unconfirmed' | 'manual' | null
 
 export interface Stop {
   raw: string
@@ -267,7 +271,7 @@ export function linkCoLoads(orders: ComputedOrder[], extra: ComputedOrder[] = []
     c.mainPlates = main ? [...new Set(main.legs.filter(l => l.kind === 'fleet').map(l => l.plate))] : []
     if (c.of === o.orderNo) c.problem = 'self'
     else if (!main) c.problem = 'missing'
-    else if (main.excluded === 'cancelled' || main.noCarrier) c.problem = 'cancelled'
+    else if (main.excluded === 'cancelled' || main.excluded === 'cancelled_board' || main.noCarrier) c.problem = 'cancelled'
     else {
       const trucks = fleetTrucks(main)
       const shared = o.legs.filter(l => l.kind === 'fleet' && l.truckId !== null && trucks.has(l.truckId))
@@ -313,7 +317,8 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
   const extraCost = extraCostManual ? (num(overrides['extra_cost']!.value) ?? 0) : ferries.total
 
   let excluded: Exclusion = null
-  if (overrides['exclude']?.value === '1') excluded = 'manual'
+  if (overrides['cancel']?.value === '1') excluded = 'cancelled_board'
+  else if (overrides['exclude']?.value === '1') excluded = 'manual'
   else if (row.status_client === 'A') excluded = 'cancelled'
   else if (row.status_client === 'N') excluded = 'unconfirmed'
 
@@ -596,7 +601,7 @@ async function attachKilometres(
 
   const byTruck = new Map<number, ComputedLeg[]>()
   for (const order of orders) {
-    if (order.excluded === 'cancelled' || order.excluded === 'unconfirmed' || order.excluded === 'manual') continue
+    if (order.excluded !== null) continue
     if (order.noCarrier) continue
     for (const leg of order.legs) {
       if (leg.kind !== 'fleet' || leg.truckId === null) continue

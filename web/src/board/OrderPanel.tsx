@@ -134,7 +134,7 @@ export function OrderPanel({
               )}{' '}
               · {o.carrier}
             </span>
-            {(o.excluded || o.noCarrier || o.missing) && (
+            {((o.excluded && o.excluded !== 'cancelled_board') || o.noCarrier || o.missing) && (
               <span className="mt-1 rounded bg-[#F1F2F0] px-2 py-1 text-[13px] text-[#3D444C]">
                 {o.excluded === 'cancelled' && 'Anulowane w aplikacji (status A) — poza wynikami. '}
                 {o.excluded === 'unconfirmed' && 'Niezatwierdzone (status N) — poza wynikami. '}
@@ -144,6 +144,29 @@ export function OrderPanel({
               </span>
             )}
           </div>
+
+          {/* "Anuluj zlecenie" (30.10.2026): off the board until taken back here. */}
+          {o.cancelledOnBoard && (
+            <div className="flex flex-col gap-2 rounded-lg bg-[#F1F2F0] px-3 py-2.5 outline outline-1 -outline-offset-1 outline-[#C9CEC6]">
+              <span className="text-[11.5px] font-bold uppercase tracking-wider text-[#3D444C]">Anulowane na tablicy</span>
+              <span className="text-[13px]">
+                Nie ma go na tablicy, w wynikach ani w „Do sprawdzenia”. Zostaje na liście zleceń zestawu.
+              </span>
+              <span className="text-xs text-[#545B63]">
+                Anulowane {dmy2(o.cancelledOnBoard.createdAt)} ({o.cancelledOnBoard.createdBy})
+              </span>
+              <div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void run(() => boardApi.clearOverride(orderNo, 'cancel'))}
+                  className="h-10 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white disabled:opacity-50"
+                >
+                  Przywróć zlecenie
+                </button>
+              </div>
+            </div>
+          )}
 
           {o.draft && (
             <div className="flex flex-col gap-2 rounded-lg bg-[#F4F6FA] px-3 py-2.5 outline-2 -outline-offset-2 outline-dashed outline-[#7C8794]">
@@ -407,8 +430,11 @@ export function OrderPanel({
           {!o.draft && (
             <div ref={fixRef} className="flex flex-col gap-2">
               <span className="text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Ręczne poprawki</span>
-              {data.overrides.length === 0 && <span className="text-[13px] text-[#545B63]">Brak — liczby pochodzą z aplikacji.</span>}
-              {data.overrides.map(ov => (
+              {/* The cancellation has its own box with "Przywróć" above. */}
+              {data.overrides.filter(ov => ov.field !== 'cancel').length === 0 && (
+                <span className="text-[13px] text-[#545B63]">Brak — liczby pochodzą z aplikacji.</span>
+              )}
+              {data.overrides.filter(ov => ov.field !== 'cancel').map(ov => (
                 <div key={ov.field} className="flex items-center justify-between gap-2 rounded-lg bg-[#E6E9EE] px-3 py-2 text-[13px]">
                   <span>
                     {overrideLabel(ov.field, data.legs)}: <span className="font-mono font-semibold">{ov.display}</span>
@@ -443,14 +469,14 @@ export function OrderPanel({
                       }}
                       className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal"
                     >
-                      {fixOptions(data.legs).map(({ field, label }) => (
+                      {fixOptions(data.legs, Boolean(o.cancelledOnBoard)).map(({ field, label }) => (
                         <option key={field} value={field}>
                           {label}
                         </option>
                       ))}
                     </select>
                   </label>
-                  {fixField.startsWith('driver') ? (
+                  {fixField === 'cancel' ? null : fixField.startsWith('driver') ? (
                     <label className="flex flex-col gap-1 text-[13px] font-semibold">
                       Kto jechał
                       <select value={fixValue} onChange={e => setFixValue(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal" disabled={!drivers}>
@@ -486,8 +512,10 @@ export function OrderPanel({
                       />
                     </label>
                   )}
-                  <p className="text-xs text-[#545B63]">
-                    {fixField.startsWith('driver')
+                  <p className={fixField === 'cancel' ? 'text-[13px] text-[#3D444C]' : 'text-xs text-[#545B63]'}>
+                    {fixField === 'cancel'
+                      ? 'Zlecenie zniknie z tablicy, z wyników i z „Do sprawdzenia”. Zostaje na liście zleceń zestawu, a w tym panelu cofniesz je przyciskiem „Przywróć zlecenie”. Aplikacja anulowania nie cofa — także gdy zmieni coś w zleceniu.'
+                      : fixField.startsWith('driver')
                       ? 'Kierowca zlecenia liczy się sam ze zmian kierowców na tablicy — poprawiaj tylko wyjątki.'
                       : fixField.startsWith('km_total')
                         ? 'Wszystkie km auta na tym zleceniu. Pusty dojazd zostaje wyliczony przez tablicę, reszta liczy się jako km z ładunkiem.'
@@ -495,28 +523,51 @@ export function OrderPanel({
                           ? 'Numer zlecenia głównego na tym samym aucie: doładunek nie ma własnych km i nie zmienia pustych dojazdów. „-” = to nie doładunek (choć uwagi tak mówią).'
                           : 'Poprawka zostaje, dopóki aplikacja nie zmieni tej samej wartości — wtedy obowiązuje wartość z aplikacji.'}
                   </p>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      disabled={busy || !fixValue.trim()}
-                      onClick={() =>
-                        void run(async () => {
-                          const raw = fixValue.trim()
-                          const asText =
-                            fixField === 'prz' || fixField === 'coload' || fixField.startsWith('driver') || fixField === 'load_at' || fixField === 'unload_at'
-                          await boardApi.setOverride(orderNo, fixField, asText ? raw : raw.replace(',', '.'))
-                          setFixField(null)
-                          setFixValue('')
-                        })
-                      }
-                      className="h-11 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white disabled:opacity-50"
-                    >
-                      Zapisz poprawkę
-                    </button>
-                    <button type="button" onClick={() => setFixField(null)} className="h-11 rounded-lg border border-[#C9CEC6] px-3.5 font-semibold">
-                      Anuluj
-                    </button>
-                  </div>
+                  {fixField === 'cancel' ? (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() =>
+                          void run(async () => {
+                            await boardApi.setOverride(orderNo, 'cancel', '1')
+                            setFixField(null)
+                            setFixValue('')
+                          })
+                        }
+                        className="h-11 rounded-lg bg-[#B42318] px-3.5 font-semibold text-white disabled:opacity-50"
+                      >
+                        Anuluj zlecenie
+                      </button>
+                      {/* Not "Anuluj" here — next to "Anuluj zlecenie" it would read as the same thing. */}
+                      <button type="button" onClick={() => setFixField(null)} className="h-11 rounded-lg border border-[#C9CEC6] px-3.5 font-semibold">
+                        Wróć
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={busy || !fixValue.trim()}
+                        onClick={() =>
+                          void run(async () => {
+                            const raw = fixValue.trim()
+                            const asText =
+                              fixField === 'prz' || fixField === 'coload' || fixField.startsWith('driver') || fixField === 'load_at' || fixField === 'unload_at'
+                            await boardApi.setOverride(orderNo, fixField, asText ? raw : raw.replace(',', '.'))
+                            setFixField(null)
+                            setFixValue('')
+                          })
+                        }
+                        className="h-11 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white disabled:opacity-50"
+                      >
+                        Zapisz poprawkę
+                      </button>
+                      <button type="button" onClick={() => setFixField(null)} className="h-11 rounded-lg border border-[#C9CEC6] px-3.5 font-semibold">
+                        Anuluj
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

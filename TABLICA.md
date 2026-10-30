@@ -83,9 +83,16 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
    Zlecenie główne na innym aucie, nie ma go na tablicy albo anulowane → zwykłe zlecenie i pozycja w „Do sprawdzenia”.
 13. Pozycje „Do sprawdzenia” danego zlecenia (pomarańczowe pola w panelu) mają te same przyciski co na liście —
    można je rozwiązać od razu z panelu; przy różnicy kwot przepinki „Popraw wpis przepinki” otwiera wpis do poprawy.
+14. **Anuluj zlecenie** (klient odwołał): panel → „Popraw ręcznie” → „Anuluj zlecenie”. Zlecenie znika z tablicy,
+   z wyników i z „Do sprawdzenia”, nie przesuwa pustych dojazdów, a jego późniejsze zniknięcie z eksportu nie jest
+   zgłaszane. Zostaje na liście zleceń zestawu („anulowane na tablicy”); w jego panelu „Przywróć zlecenie”.
+   Obowiązuje, dopóki ktoś go nie przywróci — aplikacja go nie cofa. Zlecenie anulowane w aplikacji (status A
+   w zleceniu klienta) zostaje na tablicy przekreślone — tym samym przyciskiem można je zdjąć z tablicy.
+   Starsza poprawka „Wyłącz z wyników” działa dalej (widać ją w „Ręcznych poprawkach”), nowych się nie dodaje.
 
 Ręczne poprawki (panel zlecenia → „Popraw ręcznie”) obowiązują, dopóki aplikacja nie zmieni tej samej wartości —
-wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście.
+wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście. Wyjątki: „Doładunek do zlecenia” i „Anuluj
+zlecenie” obowiązują, dopóki ktoś ich nie usunie.
 
 Tablica: wiersz z dniami (ciemny pasek, „dziś” na niebiesko) zostaje u góry ekranu przy przewijaniu; cienkie linie
 oddzielają dni, kolumna „dziś” jest lekko podbarwiona. Pasek zlecenia zaczyna się o godzinie załadunku i kończy o godzinie

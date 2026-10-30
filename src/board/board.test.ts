@@ -1922,3 +1922,80 @@ describe('29.10.2026 — relay with a truck outside the department: our truck ke
     expect((await board.orderDetails('79-1-26')).legs.map(l => l.revAlloc)).toEqual([1500, 1500])
   })
 })
+
+describe('30.10.2026 — "Anuluj zlecenie": an order cancelled on the board leaves it', () => {
+  const rows: Row[] = [
+    { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 3000, cost: 1200, sub: 'AA1001A', trailer: 'TR200' },
+    { no: '79-2-26', from: 'Budapest', ld: '2026-09-23', to: 'Warszawa', ud: '2026-09-24', rev: 1400, cost: 1000, sub: 'AA1001A', trailer: 'TR100' },
+    { no: '79-3-26', from: 'Warszawa', ld: '2026-09-25', to: 'Budapest', ud: '2026-09-26', rev: 1300, cost: 1000, sub: 'AA1001A', trailer: 'TR100' },
+  ]
+
+  it('off the board, the totals and the review queue; listed on the set page; taken back with "Przywróć"', async () => {
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
+    expect((await issuesOf('HIGH_MARGIN')).map(i => i.ref)).toEqual(['79-1-26'])
+    expect((await board.orderDetails('79-2-26')).legs[0]?.kmEmptyFrom).not.toBeNull()
+
+    now = '2026-09-28T08:00:00Z'
+    await board.setOverride('79-1-26', 'cancel', 'tak')
+    const week = await board.weekView('2026-09-21')
+    const row = week.trucks.find(t => t.plate === 'AA1001A')!
+    expect(row.bars.map(b => b.orderNo)).toEqual(['79-2-26', '79-3-26'])
+    expect(row.totals.revenue).toBe(2700)
+    expect(row.totals.margin).toBe(700)
+    expect(week.kpis.orders).toBe(2)
+    // Its trailer is not behind the truck and its unloading starts no empty run.
+    expect(row.trailer).toBe('TR100')
+    expect((await board.orderDetails('79-2-26')).legs[0]?.kmEmptyFrom).toBeNull()
+    expect((await issuesOf()).filter(i => i.ref === '79-1-26')).toEqual([])
+
+    const d = await board.orderDetails('79-1-26')
+    expect(d.order.excluded).toBe('cancelled_board')
+    expect(d.order.cancelledOnBoard).toMatchObject({ createdBy: 'test' })
+    expect(d.history.map(h => h.text)).toContain('anulowane na tablicy (test)')
+    const listed = (await board.truckView(row.id, '2026-09-21', '2026-09-27')).orders.find(o => o.orderNo === '79-1-26')
+    expect(listed).toMatchObject({ excluded: 'cancelled_board' })
+
+    // The application changing the order does not bring it back.
+    await board.importFile(await xlsx([{ ...rows[0]!, cost: 1250 }, rows[1]!, rows[2]!]), 'b.xlsx', 'daily')
+    expect((await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!.bars.map(b => b.orderNo)).toEqual(['79-2-26', '79-3-26'])
+
+    await board.clearOverride('79-1-26', 'cancel')
+    const back = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!
+    expect(back.bars.map(b => b.orderNo)).toEqual(['79-1-26', '79-2-26', '79-3-26'])
+    expect((await board.orderDetails('79-1-26')).order.cancelledOnBoard).toBeNull()
+    expect((await board.orderDetails('79-1-26')).history.map(h => h.text)).toContain('przywrócone na tablicę (test)')
+  })
+
+  it('leaving the export afterwards is no news; an open "zniknęło" closes when the order is cancelled', async () => {
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
+    await board.setOverride('79-1-26', 'cancel', '1')
+    now = '2026-09-28T08:00:00Z'
+    // A full export without 79-1-26 (deleted in the application) and without 79-2-26.
+    const s = await board.importFile(
+      await xlsx([
+        { ...rows[2]!, no: '79-4-26', ld: '2026-09-21', ud: '2026-09-22' },
+        { ...rows[2]!, no: '79-5-26', ld: '2026-09-23', ud: '2026-09-24' },
+        rows[2]!,
+      ]),
+      'b.xlsx',
+      'daily',
+    )
+    expect(s.disappeared).toEqual(['79-2-26'])
+    expect((await issuesOf('DISAPPEARED')).map(i => i.ref)).toEqual(['79-2-26'])
+
+    await board.setOverride('79-2-26', 'cancel', '1')
+    expect(await issuesOf('DISAPPEARED')).toEqual([])
+  })
+
+  it('a preliminary order is deleted, not cancelled', async () => {
+    const truck = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!
+    const no = await board.createDraft({
+      truckId: truck.id,
+      loadPlaces: 'Warszawa',
+      loadDate: '2026-09-22',
+      unloadPlaces: 'Budapest',
+      unloadDate: '2026-09-23',
+    })
+    await expect(board.setOverride(no, 'cancel', '1')).rejects.toThrow(/Usuń/)
+  })
+})

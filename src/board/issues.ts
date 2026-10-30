@@ -75,9 +75,11 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
 
   for (const o of orders) {
     // A cancelled forwarding order without PRZ: the truck does not carry it — nothing to review.
+    // An order cancelled on the board ("Anuluj zlecenie", 30.10.2026): the department has
+    // dealt with it — nothing to review either.
     // An order of a fleet truck whose PRZ entry leaves no leg on the fleet stays here: it is off
     // the board, so this list is the only place it can still be seen (27.10.2026).
-    if (o.history || o.noCarrier || (!o.hasFleetLeg && !o.fleetByExport)) continue
+    if (o.history || o.noCarrier || o.excluded === 'cancelled_board' || (!o.hasFleetLeg && !o.fleetByExport)) continue
     const ref = o.orderNo
     const counted = o.excluded === null
 

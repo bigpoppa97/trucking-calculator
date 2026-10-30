@@ -448,6 +448,25 @@ export async function importRows(
     await replaceDraftsFromImport(db, ctx, inScope, summary, importId, now)
   }
 
+  // Orders cancelled on the board ("Anuluj zlecenie", 30.10.2026): the department has dealt
+  // with them — their leaving the export or a changed value is no news (no review item, not
+  // listed in the summary). They are still marked as gone in the database.
+  if (summary.disappeared.length > 0 || summary.supersededOverrides.length > 0) {
+    const cancelled = new Set(
+      (
+        await db
+          .selectFrom('board_overrides')
+          .select('order_no')
+          .where('field', '=', 'cancel')
+          .where('value', '=', '1')
+          .where('active', '=', 1)
+          .execute()
+      ).map(r => r.order_no),
+    )
+    summary.disappeared = summary.disappeared.filter(no => !cancelled.has(no))
+    summary.supersededOverrides = summary.supersededOverrides.filter(x => !cancelled.has(x.orderNo))
+  }
+
   // Event issues.
   if (options.mode === 'daily') {
     for (const no of summary.disappeared) {
@@ -539,6 +558,7 @@ export const OVERRIDE_FIELD_LABELS: Record<string, string> = {
   load_at: 'załadunek',
   unload_at: 'rozładunek',
   coload: 'doładunek',
+  cancel: 'anulowanie zlecenia',
 }
 
 /** Short label of an order for history lines: "W-3 (Wiedeń → Wilno, 13.10)". */

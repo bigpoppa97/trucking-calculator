@@ -259,6 +259,8 @@ export interface OrderDetails {
     margin: number | null
     marginPct: number | null
     excluded: string | null
+    /** "Anuluj zlecenie" on the board (30.10.2026): who and when; null = not cancelled on the board. */
+    cancelledOnBoard: { createdBy: string; createdAt: string } | null
     noCarrier: boolean
     missing: boolean
     notesApp: string
