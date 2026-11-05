@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Driver, DriverDetails, FleetTruck, Issue, OrderDetails, Service, TruckView, WeekEvent, WeekView } from './boardApi.js'
@@ -186,11 +186,18 @@ const issue = (over: Partial<Issue>): Issue => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Dates of another year show it (05.11.2026) — the fixtures are in 2026, so "today" is too.
+  vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true })
+  vi.setSystemTime(new Date('2026-11-05T12:00:00Z'))
   try {
     localStorage.clear()
   } catch {
     // ignore
   }
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('WeekPage', () => {
@@ -1288,5 +1295,41 @@ describe('30.10.2026 — "Anuluj zlecenie"', () => {
     expect(options).not.toContain('Anuluj zlecenie')
     await userEvent.click(within(panel).getByRole('button', { name: 'Przywróć zlecenie' }))
     expect(api.clearOverride).toHaveBeenCalledWith('79-1000-26', 'cancel')
+  })
+})
+
+describe('05.11.2026 — a wrong year in the unloading date', () => {
+  const longTrip: OrderDetails = {
+    ...ORDER,
+    order: { ...ORDER.order, loadDate: '2026-11-02', loadTime: '20:00', unloadDate: '2027-10-04', unloadTime: '12:00' },
+    legs: [{ ...ORDER.legs[0]!, startDate: '2026-11-02', endDate: '2027-10-04' }],
+    issues: [
+      {
+        id: 91,
+        kind: 'LONG_TRIP',
+        ref: '79-1000-26',
+        message: 'Rozładunek 336 dni po załadunku (02.11.2026 → 04.10.2027, w aplikacji) — pomyłka w dacie?',
+        details: { loadDate: '2026-11-02', unloadDate: '2027-10-04', days: 336, manual: false },
+      },
+    ],
+  }
+
+  it('the panel shows the year of a date outside this year and "Popraw rozładunek" opens the fix with it', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue(longTrip)
+    api.setOverride.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText(/02\.11 20:00 → 04\.10\.2027 12:00/)).toBeInTheDocument()
+    expect(within(panel).getByText(/02\.11–04\.10\.2027/)).toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Popraw rozładunek' }))
+    expect(within(panel).getByLabelText('Co poprawić')).toHaveValue('unload_at')
+    const input = within(panel).getByLabelText('Nowa wartość')
+    expect(input).toHaveValue('04.10.2027 12:00')
+    await userEvent.clear(input)
+    await userEvent.type(input, '03.11 10:00')
+    await userEvent.click(within(panel).getByRole('button', { name: 'Zapisz poprawkę' }))
+    expect(api.setOverride).toHaveBeenCalledWith('79-1000-26', 'unload_at', '03.11 10:00')
   })
 })

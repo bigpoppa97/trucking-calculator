@@ -1395,7 +1395,7 @@ export class BoardService {
       field.startsWith('driver')
         ? ctx.drivers.name(Number(value) || null)
         : AT_OVERRIDES.has(field)
-          ? displayAt(value)
+          ? displayAt(value, this.today().slice(0, 4))
           : field === 'coload'
             ? value === '-'
               ? 'nie jest doładunkiem'
@@ -2007,7 +2007,11 @@ export class BoardService {
     const current = (f: 'load_at' | 'unload_at') =>
       parseAtValue(active.find(a => a.field === f)?.value) ??
       (f === 'load_at' ? { date: row.load_date, time: row.load_time } : { date: row.unload_date, time: row.unload_time })
-    const parsed = parseAtInput(input, current(field))
+    // The year of a day typed without one: for the unloading the one closest to the loading
+    // day, for the loading the one closest to today — never the (possibly mistyped) year of the
+    // value being corrected (05.11.2026: export 04.10.2027, "03.11" became 03.11.2027).
+    const reference = field === 'unload_at' ? current('load_at').date : this.today()
+    const parsed = parseAtInput(input, current(field), reference)
     if (!parsed) throw new BoardError('BAD_AT', 'Wpisz datę i godzinę, np. 07.10 12:00, albo samą godzinę, np. 12:00.')
     const load = field === 'load_at' ? parsed : current('load_at')
     const unload = field === 'unload_at' ? parsed : current('unload_at')

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { boardApi, errorMessage, type Service, type TruckView, type WeekEvent, type WeekTruck } from './boardApi.js'
-import { DAY_NAMES, addDaysIso, dm, eur, km, ordersLabel, pair, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
+import { DAY_NAMES, addDaysIso, dm, dmYear, eur, km, ordersLabel, pair, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
 import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { PHASE_LABELS, RequiredBadges, SERVICE_COLORS, ServiceDialog, defaultServiceDay, serviceTitle } from './serviceUi.js'
@@ -319,7 +319,7 @@ export function TruckPage({
               </button>
               <span className="text-[13.5px]">{view.activeOrder.title}</span>
               <span className="font-mono text-xs text-[#545B63]">
-                {dm(view.activeOrder.startDate)} → {dm(view.activeOrder.endDate)}
+                {dmYear(view.activeOrder.startDate)} → {dmYear(view.activeOrder.endDate)}
               </span>
               {onShowOnBoard && (
                 <button type="button" onClick={() => onShowOnBoard(view.activeOrder!.orderNo)} className="self-start text-xs font-semibold text-[#1E4E9C] underline">
@@ -540,8 +540,8 @@ export function TruckPage({
                           {status && <span className="ml-1 text-xs">({status})</span>}
                         </td>
                         <td className={`px-2 py-2 ${o.excluded === 'cancelled' || o.excluded === 'cancelled_board' ? 'line-through' : ''}`}>{o.title}</td>
-                        <td className="px-2 py-2 font-mono">{dm(o.startDate)}</td>
-                        <td className="px-2 py-2 font-mono">{dm(o.endDate)}</td>
+                        <td className="px-2 py-2 font-mono">{dmYear(o.startDate)}</td>
+                        <td className="px-2 py-2 font-mono">{dmYear(o.endDate)}</td>
                         <td className="px-2 py-2">
                           {o.driver || '—'}
                           {o.driverManual && <span className="ml-1 text-xs text-[#545B63]">(poprawione)</span>}

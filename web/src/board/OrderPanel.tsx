@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { boardApi, errorMessage, type Driver, type OrderDetails } from './boardApi.js'
-import { dm, dmTime, eur, fixOptions, km, overrideLabel, signedEur, stamp } from './format.js'
+import { dm, dmTime, dmy, dmYear, eur, fixOptions, km, overrideLabel, signedEur, stamp } from './format.js'
 import { Icon } from './Icon.js'
 import { DraftDialog } from './DraftDialog.js'
 import { IssueActions } from './issueActions.js'
@@ -315,7 +315,7 @@ export function OrderPanel({
                 </span>
                 {/* Dates and one km figure (28.10.2026): amounts are in the tiles below, loaded / empty km on the board. */}
                 <span className="font-mono text-[12.5px] text-[#545B63]">
-                  {dm(l.startDate)}–{dm(l.endDate)}
+                  {dmYear(l.startDate)}–{dmYear(l.endDate)}
                   {l.kind === 'fleet' && ` · ${legKm(l)}`}
                 </span>
                 {l.kind === 'fleet' && (
@@ -363,6 +363,9 @@ export function OrderPanel({
                     }
                   : {})}
                 {...(i.kind === 'COLOAD' ? { onFixCoLoad: () => openFix('coload', o.coLoad?.of ?? '') } : {})}
+                {...(i.kind === 'LONG_TRIP'
+                  ? { onFixUnload: () => openFix('unload_at', `${dmy(o.unloadDate)}${o.unloadTime ? ` ${o.unloadTime}` : ''}`) }
+                  : {})}
               />
             </div>
           ))}

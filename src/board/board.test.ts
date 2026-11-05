@@ -1999,3 +1999,38 @@ describe('30.10.2026 — "Anuluj zlecenie": an order cancelled on the board leav
     await expect(board.setOverride(no, 'cancel', '1')).rejects.toThrow(/Usuń/)
   })
 })
+
+describe('05.11.2026 — a wrong year in the unloading date (79-1585-26: 04.10.2027)', () => {
+  const row: Row = {
+    no: '79-1-26', from: 'Frankfurt', ld: '2026-09-21', to: 'Warszawa', ud: '2027-08-23', rev: 1500, cost: 1300, sub: 'AA1001A', trailer: 'TR100', lh: '20:00 — —', uh: '— — 12:00',
+  }
+
+  it('goes to review; "DD.MM" typed for the unloading takes the year of the loading; the review item closes', async () => {
+    await board.importFile(await xlsx([row], HOURS_HEADERS), 'a.xlsx', 'daily')
+    const [item] = await issuesOf('LONG_TRIP')
+    expect(item).toMatchObject({ ref: '79-1-26', details: { days: 336, manual: false } })
+    expect(item!.message).toContain('Rozładunek 336 dni po załadunku (21.09.2026 → 23.08.2027, w aplikacji)')
+
+    await board.setOverride('79-1-26', 'unload_at', '22.09 10:00')
+    const d = await board.orderDetails('79-1-26')
+    expect([d.order.unloadDate, d.order.unloadTime]).toEqual(['2026-09-22', '10:00'])
+    expect(d.overrides.find(o => o.field === 'unload_at')?.display).toBe('22.09 10:00')
+    expect(await issuesOf('LONG_TRIP')).toEqual([])
+    const bar = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!.bars[0]!
+    expect([bar.endDay, bar.endTime]).toEqual([1, '10:00'])
+  })
+
+  it('a correction with a wrong year is flagged too and shows the year', async () => {
+    await board.importFile(await xlsx([{ ...row, ud: '2026-09-22' }], HOURS_HEADERS), 'a.xlsx', 'daily')
+    await board.setOverride('79-1-26', 'unload_at', '22.09.2027 10:00')
+    const [item] = await issuesOf('LONG_TRIP')
+    expect(item!.message).toContain('w ręcznej poprawce na tablicy')
+    expect((await board.orderDetails('79-1-26')).overrides.find(o => o.field === 'unload_at')?.display).toBe('22.09.2027 10:00')
+  })
+
+  it('a loading day typed without a year takes the year closest to today', async () => {
+    await board.importFile(await xlsx([{ ...row, ld: '2027-09-21', ud: '2027-09-22' }], HOURS_HEADERS), 'a.xlsx', 'daily')
+    await board.setOverride('79-1-26', 'load_at', '21.09 20:00')
+    expect((await board.orderDetails('79-1-26')).order.loadDate).toBe('2026-09-21')
+  })
+})

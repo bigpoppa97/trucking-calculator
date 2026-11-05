@@ -53,6 +53,10 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
    stoją w jednym wierszu (dzień dzielony na pół), gdy rozładunek pierwszego jest przed załadunkiem drugiego.
    Faktyczna godzina inna niż w zleceniu: panel zlecenia → „Popraw ręcznie” → Załadunek / Rozładunek,
    np. `07.10 12:00` albo sama godzina `12:00`. Zmieniona data załadunku przenosi zlecenie na ten dzień (także w sumach).
+   Data bez roku: rozładunek bierze rok najbliższy dniu załadunku, załadunek — najbliższy dzisiejszej dacie (rok można
+   dopisać: `03.11.2026` albo `03.11.26`). Data spoza bieżącego roku ma w panelu i na liście zleceń zestawu rok
+   (`04.10.2027`). Rozładunek ponad 7 dni po załadunku (pomyłka w dacie — pasek ciągnąłby się przez kolejne tygodnie)
+   → „Do sprawdzenia” z przyciskiem „Popraw rozładunek”.
 8. Zlecenie wstępne (uzgodnione, zanim klient wyśle zlecenie): „+” pod dniem auta → Rodzaj „Zlecenie wstępne”.
    Numer „W-1”, „W-2”…, przerywana szara ramka. Liczy się w km i sumach (bez którejś z kwot — tylko w km).
    Import zastępuje je zleceniem z aplikacji na tym samym aucie z załadunkiem ±1 dzień (notatki przechodzą);

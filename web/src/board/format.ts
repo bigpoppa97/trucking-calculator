@@ -51,8 +51,9 @@ export function ordersWithDrafts(n: number, drafts: number): string {
 }
 
 /** "07.10 16:00" (no hour → "07.10"). */
+/** Date (with the year when it is not the current one) and the hour if known. */
 export function dmTime(iso: string, time: string | null | undefined): string {
-  return `${dm(iso)}${time ? ` ${time}` : ''}`
+  return `${dmYear(iso)}${time ? ` ${time}` : ''}`
 }
 
 export const DAY_NAMES = ['Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So', 'Nd']
@@ -62,6 +63,14 @@ export const MONTHS_GEN = ['stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'c
 /** "2026-09-21" → "21.09" */
 export function dm(iso: string): string {
   return `${iso.slice(8, 10)}.${iso.slice(5, 7)}`
+}
+
+/**
+ * Like dm, with the year when it is not the current one: "04.10.2027" (05.11.2026 — a wrong
+ * year in the application was invisible in the order panel and the set page list).
+ */
+export function dmYear(iso: string, today: string = todayIso()): string {
+  return iso.slice(0, 4) === today.slice(0, 4) ? dm(iso) : `${dm(iso)}.${iso.slice(0, 4)}`
 }
 
 export function stamp(iso: string): string {

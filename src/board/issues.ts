@@ -42,6 +42,8 @@ export const DERIVED_KINDS = [
   'ROUTE_GAP',
   // 28.10.2026: a co-load (doładunek) whose main order is missing, cancelled or on another truck.
   'COLOAD',
+  // 05.11.2026: unloading more than MAX_TRIP_DAYS after loading — a wrong date (79-1585-26: 04.10.2027).
+  'LONG_TRIP',
 ] as const
 
 export type DerivedKind = (typeof DERIVED_KINDS)[number]
@@ -64,6 +66,13 @@ export interface IssueThresholds {
 }
 
 export const DEFAULT_THRESHOLDS: IssueThresholds = { marginWarnPct: 40, revPerKmMin: 0.5, revPerKmMax: 4.5 }
+
+/**
+ * Longest believable order (05.11.2026): in the data 28.09–05.11 the longest trips took 4 days
+ * (Warszawa → Vecsés + Otopeni + Sofia). Longer = most likely a mistyped date — the bar would
+ * stretch over every week until the unloading.
+ */
+export const MAX_TRIP_DAYS = 7
 
 const eur = (n: number) => `${Math.round(n).toLocaleString('pl-PL').replace(/ /g, ' ')} €`
 
@@ -91,6 +100,21 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
         message: `Zlecenie wstępne ${ref} (rozładunek ${fmtDate(o.unloadDate)}) nadal nie ma zlecenia z aplikacji. Zostawić je czy usunąć?`,
         details: { unloadDate: o.unloadDate },
         fingerprint: o.unloadDate,
+      })
+    }
+
+    const tripDays = Math.round((Date.parse(`${o.unloadDate}T00:00:00Z`) - Date.parse(`${o.loadDate}T00:00:00Z`)) / 86400000)
+    if (!o.draft && tripDays > MAX_TRIP_DAYS) {
+      const source = o.unloadAtManual ? 'w ręcznej poprawce na tablicy' : 'w aplikacji'
+      out.push({
+        key: `LONG_TRIP:${ref}`,
+        kind: 'LONG_TRIP',
+        ref,
+        message:
+          `Rozładunek ${tripDays} dni po załadunku (${fmtDateFull(o.loadDate)} → ${fmtDateFull(o.unloadDate)}, ${source}) — pomyłka w dacie? ` +
+          'Pasek ciągnie się do dnia rozładunku. Popraw datę w aplikacji albo tutaj: „Popraw rozładunek”.',
+        details: { loadDate: o.loadDate, unloadDate: o.unloadDate, days: tripDays, manual: o.unloadAtManual },
+        fingerprint: `${o.loadDate}|${o.unloadDate}`,
       })
     }
 
@@ -533,4 +557,9 @@ function addDaysIso(iso: string, days: number): string {
 
 export function fmtDate(iso: string): string {
   return `${iso.slice(8, 10)}.${iso.slice(5, 7)}`
+}
+
+/** "2027-10-04" → "04.10.2027" */
+function fmtDateFull(iso: string): string {
+  return `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}`
 }

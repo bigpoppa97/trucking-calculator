@@ -77,11 +77,15 @@ export function parseAtValue(stored: string | null | undefined): At | null {
   return { date: m[1]!, time: m[2] ? normTime(m[2]) : null }
 }
 
-/** "2026-10-07 12:00" → "07.10 12:00" */
-export function displayAt(stored: string): string {
+/**
+ * "2026-10-07 12:00" → "07.10 12:00"; with `year` (the current year) a date in another year
+ * shows it: "07.10.2027 12:00" (05.11.2026: a wrong year was invisible in the panel).
+ */
+export function displayAt(stored: string, year?: string): string {
   const at = parseAtValue(stored)
   if (!at) return stored
-  return `${at.date.slice(8, 10)}.${at.date.slice(5, 7)}${at.time ? ` ${at.time}` : ''}`
+  const y = year !== undefined && at.date.slice(0, 4) !== year ? `.${at.date.slice(0, 4)}` : ''
+  return `${at.date.slice(8, 10)}.${at.date.slice(5, 7)}${y}${at.time ? ` ${at.time}` : ''}`
 }
 
 function realDay(iso: string): boolean {
@@ -109,10 +113,14 @@ function closestYear(day: number, month: number, referenceIso: string): string |
 
 /**
  * A manual loading/unloading entry typed in the order panel:
- * "07.10 12:00", "7.10.2026 12:00", "2026-10-07 12:00", "12:00" (keeps the date),
- * "07.10" (keeps the hour). Returns null when nothing readable was typed.
+ * "07.10 12:00", "7.10.2026 12:00", "7.10.26 12:00", "2026-10-07 12:00", "12:00" (keeps the
+ * date), "07.10" (keeps the hour). Returns null when nothing readable was typed.
+ * A day typed without a year takes the year closest to `reference` (default: the current
+ * date) — the caller passes the loading day for an unloading, so a wrong year in the
+ * application is not carried over (05.11.2026: 04.10.2027 in the export, "03.11" typed →
+ * 03.11.2027).
  */
-export function parseAtInput(input: string, current: At): At | null {
+export function parseAtInput(input: string, current: At, reference: string = current.date): At | null {
   let text = input.trim()
   if (!text) return null
   let date: string | null = null
@@ -132,16 +140,17 @@ export function parseAtInput(input: string, current: At): At | null {
     text = text.replace(timeMatch[0], ' ')
   }
   if (!date) {
-    const dm = /\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b/.exec(text)
+    const dm = /\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}|\d{2}))?\b/.exec(text)
     if (dm) {
       const day = Number(dm[1])
       const month = Number(dm[2])
       if (dm[3]) {
-        const candidate = `${dm[3]}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+        const year = dm[3].length === 2 ? `20${dm[3]}` : dm[3]
+        const candidate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
         if (!realDay(candidate)) return null
         date = candidate
       } else {
-        date = closestYear(day, month, current.date)
+        date = closestYear(day, month, reference)
         if (!date) return null
       }
       text = text.replace(dm[0], ' ')

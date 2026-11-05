@@ -29,6 +29,7 @@ export const ORDER_KINDS = new Set([
   'DRAFT_STALE',
   'ROUTE_GAP',
   'COLOAD',
+  'LONG_TRIP',
 ])
 
 export interface IssueRef {
@@ -46,6 +47,7 @@ export function IssueActions({
   currentOrderNo,
   onFixPrz,
   onFixCoLoad,
+  onFixUnload,
 }: {
   issue: IssueRef
   fleet: FleetTruck[]
@@ -57,6 +59,8 @@ export function IssueActions({
   onFixPrz?: () => void
   /** Order panel: open "Popraw ręcznie → Doładunek do zlecenia" (28.10.2026). */
   onFixCoLoad?: () => void
+  /** Order panel: open "Popraw ręcznie → Rozładunek" with the current date (05.11.2026). */
+  onFixUnload?: () => void
 }) {
   const d = issue.details
   const suggestions = (Array.isArray(d['suggestions']) ? d['suggestions'] : []) as Array<string | { code: string; name: string }>
@@ -114,6 +118,11 @@ export function IssueActions({
         )}
         {issue.kind === 'COLOAD' && typeof d['of'] === 'string' && d['of'] && d['problem'] !== 'missing' && d['of'] !== currentOrderNo && (
           <ActionButton onClick={() => onOpenOrder(String(d['of']))}>Otwórz {String(d['of'])}</ActionButton>
+        )}
+        {issue.kind === 'LONG_TRIP' && onFixUnload && (
+          <ActionButton primary onClick={onFixUnload}>
+            Popraw rozładunek
+          </ActionButton>
         )}
         {issue.kind === 'COLOAD' && onFixCoLoad && (
           <ActionButton primary onClick={onFixCoLoad}>

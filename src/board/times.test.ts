@@ -33,6 +33,7 @@ describe('manual loading/unloading entries', () => {
     ['06.10', '2026-10-06', '16:00'],
     ['2026-10-05 08:00', '2026-10-05', '08:00'],
     ['05.10.2026 08:00', '2026-10-05', '08:00'],
+    ['05.10.26 08:00', '2026-10-05', '08:00'],
   ])('%s', (input, date, time) => {
     expect(parseAtInput(input, current)).toEqual({ date, time })
   })
@@ -45,9 +46,18 @@ describe('manual loading/unloading entries', () => {
     expect(parseAtInput('02.01 10:00', { date: '2026-12-30', time: null })).toEqual({ date: '2027-01-02', time: '10:00' })
   })
 
-  it('shows a stored value the Polish way', () => {
+  it('the year can come from another date than the one corrected (05.11.2026: the loading day)', () => {
+    // The export said 04.10.2027; "03.11" means the 3rd of November after the loading on 02.11.2026.
+    expect(parseAtInput('03.11 10:00', { date: '2027-10-04', time: '12:00' }, '2026-11-02')).toEqual({ date: '2026-11-03', time: '10:00' })
+    // Only an hour keeps the date being corrected.
+    expect(parseAtInput('10:00', { date: '2027-10-04', time: '12:00' }, '2026-11-02')).toEqual({ date: '2027-10-04', time: '10:00' })
+  })
+
+  it('shows a stored value the Polish way, with the year when it is not the given one', () => {
     expect(displayAt('2026-10-07 12:00')).toBe('07.10 12:00')
     expect(displayAt('2026-10-07')).toBe('07.10')
+    expect(displayAt('2026-10-07 12:00', '2026')).toBe('07.10 12:00')
+    expect(displayAt('2027-11-03 10:00', '2026')).toBe('03.11.2027 10:00')
   })
 })
 

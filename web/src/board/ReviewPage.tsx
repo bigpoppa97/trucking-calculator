@@ -31,6 +31,7 @@ const KIND_TAG: Record<string, { label: string; bg: string; fg: string }> = {
   DRAFT_STALE: { label: 'Zlecenie wstępne', bg: '#E6E9EE', fg: '#15181C' },
   ROUTE_GAP: { label: 'Przepinka?', bg: '#F4C77A', fg: '#3A2400' },
   COLOAD: { label: 'Doładunek', bg: '#E9E0F5', fg: '#2E1F47' },
+  LONG_TRIP: { label: 'Data', bg: '#F4C77A', fg: '#3A2400' },
 }
 
 
