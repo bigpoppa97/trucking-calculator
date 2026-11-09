@@ -96,14 +96,15 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
    Starsza poprawka „Wyłącz z wyników” działa dalej (widać ją w „Ręcznych poprawkach”), nowych się nie dodaje.
 15. **Anulacja płatna** (klient odwołał, ale płaci — nota obciążeniowa): w uwagach zlecenia `Anulacja płatna`
    (wielkość liter i polskie znaki bez znaczenia; też „Płatna anulacja”, „Anulowane płatne”) albo panel → „Popraw
-   ręcznie” → „Anuluj zlecenie” → **„Anulacja płatna”**. Kwoty z aplikacji (zwykle obniżona stawka klienta i część
-   kwoty dla przewoźnika; inne — „Stawka klienta” / „Koszt przewoźnika”) liczą się w marży, przychodzie i sumach auta
+   ręcznie” → „Anuluj zlecenie” → **„Anulacja płatna”** → od razu pola „Fracht od klienta (€)” i „Koszt przewoźnika (€)”
+   (podpowiedziane z aplikacji; przy przepince tylko fracht) → „Zapisz anulację płatną”. Kwota inna niż w aplikacji
+   zapisuje się jako ręczna poprawka; „Przywróć zlecenie” ją usuwa. Kwoty liczą się w marży, przychodzie i sumach auta
    z eksportu — także gdy zlecenie spedycyjne albo klienta ma w aplikacji status A. Km: 0 (auto nie jechało), poza
    kolejnością km — pusty dojazd następnego zlecenia liczy się od poprzedniego rozładunku. Bez kontroli trasy, marży
    (> 40%), €/km, dat i naczepy; nie zmienia naczepy auta. Na tablicy różowy znaczek w dniu i godzinie załadunku
    (zamiast paska — dni auta zostają wolne), w legendzie „Anulacja płatna”; na liście zleceń zestawu „anulacja płatna”.
-   Panel: ramka „Anulacja płatna” — z uwag: „To nie anulacja płatna” (wyłącza, wbrew uwagom; „Jednak anulacja płatna”
-   cofa), z tablicy: „Przywróć zlecenie”. Gdy auto jednak dojechało pusto na załadunek — „Km razem” na tym zleceniu
+   Panel: wąska ramka „Anulacja płatna” z jednym przyciskiem — z tablicy: „Przywróć zlecenie”, z uwag: „To nie anulacja
+   płatna” (wyłącza, wbrew uwagom; „Jednak anulacja płatna” cofa). Kto i kiedy — w historii zlecenia. Gdy auto jednak dojechało pusto na załadunek — „Km razem” na tym zleceniu
    (i „Pozycja auta”, jeśli następne zlecenie zaczyna się tam). Zniknięcie z eksportu dalej jest zgłaszane.
 
 Ręczne poprawki (panel zlecenia → „Popraw ręcznie”) obowiązują, dopóki aplikacja nie zmieni tej samej wartości —

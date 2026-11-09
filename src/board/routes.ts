@@ -85,6 +85,24 @@ export function registerBoardRoutes(app: FastifyInstance, deps: BoardRouteDeps):
     async (request, reply) => handle(reply, () => as(request).setOverride(request.params.orderNo, request.body.field, request.body.value)),
   )
 
+  // "Anulacja płatna" with the fee and the carrier's amount in one save (09.11.2026).
+  app.post<{ Params: { orderNo: string }; Body: { rev: string; cost?: string | null } }>(
+    '/api/board/orders/:orderNo/paid-cancel',
+    {
+      schema: {
+        params: ORDER_PARAMS,
+        body: {
+          type: 'object',
+          properties: { rev: { type: 'string', minLength: 1, maxLength: 32 }, cost: { type: ['string', 'null'], maxLength: 32 } },
+          required: ['rev'],
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) =>
+      handle(reply, () => as(request).markPaidCancel(request.params.orderNo, { rev: request.body.rev, cost: request.body.cost ?? null })),
+  )
+
   app.delete<{ Params: { orderNo: string; field: string } }>(
     '/api/board/orders/:orderNo/overrides/:field',
     {

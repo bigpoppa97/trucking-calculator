@@ -73,6 +73,14 @@ describe('board API', () => {
     expect(res.statusCode).toBe(200)
     res = await call({ method: 'GET', url: '/api/board/issues' })
     expect(res.json().issues.filter((i: { kind: string }) => i.kind === 'UNKNOWN_TRAILER')).toEqual([])
+ 
+    // "Anulacja płatna" with its amounts in one call (09.11.2026); a bad amount is refused.
+    res = await call({ method: 'POST', url: '/api/board/orders/79-1-26/paid-cancel', payload: { rev: 'dużo', cost: '0' } })
+    expect(res.statusCode).toBe(400)
+    res = await call({ method: 'POST', url: '/api/board/orders/79-1-26/paid-cancel', payload: { rev: '400', cost: '150,50' } })
+    expect(res.statusCode).toBe(200)
+    res = await call({ method: 'GET', url: '/api/board/week?date=2026-09-23' })
+    expect(res.json().trucks[0].bars[0]).toMatchObject({ orderNo: '79-1-26', paidCancel: true, margin: 249.5, kmLoaded: 0 })
   })
 
   it('adds, plans and lists a service signed by the user, and shows the set page', async () => {

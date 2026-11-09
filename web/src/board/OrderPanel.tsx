@@ -45,6 +45,8 @@ export function OrderPanel({
   const [drivers, setDrivers] = useState<Driver[] | null>(null)
   const [editDraft, setEditDraft] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  /** "Anulacja płatna" chosen in the cancel dialog: its amounts are typed next (09.11.2026). */
+  const [paidStep, setPaidStep] = useState<{ rev: string; cost: string } | null>(null)
   const fixRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
@@ -59,6 +61,7 @@ export function OrderPanel({
   useEffect(() => {
     setData(null)
     setFixField(null)
+    setPaidStep(null)
     void load()
   }, [load])
 
@@ -171,39 +174,31 @@ export function OrderPanel({
           )}
 
           {/* "Anulacja płatna" (09.11.2026): the client pays, the truck did not drive. */}
+          {/* Just the mark and the way back (09.11.2026); who and when are in the history. */}
           {o.paidCancel && (
-            <div className="flex flex-col gap-2 rounded-lg bg-[#FBE8EE] px-3 py-2.5 text-[#5B1830] outline outline-1 -outline-offset-1 outline-[#C77D93]">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#FBE8EE] px-3 py-2 text-[#5B1830] outline outline-1 -outline-offset-1 outline-[#C77D93]">
               <span className="text-[11.5px] font-bold uppercase tracking-wider">Anulacja płatna</span>
-              <span className="text-[13px]">
-                Klient odwołał zlecenie i płaci za anulację. Kwoty liczą się w wynikach auta, km nie — auto nie jechało. Na tablicy zamiast paska jest znaczek w dniu
-                załadunku.
-              </span>
-              <span className="text-xs">
-                {o.paidCancel.source === 'manual'
-                  ? `Oznaczone na tablicy ${o.paidCancel.createdAt ? dmy2(o.paidCancel.createdAt) : ''} (${o.paidCancel.createdBy ?? ''})`
-                  : 'Z uwag w aplikacji („Anulacja płatna”).'}
-              </span>
-              <div>
-                {o.paidCancel.source === 'manual' ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void run(() => boardApi.clearOverride(orderNo, 'cancel'))}
-                    className="h-10 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white disabled:opacity-50"
-                  >
-                    Przywróć zlecenie
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void run(() => boardApi.setOverride(orderNo, 'cancel', '0'))}
-                    className="h-10 rounded-lg border border-[#C77D93] bg-white px-3.5 font-semibold text-[#5B1830] disabled:opacity-50"
-                  >
-                    To nie anulacja płatna
-                  </button>
-                )}
-              </div>
+              {o.paidCancel.source === 'manual' ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  title="Zlecenie wraca jako zwykłe — z kwotami z aplikacji"
+                  onClick={() => void run(() => boardApi.clearOverride(orderNo, 'cancel'))}
+                  className="h-10 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white disabled:opacity-50"
+                >
+                  Przywróć zlecenie
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  title="Oznaczone w uwagach aplikacji („Anulacja płatna”) — wyłącz tylko na tablicy"
+                  onClick={() => void run(() => boardApi.setOverride(orderNo, 'cancel', '0'))}
+                  className="h-10 rounded-lg border border-[#C77D93] bg-white px-3.5 font-semibold text-[#5B1830] disabled:opacity-50"
+                >
+                  To nie anulacja płatna
+                </button>
+              )}
             </div>
           )}
           {o.paidCancelDismissed && (
@@ -524,6 +519,7 @@ export function OrderPanel({
                         const field = e.target.value
                         setFixField(field)
                         setFixValue('')
+                        setPaidStep(null)
                         if (field.startsWith('driver') && drivers === null) {
                           boardApi
                             .drivers()
@@ -540,7 +536,32 @@ export function OrderPanel({
                       ))}
                     </select>
                   </label>
-                  {fixField === 'cancel' ? null : fixField.startsWith('driver') ? (
+                  {fixField === 'cancel' ? (
+                    paidStep && (
+                      <div className="flex flex-wrap gap-2">
+                        <label className="flex flex-col gap-1 text-[13px] font-semibold">
+                          Fracht od klienta (€)
+                          <input
+                            value={paidStep.rev}
+                            onChange={e => setPaidStep({ ...paidStep, rev: e.target.value })}
+                            inputMode="decimal"
+                            className="h-11 w-40 rounded-lg border border-[#C9CEC6] px-3 font-mono font-normal"
+                          />
+                        </label>
+                        {!o.prz && (
+                          <label className="flex flex-col gap-1 text-[13px] font-semibold">
+                            Koszt przewoźnika (€)
+                            <input
+                              value={paidStep.cost}
+                              onChange={e => setPaidStep({ ...paidStep, cost: e.target.value })}
+                              inputMode="decimal"
+                              className="h-11 w-40 rounded-lg border border-[#C9CEC6] px-3 font-mono font-normal"
+                            />
+                          </label>
+                        )}
+                      </div>
+                    )
+                  ) : fixField.startsWith('driver') ? (
                     <label className="flex flex-col gap-1 text-[13px] font-semibold">
                       Kto jechał
                       <select value={fixValue} onChange={e => setFixValue(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal" disabled={!drivers}>
@@ -577,7 +598,9 @@ export function OrderPanel({
                     </label>
                   )}
                   <p className={fixField === 'cancel' ? 'text-[13px] text-[#3D444C]' : 'text-xs text-[#545B63]'}>
-                    {fixField === 'cancel'
+                    {fixField === 'cancel' && paidStep
+                      ? `Kwoty po anulacji — podpowiedziane z aplikacji.${o.prz ? ' Kwoty dla aut zostają z wpisu przepinki.' : ' Przewoźnik nic nie dostaje — wpisz 0.'}`
+                      : fixField === 'cancel'
                       ? (o.paidCancel ? '' : 'Klient odwołał zlecenie — czy płaci za anulację? ') +
                         '„Klient nie płaci”: zlecenie zniknie z tablicy i z wyników.' +
                         (o.paidCancel ? '' : ' „Anulacja płatna”: kwoty z aplikacji liczą się w wynikach auta, km nie; na tablicy znaczek w dniu załadunku.') +
@@ -590,7 +613,28 @@ export function OrderPanel({
                           ? 'Numer zlecenia głównego na tym samym aucie: doładunek nie ma własnych km i nie zmienia pustych dojazdów. „-” = to nie doładunek (choć uwagi tak mówią).'
                           : 'Poprawka zostaje, dopóki aplikacja nie zmieni tej samej wartości — wtedy obowiązuje wartość z aplikacji.'}
                   </p>
-                  {fixField === 'cancel' ? (
+                  {fixField === 'cancel' && paidStep ? (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={busy || !paidStep.rev.trim() || (!o.prz && !paidStep.cost.trim())}
+                        onClick={() =>
+                          void run(async () => {
+                            await boardApi.markPaidCancel(orderNo, paidStep.rev.trim(), o.prz ? null : paidStep.cost.trim())
+                            setPaidStep(null)
+                            setFixField(null)
+                            setFixValue('')
+                          })
+                        }
+                        className="h-11 rounded-lg border border-[#C77D93] bg-[#FBE8EE] px-3.5 font-semibold text-[#5B1830] disabled:opacity-50"
+                      >
+                        Zapisz anulację płatną
+                      </button>
+                      <button type="button" onClick={() => setPaidStep(null)} className="h-11 rounded-lg border border-[#C9CEC6] px-3.5 font-semibold">
+                        Wróć
+                      </button>
+                    </div>
+                  ) : fixField === 'cancel' ? (
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -611,10 +655,12 @@ export function OrderPanel({
                           type="button"
                           disabled={busy}
                           onClick={() =>
-                            void run(async () => {
-                              await boardApi.setOverride(orderNo, 'cancel', 'paid')
-                              setFixField(null)
-                              setFixValue('')
+                            // The amounts come next, prefilled with the current ones (09.11.2026).
+                            setPaidStep({
+                              rev: amountText(o.rev),
+                              cost: amountText(
+                                data.overrides.find(ov => ov.field === 'cost') ? Number(data.overrides.find(ov => ov.field === 'cost')!.value) : o.costApp,
+                              ),
                             })
                           }
                           className="h-11 rounded-lg border border-[#C77D93] bg-[#FBE8EE] px-3.5 font-semibold text-[#5B1830] disabled:opacity-50"
@@ -668,6 +714,11 @@ export function OrderPanel({
       )}
     </aside>
   )
+}
+
+/** An amount for an input field: "1500", "400,5"; empty when unknown. */
+function amountText(n: number | null): string {
+  return n === null || !Number.isFinite(n) ? '' : String(n).replace('.', ',')
 }
 
 /** "2026-10-27T14:21:17Z" → "27.10.26" (Polish date). */

@@ -2124,6 +2124,48 @@ describe('09.11.2026 — "Anulacja płatna": the client cancelled but pays, the 
     expect(d.history.map(h => h.text)).toContain('przywrócone na tablicę (test)')
   })
 
+  it('marked with its amounts: a changed amount becomes a correction, an unchanged one does not; a bad amount saves nothing', async () => {
+    // The application still has the full rates of 79-2-26.
+    const plain = rows.map(r => ({ ...r, notes: '' }))
+    await board.importFile(await xlsx([plain[0]!, { ...plain[1]!, rev: 1400, cost: 1000 }, plain[2]!]), 'a.xlsx', 'daily')
+    await board.markPaidCancel('79-2-26', { rev: '400', cost: '150' })
+    let d = await board.orderDetails('79-2-26')
+    expect(d.overrides.map(o => [o.field, o.value])).toEqual([
+      ['rev', '400'],
+      ['cost', '150'],
+      ['cancel', 'paid'],
+    ])
+    expect([d.order.paidCancel?.source, d.order.margin]).toEqual(['manual', 250])
+    expect((await truckRow()).totals.margin).toBe(1800 + 250 + 300)
+
+    // Amounts as in the application: no corrections, only the mark.
+    await board.markPaidCancel('79-1-26', { rev: '3000', cost: '1 200,00' })
+    expect((await board.orderDetails('79-1-26')).overrides.map(o => o.field)).toEqual(['cancel'])
+
+    // A relay order passes no carrier amount: only the fee.
+    await expect(board.markPaidCancel('79-3-26', { rev: 'dużo', cost: '0' })).rejects.toThrow(/fracht od klienta/)
+    await expect(board.markPaidCancel('79-3-26', { rev: '500', cost: 'x' })).rejects.toThrow(/koszt przewoźnika/)
+    d = await board.orderDetails('79-3-26')
+    expect([d.overrides, d.order.paidCancel]).toEqual([[], null])
+    await board.markPaidCancel('79-3-26', { rev: '500', cost: null })
+    expect((await board.orderDetails('79-3-26')).overrides.map(o => [o.field, o.value])).toEqual([
+      ['rev', '500'],
+      ['cancel', 'paid'],
+    ])
+ 
+    // "Przywróć zlecenie" takes back the amounts typed with the mark; an earlier correction stays.
+    await board.clearOverride('79-2-26', 'cancel')
+    d = await board.orderDetails('79-2-26')
+    expect([d.overrides.map(o => o.field), d.order.rev, d.order.paidCancel]).toEqual([[], 1400, null])
+    expect(d.history.map(h => h.text)).toContain('ręczna poprawka (stawka klienta): 400 — zastąpiona: usunięta przy przywróceniu zlecenia (test)')
+    await board.clearOverride('79-3-26', 'cancel')
+    await board.setOverride('79-3-26', 'rev', '1250')
+    await board.markPaidCancel('79-3-26', { rev: '1250', cost: '200' })
+    await board.clearOverride('79-3-26', 'cancel')
+    d = await board.orderDetails('79-3-26')
+    expect(d.overrides.map(o => [o.field, o.value])).toEqual([['rev', '1250']])
+  })
+
   it('from the notes it can be turned off on the board ("To nie anulacja płatna") and back on', async () => {
     await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
     await board.setOverride('79-2-26', 'cancel', '0')

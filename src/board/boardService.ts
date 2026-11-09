@@ -1867,7 +1867,8 @@ export class BoardService {
     await this.db.updateTable('board_notes').set({ deleted: 1 }).where('id', '=', id).execute()
   }
 
-  async setOverride(orderNo: string, field: string, value: string) {
+  /** `refresh: false` = the caller refreshes the review queue once after several corrections. */
+  async setOverride(orderNo: string, field: string, value: string, options: { refresh?: boolean } = {}) {
     if (!(OVERRIDE_FIELDS as readonly string[]).includes(field)) throw new BoardError('BAD_FIELD', 'Tego pola nie można poprawić.')
     if (NUMERIC_OVERRIDES.has(field.split(':')[0]!)) {
       // Never store a number the board cannot read — it would be silently ignored (09.10.2026: "2350e").
@@ -1930,7 +1931,56 @@ export class BoardService {
           .execute()
       }
     })
-    await this.refreshIssues()
+    if (options.refresh !== false) await this.refreshIssues()
+  }
+
+  /**
+   * "Anulacja płatna" with its amounts (09.11.2026): the client's fee and what the carrier gets,
+   * typed right when the order is marked (prefilled with the current amounts). Both amounts are
+   * checked before anything is saved. An amount equal to the current one (the application's, or
+   * an earlier correction) adds no correction, so a later change in the application still counts.
+   * `cost` is left out for an order with a relay (its amounts are in the PRZ entry).
+   */
+  async markPaidCancel(orderNo: string, input: { rev: string; cost?: string | null }) {
+    const row = await this.requireOrder(orderNo)
+    if (row.draft === 1) throw new BoardError('DRAFT_CANCEL', 'Zlecenie wstępne usuń przyciskiem „Usuń”.')
+    const rev = parseNumberInput(input.rev)
+    if (rev === null) throw new BoardError('BAD_NUMBER', 'Wpisz fracht od klienta w EUR liczbą, np. 400 albo 400,50.')
+    const costRaw = input.cost?.trim() ?? ''
+    const cost = costRaw === '' ? undefined : parseNumberInput(costRaw)
+    if (cost === null) throw new BoardError('BAD_NUMBER', 'Wpisz koszt przewoźnika w EUR liczbą, np. 150 (0, gdy nic nie dostaje).')
+    const active = await this.db
+      .selectFrom('board_overrides')
+      .select(['field', 'value'])
+      .where('order_no', '=', orderNo)
+      .where('active', '=', 1)
+      .where('field', 'in', ['rev', 'cost'])
+      .execute()
+    const current = (field: 'rev' | 'cost', app: number | null) => {
+      const ov = active.find(a => a.field === field)
+      return ov ? parseNumberInput(ov.value) : app
+    }
+    const same = (a: number, b: number | null) => b !== null && Math.abs(a - b) < 0.005
+    const withIt: string[] = []
+    if (!same(rev, current('rev', row.rev_eur))) {
+      await this.setOverride(orderNo, 'rev', String(rev), { refresh: false })
+      withIt.push('rev')
+    }
+    if (cost !== undefined && !same(cost, current('cost', row.cost_eur))) {
+      await this.setOverride(orderNo, 'cost', String(cost), { refresh: false })
+      withIt.push('cost')
+    }
+    await this.setOverride(orderNo, 'cancel', 'paid')
+    // The mark remembers the amounts typed with it: "Przywróć zlecenie" takes them back too.
+    if (withIt.length > 0) {
+      await this.db
+        .updateTable('board_overrides')
+        .set({ app_value: withIt.join(',') })
+        .where('order_no', '=', orderNo)
+        .where('field', '=', 'cancel')
+        .where('active', '=', 1)
+        .execute()
+    }
   }
 
   /** "Doładunek do zlecenia": a number of an order on the board (not this one), or '-' = not a co-load. */
@@ -1952,12 +2002,24 @@ export class BoardService {
     if (field === 'cancel') {
       const current = await this.db
         .selectFrom('board_overrides')
-        .select('value')
+        .select(['value', 'app_value'])
         .where('order_no', '=', orderNo)
         .where('field', '=', 'cancel')
         .where('active', '=', 1)
         .executeTakeFirst()
       note = current?.value === '0' ? `znowu anulacja płatna z uwag (${this.actor()})` : `przywrócone na tablicę (${this.actor()})`
+      // A paid cancellation marked with its amounts (09.11.2026): the fee and the carrier's amount
+      // typed with it go too — the restored order counts the application's amounts again.
+      const typedWith = current?.value === 'paid' ? (current.app_value ?? '').split(',').filter(f => f === 'rev' || f === 'cost') : []
+      if (typedWith.length > 0) {
+        await this.db
+          .updateTable('board_overrides')
+          .set({ active: 0, superseded_at: this.now(), superseded_note: `usunięta przy przywróceniu zlecenia (${this.actor()})` })
+          .where('order_no', '=', orderNo)
+          .where('field', 'in', typedWith)
+          .where('active', '=', 1)
+          .execute()
+      }
     }
     await this.db
       .updateTable('board_overrides')

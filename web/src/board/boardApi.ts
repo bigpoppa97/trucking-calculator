@@ -526,6 +526,9 @@ export const boardApi = {
   deleteNote: (id: number) => call('DELETE', `/api/board/notes/${id}`),
   setOverride: (orderNo: string, field: string, value: string) =>
     call('POST', `/api/board/orders/${encodeURIComponent(orderNo)}/overrides`, { field, value }),
+  /** "Anulacja płatna" with the fee and the carrier's amount (cost null = an order with a relay). */
+  markPaidCancel: (orderNo: string, rev: string, cost: string | null) =>
+    call('POST', `/api/board/orders/${encodeURIComponent(orderNo)}/paid-cancel`, { rev, cost }),
   clearOverride: (orderNo: string, field: string) =>
     call('DELETE', `/api/board/orders/${encodeURIComponent(orderNo)}/overrides/${encodeURIComponent(field)}`),
   addEvent: (input: { truckId: number; day: string; kind: NoteKind; text: string; place?: string; time?: string | null; autoKey?: string; suppress?: boolean }) =>
