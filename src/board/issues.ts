@@ -91,6 +91,9 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
     if (o.history || o.noCarrier || o.excluded === 'cancelled_board' || (!o.hasFleetLeg && !o.fleetByExport)) continue
     const ref = o.orderNo
     const counted = o.excluded === null
+    // A paid cancellation (09.11.2026): only its money matters — the truck did not drive, so its
+    // dates, places, km, trailer and the margin of a fee are not checked.
+    const paid = o.paidCancel !== null
 
     if (o.draft && today > o.unloadDate) {
       out.push({
@@ -104,7 +107,7 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
     }
 
     const tripDays = Math.round((Date.parse(`${o.unloadDate}T00:00:00Z`) - Date.parse(`${o.loadDate}T00:00:00Z`)) / 86400000)
-    if (!o.draft && tripDays > MAX_TRIP_DAYS) {
+    if (!o.draft && !paid && tripDays > MAX_TRIP_DAYS) {
       const source = o.unloadAtManual ? 'w ręcznej poprawce na tablicy' : 'w aplikacji'
       out.push({
         key: `LONG_TRIP:${ref}`,
@@ -118,7 +121,7 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
       })
     }
 
-    if (o.coLoad && !o.coLoad.valid && counted) {
+    if (o.coLoad && !o.coLoad.valid && counted && !paid) {
       const c = o.coLoad
       const said = c.source === 'manual' ? `jest oznaczone na tablicy jako doładunek do ${c.of}` : `ma w uwagach „Doładunek do ${c.of}”`
       const plate = o.legs.find(l => l.kind === 'fleet')?.plate ?? o.subPlate
@@ -266,7 +269,7 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
           details: { margin: o.margin },
           fingerprint: `${o.rev}|${o.amountsTotal}`,
         })
-      } else if (o.marginPct !== null && o.marginPct > t.marginWarnPct) {
+      } else if (!paid && o.marginPct !== null && o.marginPct > t.marginWarnPct) {
         out.push({
           key: `HIGH_MARGIN:${ref}`,
           kind: 'HIGH_MARGIN',
@@ -281,7 +284,7 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
       const km = fleetLegs.reduce((s, l) => s + (l.kmLoaded ?? 0), 0)
       const legRev = fleetLegs.reduce((s, l) => s + (l.revAlloc ?? 0), 0)
       const kmKnown = fleetLegs.every(l => l.kmLoaded !== null)
-      if (kmKnown && km >= 80) {
+      if (kmKnown && km >= 80 && !paid) {
         const perKm = legRev / km
         if (perKm > t.revPerKmMax || perKm < t.revPerKmMin) {
           out.push({
@@ -297,7 +300,7 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
     }
 
     for (const leg of o.legs) {
-      if (leg.kind !== 'fleet') continue
+      if (leg.kind !== 'fleet' || paid) continue
       for (const stop of leg.stops) {
         if (stop.code) continue
         const k = aliasKey(stop.raw)
@@ -310,7 +313,7 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
 
     const fleetLeg = o.legs.find(l => l.kind === 'fleet')
     // A preliminary order has no trailer yet — nothing to check.
-    if (fleetLeg && counted && !o.draft) {
+    if (fleetLeg && counted && !o.draft && !paid) {
       if (!o.legs[0]?.trailerRaw) {
         const truck = fleetLeg.truckId !== null ? ctx.fleet.byId(fleetLeg.truckId) : undefined
         out.push({
@@ -391,8 +394,8 @@ export function routeGaps(orders: ComputedOrder[], ctx: BoardContext): IssueDraf
   const byTruck = new Map<number, ComputedLeg[]>()
   const orderOf = new Map<ComputedLeg, ComputedOrder>()
   for (const o of orders) {
-    // Same set of legs as the empty-run computation (compute.ts).
-    if (o.excluded !== null || o.noCarrier) continue
+    // Same set of legs as the empty-run computation (compute.ts); a paid cancellation did not drive.
+    if (o.excluded !== null || o.noCarrier || o.paidCancel) continue
     for (const leg of o.legs) {
       // A co-load rides inside its main order — no empty run of its own (28.10.2026).
       if (leg.kind !== 'fleet' || leg.truckId === null || leg.coLoad) continue

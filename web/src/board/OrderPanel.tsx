@@ -14,8 +14,10 @@ import { IssueActions } from './issueActions.js'
 const KIND_LABEL = { fleet: null, own: 'flota własna — poza działem', other: 'spoza floty — poza działem' } as const
 
 /** Km of a leg in the panel: one number, loaded + empty run ("1 016 km"). */
-function legKm(l: OrderDetails['legs'][number]): string {
+function legKm(l: OrderDetails['legs'][number], paidCancel: boolean): string {
   if (l.coLoad) return 'doładunek — bez własnych km'
+  // A paid cancellation did not drive (09.11.2026) — unless "Km razem" says otherwise.
+  if (paidCancel && !l.kmManual) return 'anulacja płatna — bez km'
   const total = l.kmLoaded === null && l.kmEmpty === null ? null : (l.kmLoaded ?? 0) + (l.kmEmpty ?? 0)
   return `${km(total, l.kmEstimated)}${l.kmManual ? ' (poprawione)' : ''}`
 }
@@ -163,6 +165,65 @@ export function OrderPanel({
                   className="h-10 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white disabled:opacity-50"
                 >
                   Przywróć zlecenie
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* "Anulacja płatna" (09.11.2026): the client pays, the truck did not drive. */}
+          {o.paidCancel && (
+            <div className="flex flex-col gap-2 rounded-lg bg-[#FBE8EE] px-3 py-2.5 text-[#5B1830] outline outline-1 -outline-offset-1 outline-[#C77D93]">
+              <span className="text-[11.5px] font-bold uppercase tracking-wider">Anulacja płatna</span>
+              <span className="text-[13px]">
+                Klient odwołał zlecenie i płaci za anulację. Kwoty liczą się w wynikach auta, km nie — auto nie jechało. Na tablicy zamiast paska jest znaczek w dniu
+                załadunku.
+              </span>
+              <span className="text-xs">
+                {o.paidCancel.source === 'manual'
+                  ? `Oznaczone na tablicy ${o.paidCancel.createdAt ? dmy2(o.paidCancel.createdAt) : ''} (${o.paidCancel.createdBy ?? ''})`
+                  : 'Z uwag w aplikacji („Anulacja płatna”).'}
+              </span>
+              <div>
+                {o.paidCancel.source === 'manual' ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void run(() => boardApi.clearOverride(orderNo, 'cancel'))}
+                    className="h-10 rounded-lg bg-[#1E4E9C] px-3.5 font-semibold text-white disabled:opacity-50"
+                  >
+                    Przywróć zlecenie
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void run(() => boardApi.setOverride(orderNo, 'cancel', '0'))}
+                    className="h-10 rounded-lg border border-[#C77D93] bg-white px-3.5 font-semibold text-[#5B1830] disabled:opacity-50"
+                  >
+                    To nie anulacja płatna
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {o.paidCancelDismissed && (
+            <div className="flex flex-col gap-2 rounded-lg bg-[#F1F2F0] px-3 py-2.5 text-[13px] text-[#3D444C]">
+              <span>
+                W uwagach z aplikacji jest „Anulacja płatna”, ale na tablicy wyłączone
+                {(() => {
+                  const ov = data.overrides.find(x => x.field === 'cancel')
+                  return ov ? ` ${dmy2(ov.createdAt)}` : ''
+                })()}{' '}
+                — zlecenie liczy się jak zwykłe.
+              </span>
+              <div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void run(() => boardApi.clearOverride(orderNo, 'cancel'))}
+                  className="h-10 rounded-lg border border-[#C9CEC6] bg-white px-3.5 font-semibold disabled:opacity-50"
+                >
+                  Jednak anulacja płatna
                 </button>
               </div>
             </div>
@@ -316,7 +377,7 @@ export function OrderPanel({
                 {/* Dates and one km figure (28.10.2026): amounts are in the tiles below, loaded / empty km on the board. */}
                 <span className="font-mono text-[12.5px] text-[#545B63]">
                   {dmYear(l.startDate)}–{dmYear(l.endDate)}
-                  {l.kind === 'fleet' && ` · ${legKm(l)}`}
+                  {l.kind === 'fleet' && ` · ${legKm(l, o.paidCancel !== null)}`}
                 </span>
                 {l.kind === 'fleet' && (
                   <span className="text-[13px]">
@@ -517,7 +578,10 @@ export function OrderPanel({
                   )}
                   <p className={fixField === 'cancel' ? 'text-[13px] text-[#3D444C]' : 'text-xs text-[#545B63]'}>
                     {fixField === 'cancel'
-                      ? 'Zlecenie zniknie z tablicy, z wyników i z „Do sprawdzenia”. Zostaje na liście zleceń zestawu, a w tym panelu cofniesz je przyciskiem „Przywróć zlecenie”. Aplikacja anulowania nie cofa — także gdy zmieni coś w zleceniu.'
+                      ? (o.paidCancel ? '' : 'Klient odwołał zlecenie — czy płaci za anulację? ') +
+                        '„Klient nie płaci”: zlecenie zniknie z tablicy i z wyników.' +
+                        (o.paidCancel ? '' : ' „Anulacja płatna”: kwoty z aplikacji liczą się w wynikach auta, km nie; na tablicy znaczek w dniu załadunku.') +
+                        ' Cofniesz to tutaj przyciskiem „Przywróć zlecenie”.'
                       : fixField.startsWith('driver')
                       ? 'Kierowca zlecenia liczy się sam ze zmian kierowców na tablicy — poprawiaj tylko wyjątki.'
                       : fixField.startsWith('km_total')
@@ -527,7 +591,7 @@ export function OrderPanel({
                           : 'Poprawka zostaje, dopóki aplikacja nie zmieni tej samej wartości — wtedy obowiązuje wartość z aplikacji.'}
                   </p>
                   {fixField === 'cancel' ? (
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
                         disabled={busy}
@@ -540,9 +604,25 @@ export function OrderPanel({
                         }
                         className="h-11 rounded-lg bg-[#B42318] px-3.5 font-semibold text-white disabled:opacity-50"
                       >
-                        Anuluj zlecenie
+                        Klient nie płaci
                       </button>
-                      {/* Not "Anuluj" here — next to "Anuluj zlecenie" it would read as the same thing. */}
+                      {!o.paidCancel && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            void run(async () => {
+                              await boardApi.setOverride(orderNo, 'cancel', 'paid')
+                              setFixField(null)
+                              setFixValue('')
+                            })
+                          }
+                          className="h-11 rounded-lg border border-[#C77D93] bg-[#FBE8EE] px-3.5 font-semibold text-[#5B1830] disabled:opacity-50"
+                        >
+                          Anulacja płatna
+                        </button>
+                      )}
+                      {/* Not "Anuluj" here — next to the cancel buttons it would read as the same thing. */}
                       <button type="button" onClick={() => setFixField(null)} className="h-11 rounded-lg border border-[#C9CEC6] px-3.5 font-semibold">
                         Wróć
                       </button>

@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Kysely, Selectable } from 'kysely'
 import type { BoardOrdersTable, DB, ImportMode, NoteKind, ServiceTarget } from '../db/schema.js'
-import { computeOrders, normalizeOrderNo, routeLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
+import { computeOrders, normalizeOrderNo, parsePaidCancel, routeLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
 import { parseNumberInput } from './amount.js'
 import { loadBoardContext, retiredOn, servesBetween, type BoardContext, type TruckRecord } from './context.js'
 import type { DistanceService } from './distances.js'
@@ -121,6 +121,8 @@ export interface WeekBar {
   draft: boolean
   /** Co-load riding with another order on this truck ("doładunek", 28.10.2026): main order number. */
   coLoadOf: string | null
+  /** Paid cancellation ("Anulacja płatna", 09.11.2026): a chip on the loading day, not a bar. */
+  paidCancel: boolean
   inWeek: boolean
   noteLines: string[]
   /** Set when the truck is in service all day on a day of this leg (red outline on the board). */
@@ -217,6 +219,8 @@ export interface TruckOrderRow {
   draft: boolean
   /** Co-load of this order (no km of its own, 28.10.2026). */
   coLoadOf: string | null
+  /** Paid cancellation (09.11.2026): money counts, no km. */
+  paidCancel: boolean
   /** "A → B (zmiana 11.10)"; manual = corrected in the order panel. */
   driver: string
   driverManual: boolean
@@ -749,7 +753,7 @@ export class BoardService {
       const list: AutoTrailerChange[] = []
       let prevTrailer: string | null = null
       for (const { o, l } of legs) {
-        if (o.excluded || o.noCarrier) continue
+        if (o.excluded || o.noCarrier || o.paidCancel) continue
         if (l.trailer && prevTrailer && l.trailer !== prevTrailer) {
           const place = l.stops[0]?.code ?? null
           const where = place ? `${place}: ` : ''
@@ -779,9 +783,9 @@ export class BoardService {
         if (c.entry && c.entry.suppress === 0 && c.entry.day) moved.set(c.leg, { day: c.entry.day, time: c.entry.time })
       }
       // Orders the truck does not carry (cancelled — in the application or on the board —,
-      // unconfirmed, carrier cancelled) give it no trailer, like the automatic changes above.
+      // unconfirmed, carrier cancelled, paid cancellation) give it no trailer, like the automatic changes above.
       const steps = (legsByTruck.get(truckId) ?? [])
-        .filter(x => x.l.trailer && !x.o.excluded && !x.o.noCarrier)
+        .filter(x => x.l.trailer && !x.o.excluded && !x.o.noCarrier && !x.o.paidCancel)
         .map(x => {
           const m = moved.get(x.l)
           return { trailer: x.l.trailer!, since: m?.day ?? x.l.startDate, at: m ? m.time : null }
@@ -893,13 +897,17 @@ export class BoardService {
           .flatMap(r => coveredDays.get(r.id) ?? [])
         // A cancelled forwarding order (no PRZ) is not this truck's job any more — off the board
         // (still listed on the truck page). Decision of 09.10.2026. The same for an order
-        // cancelled on the board ("Anuluj zlecenie", 30.10.2026).
+        // cancelled on the board ("Anuluj zlecenie", 30.10.2026). A paid cancellation (09.11.2026)
+        // shows only in the week of its loading day — as a chip there, the truck did not drive.
         const visible = legs.filter(
-          x => !x.o.noCarrier && x.o.excluded !== 'cancelled_board' && x.l.endDate >= start && x.l.startDate <= end,
+          x =>
+            !x.o.noCarrier &&
+            x.o.excluded !== 'cancelled_board' &&
+            (x.o.paidCancel ? x.l.startDate >= start && x.l.startDate <= end : x.l.endDate >= start && x.l.startDate <= end),
         )
         const bars: WeekBar[] = visible.map(({ o, l }) => {
           const conflict =
-            o.excluded || o.noCarrier ? [] : [...new Set(truckServiceDays.filter(d => d >= l.startDate && d <= l.endDate))].sort()
+            o.excluded || o.noCarrier || o.paidCancel ? [] : [...new Set(truckServiceDays.filter(d => d >= l.startDate && d <= l.endDate))].sort()
           return this.toBar(o, l, start, ctx, openIssueRefs, orderNotes.get(o.orderNo) ?? [], conflict)
         })
 
@@ -988,6 +996,7 @@ export class BoardService {
     if (o.excluded === 'cancelled') noteLines.push('Zlecenie anulowane (status A).')
     if (o.excluded === 'unconfirmed') noteLines.push('Zlecenie niezatwierdzone (status N).')
     if (o.noCarrier) noteLines.push('Zlecenie spedycyjne anulowane — auto go nie wiezie.')
+    if (o.paidCancel) noteLines.push('Anulacja płatna — klient płaci, auto nie jechało (bez km).')
     if (l.coLoad && o.coLoad) noteLines.push(`Doładunek do ${o.coLoad.of} — bez własnych km.`)
     if (o.coLoads.length > 0 && l.kind === 'fleet') noteLines.push(`Doładunki: ${o.coLoads.join(', ')}.`)
     if (l.amountGross !== null && l.amount !== null) noteLines.push(`Kwota po skoncie: ${eurText(l.amount)} (${eurText(l.amountGross)} − 1,5%).`)
@@ -1018,6 +1027,7 @@ export class BoardService {
       noCarrier: o.noCarrier,
       draft: o.draft,
       coLoadOf: l.coLoad && o.coLoad ? o.coLoad.of : null,
+      paidCancel: o.paidCancel !== null,
       inWeek: l.startDate >= weekStartIso,
       noteLines,
       serviceConflict,
@@ -1078,6 +1088,7 @@ export class BoardService {
         missing: o.missing,
         draft: o.draft,
         coLoadOf: l.coLoad && o.coLoad ? o.coLoad.of : null,
+        paidCancel: o.paidCancel !== null,
         ...((): { driver: string; driverManual: boolean } => {
           const d = legDriversOf(o, l, ctx)
           return { driver: d.text, driverManual: d.manual }
@@ -1095,7 +1106,7 @@ export class BoardService {
         .flatMap(o => o.legs.filter(l => l.kind === 'fleet' && l.truckId === truckId).map(l => ({ o, l })))
         .sort((a, b) => a.l.startDate.localeCompare(b.l.startDate) || a.l.endDate.localeCompare(b.l.endDate) || a.l.orderNo.localeCompare(b.l.orderNo))
     }
-    const live = todayLegs.filter(x => !x.o.excluded && !x.o.noCarrier)
+    const live = todayLegs.filter(x => !x.o.excluded && !x.o.noCarrier && !x.o.paidCancel)
     const current = [...live].reverse().find(x => x.l.startDate <= today && x.l.endDate >= today)
     const next = live.filter(x => x.l.startDate > today && x.l.startDate <= addDays(today, 14)).sort((a, b) => a.l.startDate.localeCompare(b.l.startDate))[0]
     const pick = current ?? next
@@ -1109,7 +1120,7 @@ export class BoardService {
     if (todayRow) {
       header = { trailer: todayRow.trailer, trailerTypePl: todayRow.trailerTypePl, copyText: todayRow.copyText, required: todayRow.required }
     } else {
-      const latest = [...todayLegs].reverse().find(x => x.l.startDate <= today && x.l.trailer && !x.o.excluded && !x.o.noCarrier)
+      const latest = [...todayLegs].reverse().find(x => x.l.startDate <= today && x.l.trailer && !x.o.excluded && !x.o.noCarrier && !x.o.paidCancel)
       const trailer = latest?.l.trailer ?? truck.trailerPlate
       const rec = trailer ? ctx.trailers.get(trailer) : undefined
       const typeEn = rec?.typeEn ?? 'cooler 2.61m rollerbed'
@@ -1401,7 +1412,11 @@ export class BoardService {
               ? 'nie jest doładunkiem'
               : `do ${value}`
             : field === 'cancel'
-              ? 'anulowane na tablicy'
+              ? value === 'paid'
+                ? 'anulacja płatna'
+                : value === '0'
+                  ? 'nie jest anulacją płatną'
+                  : 'anulowane na tablicy'
               : value
     const history = [
       ...changes.map(c => ({
@@ -1427,7 +1442,15 @@ export class BoardService {
       ...overrides
         .filter(ov => ov.field === 'cancel')
         .flatMap(ov => [
-          { at: ov.created_at, text: `anulowane na tablicy (${ov.created_by})` },
+          {
+            at: ov.created_at,
+            text:
+              ov.value === 'paid'
+                ? `anulacja płatna na tablicy (${ov.created_by})`
+                : ov.value === '0'
+                  ? `nie jest anulacją płatną, wbrew uwagom (${ov.created_by})`
+                  : `anulowane na tablicy (${ov.created_by})`,
+          },
           ...(ov.active || !ov.superseded_at ? [] : [{ at: ov.superseded_at, text: ov.superseded_note ?? 'przywrócone na tablicę' }]),
         ]),
     ].sort((a, b) => a.at.localeCompare(b.at))
@@ -1479,6 +1502,18 @@ export class BoardService {
           o.excluded === 'cancelled_board' && o.overrides['cancel']
             ? { createdBy: o.overrides['cancel'].createdBy, createdAt: o.overrides['cancel'].createdAt }
             : null,
+        /**
+         * Paid cancellation (09.11.2026): from the notes or marked on the board (who and when);
+         * null = not one. `dismissed` = the notes say so, but it was turned off on the board.
+         */
+        paidCancel: o.paidCancel
+          ? {
+              source: o.paidCancel.source,
+              createdBy: o.paidCancel.source === 'manual' ? (o.overrides['cancel']?.createdBy ?? '') : null,
+              createdAt: o.paidCancel.source === 'manual' ? (o.overrides['cancel']?.createdAt ?? '') : null,
+            }
+          : null,
+        paidCancelDismissed: o.overrides['cancel']?.value === '0' && parsePaidCancel(o.notesApp),
         noCarrier: o.noCarrier,
         missing: o.missing,
         notesApp: o.notesApp,
@@ -1852,7 +1887,12 @@ export class BoardService {
     const row = await this.requireOrder(orderNo)
     if (field === 'cancel') {
       if (row.draft === 1) throw new BoardError('DRAFT_CANCEL', 'Zlecenie wstępne usuń przyciskiem „Usuń”.')
-      value = '1'
+      // '1' = the client does not pay, 'paid' = paid cancellation (09.11.2026), '0' = not a paid
+      // cancellation although the notes say so. Anything else (older clients) = '1'.
+      if (value === '0' && !parsePaidCancel(row.notes_app)) {
+        throw new BoardError('NOT_PAID_CANCEL', 'W uwagach z aplikacji nie ma „Anulacja płatna” — nie ma czego wyłączać.')
+      }
+      value = value === 'paid' || value === '0' ? value : '1'
     }
     if (AT_OVERRIDES.has(field)) value = await this.resolveAtOverride(row, field as 'load_at' | 'unload_at', value)
     if (field === 'prz') value = await this.checkPrzOverride(row, value)
@@ -1880,7 +1920,7 @@ export class BoardService {
         .execute()
       // Cancelled on the board: the order's import events are handled too — "zniknęło" (the
       // application deleted it) and superseded corrections no longer need a decision.
-      if (field === 'cancel') {
+      if (field === 'cancel' && value === '1') {
         await trx
           .updateTable('board_issues')
           .set({ status: 'resolved', resolution: 'cancelled-on-board', resolved_by: this.actor(), updated_at: now })
@@ -1906,8 +1946,19 @@ export class BoardService {
   }
 
   async clearOverride(orderNo: string, field: string) {
-    // "Przywróć" of a cancelled order (30.10.2026) is told in the history with who did it.
-    const note = field === 'cancel' ? `przywrócone na tablicę (${this.actor()})` : 'usunięta ręcznie'
+    // "Przywróć" of a cancelled order (30.10.2026) is told in the history with who did it; taking
+    // back "nie jest anulacją płatną" makes the notes count again (09.11.2026).
+    let note = 'usunięta ręcznie'
+    if (field === 'cancel') {
+      const current = await this.db
+        .selectFrom('board_overrides')
+        .select('value')
+        .where('order_no', '=', orderNo)
+        .where('field', '=', 'cancel')
+        .where('active', '=', 1)
+        .executeTakeFirst()
+      note = current?.value === '0' ? `znowu anulacja płatna z uwag (${this.actor()})` : `przywrócone na tablicę (${this.actor()})`
+    }
     await this.db
       .updateTable('board_overrides')
       .set({ active: 0, superseded_at: this.now(), superseded_note: note })

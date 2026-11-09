@@ -537,6 +537,11 @@ export function TruckPage({
                               doładunek
                             </span>
                           )}
+                          {o.paidCancel && (
+                            <span className="ml-1 rounded bg-[#FBE8EE] px-1 text-xs font-semibold text-[#5B1830]" title="Anulacja płatna — klient płaci, auto nie jechało (bez km)">
+                              anulacja płatna
+                            </span>
+                          )}
                           {status && <span className="ml-1 text-xs">({status})</span>}
                         </td>
                         <td className={`px-2 py-2 ${o.excluded === 'cancelled' || o.excluded === 'cancelled_board' ? 'line-through' : ''}`}>{o.title}</td>

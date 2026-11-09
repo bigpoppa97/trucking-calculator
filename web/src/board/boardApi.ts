@@ -32,6 +32,8 @@ export interface WeekBar {
   draft: boolean
   /** Co-load ("doładunek") riding with this main order on the truck — no km of its own. */
   coLoadOf: string | null
+  /** Paid cancellation ("Anulacja płatna", 09.11.2026): money counts, no km; a chip on the board. */
+  paidCancel: boolean
   inWeek: boolean
   noteLines: string[]
   /** Set when the truck is in service all day on a day of this leg. */
@@ -166,6 +168,8 @@ export interface TruckOrderRow {
   missing: boolean
   draft: boolean
   coLoadOf: string | null
+  /** Paid cancellation ("Anulacja płatna", 09.11.2026): money counts, no km; a chip on the board. */
+  paidCancel: boolean
   driver: string
   driverManual: boolean
 }
@@ -261,6 +265,10 @@ export interface OrderDetails {
     excluded: string | null
     /** "Anuluj zlecenie" on the board (30.10.2026): who and when; null = not cancelled on the board. */
     cancelledOnBoard: { createdBy: string; createdAt: string } | null
+    /** Paid cancellation (09.11.2026): from the notes, or marked on the board (who, when). */
+    paidCancel: { source: 'notes' | 'manual'; createdBy: string | null; createdAt: string | null } | null
+    /** The notes say "Anulacja płatna", but it was turned off on the board. */
+    paidCancelDismissed: boolean
     noCarrier: boolean
     missing: boolean
     notesApp: string

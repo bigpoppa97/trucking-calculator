@@ -87,16 +87,28 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
    Zlecenie główne na innym aucie, nie ma go na tablicy albo anulowane → zwykłe zlecenie i pozycja w „Do sprawdzenia”.
 13. Pozycje „Do sprawdzenia” danego zlecenia (pomarańczowe pola w panelu) mają te same przyciski co na liście —
    można je rozwiązać od razu z panelu; przy różnicy kwot przepinki „Popraw wpis przepinki” otwiera wpis do poprawy.
-14. **Anuluj zlecenie** (klient odwołał): panel → „Popraw ręcznie” → „Anuluj zlecenie”. Zlecenie znika z tablicy,
+14. **Anuluj zlecenie** (klient odwołał): panel → „Popraw ręcznie” → „Anuluj zlecenie” → **„Klient nie płaci”**.
+   Zlecenie znika z tablicy,
    z wyników i z „Do sprawdzenia”, nie przesuwa pustych dojazdów, a jego późniejsze zniknięcie z eksportu nie jest
    zgłaszane. Zostaje na liście zleceń zestawu („anulowane na tablicy”); w jego panelu „Przywróć zlecenie”.
    Obowiązuje, dopóki ktoś go nie przywróci — aplikacja go nie cofa. Zlecenie anulowane w aplikacji (status A
    w zleceniu klienta) zostaje na tablicy przekreślone — tym samym przyciskiem można je zdjąć z tablicy.
    Starsza poprawka „Wyłącz z wyników” działa dalej (widać ją w „Ręcznych poprawkach”), nowych się nie dodaje.
+15. **Anulacja płatna** (klient odwołał, ale płaci — nota obciążeniowa): w uwagach zlecenia `Anulacja płatna`
+   (wielkość liter i polskie znaki bez znaczenia; też „Płatna anulacja”, „Anulowane płatne”) albo panel → „Popraw
+   ręcznie” → „Anuluj zlecenie” → **„Anulacja płatna”**. Kwoty z aplikacji (zwykle obniżona stawka klienta i część
+   kwoty dla przewoźnika; inne — „Stawka klienta” / „Koszt przewoźnika”) liczą się w marży, przychodzie i sumach auta
+   z eksportu — także gdy zlecenie spedycyjne albo klienta ma w aplikacji status A. Km: 0 (auto nie jechało), poza
+   kolejnością km — pusty dojazd następnego zlecenia liczy się od poprzedniego rozładunku. Bez kontroli trasy, marży
+   (> 40%), €/km, dat i naczepy; nie zmienia naczepy auta. Na tablicy różowy znaczek w dniu i godzinie załadunku
+   (zamiast paska — dni auta zostają wolne), w legendzie „Anulacja płatna”; na liście zleceń zestawu „anulacja płatna”.
+   Panel: ramka „Anulacja płatna” — z uwag: „To nie anulacja płatna” (wyłącza, wbrew uwagom; „Jednak anulacja płatna”
+   cofa), z tablicy: „Przywróć zlecenie”. Gdy auto jednak dojechało pusto na załadunek — „Km razem” na tym zleceniu
+   (i „Pozycja auta”, jeśli następne zlecenie zaczyna się tam). Zniknięcie z eksportu dalej jest zgłaszane.
 
 Ręczne poprawki (panel zlecenia → „Popraw ręcznie”) obowiązują, dopóki aplikacja nie zmieni tej samej wartości —
 wtedy tablica bierze nową wartość z aplikacji i zgłasza to na liście. Wyjątki: „Doładunek do zlecenia” i „Anuluj
-zlecenie” obowiązują, dopóki ktoś ich nie usunie.
+zlecenie” (obie odmiany) obowiązują, dopóki ktoś ich nie usunie.
 
 Tablica: wiersz z dniami (ciemny pasek, „dziś” na niebiesko) zostaje u góry ekranu przy przewijaniu; cienkie linie
 oddzielają dni, kolumna „dziś” jest lekko podbarwiona. Pasek zlecenia zaczyna się o godzinie załadunku i kończy o godzinie

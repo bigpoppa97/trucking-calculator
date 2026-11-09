@@ -38,6 +38,13 @@ import { parseAtValue } from './times.js'
  *  - doładunek (co-load, 28.10.2026): "Doładunek do <order>" in the notes (or the board
  *    correction) = the truck carries it alongside the main order: 0 km of its own, out of
  *    the km sequence and the route checks; money counts as usual
+ *  - anulacja płatna (paid cancellation, 09.11.2026): the client cancelled but pays a fee (a debit
+ *    note, usually a lower rate; the carrier usually gets part of its amount). "Anulacja płatna"
+ *    in the notes, or "Anuluj zlecenie → Anulacja płatna" on the board (correction cancel = 'paid';
+ *    '0' = not one, whatever the notes say). The truck did not drive: 0 km, out of the km sequence,
+ *    the route / margin / trailer checks and the week bars (a chip on the loading day); the money
+ *    (rates from the application or corrected on the board) counts as usual on the export's
+ *    truck — also when the forwarding order is cancelled (status A) in the application
  */
 
 /** Skonto for quick payment some carriers give (28.10.2026). */
@@ -48,6 +55,11 @@ export const SKONTO_TOLERANCE = 0.5
 export type LegKind = 'fleet' | 'own' | 'other'
 /** cancelled = status A in the application; cancelled_board = "Anuluj zlecenie" on the board (30.10.2026). */
 export type Exclusion = 'cancelled' | 'cancelled_board' | 'unconfirmed' | 'manual' | null
+
+/** Paid cancellation (09.11.2026): from the application's notes or marked on the board. */
+export interface PaidCancelInfo {
+  source: 'notes' | 'manual'
+}
 
 export interface Stop {
   raw: string
@@ -154,6 +166,11 @@ export interface ComputedOrder {
   coLoad: CoLoadInfo | null
   /** Orders riding as co-loads with this one (valid ones only). */
   coLoads: string[]
+  /**
+   * Paid cancellation ("Anulacja płatna", 09.11.2026): the client cancelled and pays a fee. Money
+   * counts, km do not (the truck did not drive); null = an ordinary order.
+   */
+  paidCancel: PaidCancelInfo | null
   legs: ComputedLeg[]
   overrides: Record<string, OverrideInfo>
   missing: boolean
@@ -253,6 +270,15 @@ export function parseCoLoad(text: string): string | null {
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null
 }
 
+/**
+ * "Anulacja płatna" in the notes (09.11.2026): case and Polish letters do not matter; also
+ * "Płatna anulacja", "Anulowane płatne", "Anulacja — płatna". "Anulacja niepłatna" is not one.
+ */
+export function parsePaidCancel(text: string): boolean {
+  const folded = foldDiacritics(text).toUpperCase()
+  return /\bANUL[A-Z]*\W+PLATN/.test(folded) || /(?<![A-Z])PLATN[A-Z]*\W+ANUL/.test(folded)
+}
+
 /** Order number typed on the board ("79-1234-26", "79-1234-26-S", "79 1234 26"); null = not one. */
 export function normalizeOrderNo(raw: string): string | null {
   const m = /^\s*(\d{1,4})\s*[- ]\s*(\d{1,6})\s*[- ]\s*(\d{2})(?:\s*-?\s*S)?\s*$/i.exec(raw)
@@ -265,13 +291,14 @@ export function linkCoLoads(orders: ComputedOrder[], extra: ComputedOrder[] = []
   for (const o of [...extra, ...orders]) byNo.set(o.orderNo, o)
   for (const o of orders) {
     const c = o.coLoad
-    if (!c || c.problem === 'no_ref') continue
+    // A paid cancellation did not drive at all — it rides with nothing.
+    if (!c || c.problem === 'no_ref' || o.paidCancel) continue
     const main = byNo.get(c.of)
     const fleetTrucks = (x: ComputedOrder) => new Set(x.legs.filter(l => l.kind === 'fleet' && l.truckId !== null).map(l => l.truckId!))
     c.mainPlates = main ? [...new Set(main.legs.filter(l => l.kind === 'fleet').map(l => l.plate))] : []
     if (c.of === o.orderNo) c.problem = 'self'
     else if (!main) c.problem = 'missing'
-    else if (main.excluded === 'cancelled' || main.excluded === 'cancelled_board' || main.noCarrier) c.problem = 'cancelled'
+    else if (main.excluded === 'cancelled' || main.excluded === 'cancelled_board' || main.noCarrier || main.paidCancel) c.problem = 'cancelled'
     else {
       const trucks = fleetTrucks(main)
       const shared = o.legs.filter(l => l.kind === 'fleet' && l.truckId !== null && trucks.has(l.truckId))
@@ -316,9 +343,16 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
   const extraCostManual = overrides['extra_cost'] !== undefined
   const extraCost = extraCostManual ? (num(overrides['extra_cost']!.value) ?? 0) : ferries.total
 
+  // "Anuluj zlecenie" on the board: '1' = the client does not pay (off the board), 'paid' = paid
+  // cancellation, '0' = not a paid cancellation whatever the notes say (09.11.2026). A paid
+  // cancellation counts even when the application says A — the client pays for it.
+  const cancelMark = overrides['cancel']?.value
   let excluded: Exclusion = null
-  if (overrides['cancel']?.value === '1') excluded = 'cancelled_board'
+  let paidCancel: PaidCancelInfo | null = null
+  if (cancelMark === '1') excluded = 'cancelled_board'
+  else if (cancelMark === 'paid' && !isDraft) paidCancel = { source: 'manual' }
   else if (overrides['exclude']?.value === '1') excluded = 'manual'
+  else if (cancelMark !== '0' && !isDraft && parsePaidCancel(row.notes_app)) paidCancel = { source: 'notes' }
   else if (row.status_client === 'A') excluded = 'cancelled'
   else if (row.status_client === 'N') excluded = 'unconfirmed'
 
@@ -487,7 +521,8 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     margin,
     marginPct,
     excluded,
-    noCarrier: row.status_sped === 'A' && !entry,
+    // A paid cancellation stays on the export's truck even with the forwarding order cancelled.
+    noCarrier: row.status_sped === 'A' && !entry && paidCancel === null,
     notesApp: row.notes_app,
     prz,
     przErrors: parsed.errors,
@@ -495,6 +530,7 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     skonto,
     coLoad: coLoadOf(row, overrides),
     coLoads: [],
+    paidCancel,
     legs,
     overrides,
     missing: row.missing_since_import_id !== null,
@@ -603,6 +639,16 @@ async function attachKilometres(
   for (const order of orders) {
     if (order.excluded !== null) continue
     if (order.noCarrier) continue
+    // A paid cancellation: the truck did not drive — no km, and the next empty run starts where
+    // the truck really was (the previous order's unloading), not at this order's unloading.
+    if (order.paidCancel) {
+      for (const leg of order.legs) {
+        if (leg.kind !== 'fleet') continue
+        leg.kmLoaded = 0
+        leg.kmEmpty = 0
+      }
+      continue
+    }
     for (const leg of order.legs) {
       if (leg.kind !== 'fleet' || leg.truckId === null) continue
       // A co-load rides inside its main order's run: no km, the next empty run starts after the main order.

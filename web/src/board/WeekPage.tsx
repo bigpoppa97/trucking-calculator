@@ -5,7 +5,7 @@ import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { RequiredBadges, SERVICE_COLORS, ServiceDialog } from './serviceUi.js'
 import { DriverChangeDialog, DriverWarnings } from './driversUi.js'
-import { COLOAD_COLORS, DayGrid, TruckTimeline, nowFractionFor } from './TruckTimeline.js'
+import { COLOAD_COLORS, DayGrid, PAID_CANCEL_COLORS, TruckTimeline, nowFractionFor } from './TruckTimeline.js'
 import { DraftDialog } from './DraftDialog.js'
 
 /**
@@ -182,6 +182,7 @@ export function WeekPage({
           <Legend color="#DCE5F2" label="Przepinka" dashed />
           <Legend color="#F4F6FA" label="Zlecenie wstępne" dashedGray />
           <Legend color={COLOAD_COLORS.bg} label="Doładunek" />
+          <Legend color={PAID_CANCEL_COLORS.bg} label="Anulacja płatna" chip={PAID_CANCEL_COLORS.border} />
           <Legend color="#F4C77A" label="Do sprawdzenia" />
           <Legend color="#ECEEF0" label="Załadunek w poprzednim tygodniu" border />
           <Legend color={SERVICE_COLORS.light} label="Serwis" />
@@ -409,6 +410,7 @@ function Legend({
   dashedGray,
   border,
   conflict,
+  chip,
 }: {
   color: string
   label: string
@@ -416,16 +418,18 @@ function Legend({
   dashedGray?: boolean
   border?: boolean
   conflict?: boolean
+  /** A chip under the bars (paid cancellation, 09.11.2026): round, with this border colour. */
+  chip?: string
 }) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <span
-        className="inline-block h-3 w-[18px] rounded-[3px]"
+        className={`inline-block h-3 w-[18px] ${chip ? 'rounded-full' : 'rounded-[3px]'}`}
         style={{
           background: color,
           outline: conflict ? `2px solid ${SERVICE_COLORS.conflict}` : dashed ? '2px dashed #1E4E9C' : dashedGray ? '2px dashed #7C8794' : undefined,
           outlineOffset: dashed || dashedGray || conflict ? -2 : undefined,
-          boxShadow: border ? 'inset 0 0 0 1px #C9CEC6' : undefined,
+          boxShadow: chip ? `inset 0 0 0 1px ${chip}` : border ? 'inset 0 0 0 1px #C9CEC6' : undefined,
         }}
       />
       {label}

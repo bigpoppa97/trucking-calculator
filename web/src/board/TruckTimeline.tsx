@@ -17,6 +17,13 @@ import { SERVICE_COLORS, ServiceStrip } from './serviceUi.js'
 export const BAR_MIN_DAYS = 0.5
 /** Room a chip takes for stacking (it is at most one day wide and may run into the next day). */
 export const CHIP_DAYS = 0.95
+/** A paid cancellation chip is wider (09.11.2026): number, "anulacja płatna" and the margin should fit. */
+export const PAID_CHIP_DAYS = 1.5
+
+/** Width of a chip in days. */
+export function chipDays(item: ChipItem): number {
+  return item.kind === 'paid' ? PAID_CHIP_DAYS : CHIP_DAYS
+}
 
 /** "HH:MM" → fraction of a day; null when unknown. */
 function dayFraction(time: string | null | undefined): number | null {
@@ -83,29 +90,52 @@ export interface PlacedEvent {
   lane: number
 }
 
-/** Day events under the bars at their hour (29.10.2026); chips that would overlap go to the next row. */
-export function placeEvents(events: WeekEvent[], days: string[]): PlacedEvent[] {
-  const items = events
-    .map(event => {
-      const d = days.indexOf(event.day)
-      return d < 0 ? null : { event, x: d + (dayFraction(event.time) ?? 0) }
+/** A chip under the bars: a day event, or a paid cancellation at its loading day and hour (09.11.2026). */
+export type ChipItem = { kind: 'event'; event: WeekEvent } | { kind: 'paid'; bar: WeekBar }
+
+export interface PlacedChip {
+  item: ChipItem
+  x: number
+  lane: number
+}
+
+/** Chips under the bars at their hour (29.10.2026); chips that would overlap go to the next row. */
+export function placeChips(chips: ChipItem[], days: string[]): PlacedChip[] {
+  const items = chips
+    .map(item => {
+      const day = item.kind === 'event' ? item.event.day : item.bar.startDate
+      const time = item.kind === 'event' ? item.event.time : item.bar.startTime
+      const d = days.indexOf(day)
+      return d < 0 ? null : { item, x: d + (dayFraction(time) ?? 0) }
     })
-    .filter((it): it is { event: WeekEvent; x: number } => it !== null)
+    .filter((it): it is { item: ChipItem; x: number } => it !== null)
     .sort((a, b) => a.x - b.x)
   const laneEnds: number[] = []
-  return items.map(({ event, x }) => {
-    const from = Math.min(x, 7 - CHIP_DAYS)
+  return items.map(({ item, x }) => {
+    const width = chipDays(item)
+    const from = Math.min(x, 7 - width)
     let lane = laneEnds.findIndex(e => e <= from + 1e-9)
     if (lane === -1) {
       lane = laneEnds.length
-      laneEnds.push(from + CHIP_DAYS)
-    } else laneEnds[lane] = from + CHIP_DAYS
-    return { event, x, lane }
+      laneEnds.push(from + width)
+    } else laneEnds[lane] = from + width
+    return { item, x, lane }
   })
+}
+
+/** Day events under the bars at their hour (29.10.2026); chips that would overlap go to the next row. */
+export function placeEvents(events: WeekEvent[], days: string[]): PlacedEvent[] {
+  return placeChips(
+    events.map(event => ({ kind: 'event' as const, event })),
+    days,
+  ).map(c => ({ event: (c.item as { kind: 'event'; event: WeekEvent }).event, x: c.x, lane: c.lane }))
 }
 
 /** Co-load riding with another order ("doładunek", 28.10.2026): light purple. */
 export const COLOAD_COLORS = { bg: '#E9E0F5', fg: '#2E1F47' } as const
+
+/** Paid cancellation chip ("Anulacja płatna", 09.11.2026): rose — a colour no other mark uses. */
+export const PAID_CANCEL_COLORS = { bg: '#FBE8EE', fg: '#5B1830', border: '#C77D93' } as const
 
 export function barColors(b: WeekBar, selected: boolean): { bg: string; fg: string; outline: string } {
   if (selected) return { bg: '#1E4E9C', fg: '#FFFFFF', outline: b.serviceConflict ? `2px solid #FCA5A5` : b.prz || b.draft ? '2px dashed #FFFFFF' : 'none' }
@@ -209,9 +239,16 @@ export function TruckTimeline({
   onOpenEvent,
   onOpenTrailerChange,
 }: TruckTimelineProps) {
-  const bars = placeBars(row.bars)
+  // A paid cancellation (09.11.2026) is not a bar: the truck did not drive — a chip on the loading day.
+  const bars = placeBars(row.bars.filter(b => !b.paidCancel))
   const lanes = bars.reduce((m, b) => Math.max(m, b.lane), 0)
-  const chips = placeEvents(row.events, days)
+  const chips = placeChips(
+    [
+      ...row.bars.filter(b => b.paidCancel).map(bar => ({ kind: 'paid' as const, bar })),
+      ...row.events.map(event => ({ kind: 'event' as const, event })),
+    ],
+    days,
+  )
   const chipRows = chips.reduce((m, c) => Math.max(m, c.lane + 1), 0)
   const todayIndex = nowFraction !== null ? Math.min(6, Math.floor(nowFraction * 7)) : null
   return (
@@ -297,23 +334,35 @@ export function TruckTimeline({
       <ServiceStrip services={row.services} weekStart={weekStart} onOpen={onOpenService} />
       {chipRows > 0 && (
         <div className="relative mt-1.5" style={{ height: chipRows * CHIP_ROW_H }}>
-          {chips.map(({ event: e, x, lane }, i) => (
+          {chips.map(({ item, x, lane }, i) => (
             <div
-              key={e.driverChangeId !== undefined ? `d${e.driverChangeId}` : e.id !== null ? `n${e.id}` : `a${e.autoKey ?? i}`}
+              key={
+                item.kind === 'paid'
+                  ? `p${item.bar.key}`
+                  : item.event.driverChangeId !== undefined
+                    ? `d${item.event.driverChangeId}`
+                    : item.event.id !== null
+                      ? `n${item.event.id}`
+                      : `a${item.event.autoKey ?? i}`
+              }
               className="absolute flex"
               style={{
                 top: lane * CHIP_ROW_H,
                 // at its hour; a chip late on Sunday is moved left to stay inside the week
-                left: `min(${startCss(x)}, calc(100% - (100% - 24px) * ${CHIP_DAYS / 7}))`,
-                maxWidth: `calc((100% - 24px) * ${CHIP_DAYS / 7})`,
+                left: `min(${startCss(x)}, calc(100% - (100% - 24px) * ${chipDays(item) / 7}))`,
+                maxWidth: `calc((100% - 24px) * ${chipDays(item) / 7})`,
               }}
             >
-              <EventChip
-                e={e}
-                onOpenDriverChange={onOpenDriverChange}
-                onOpenEvent={onOpenEvent}
-                onOpenTrailerChange={onOpenTrailerChange}
-              />
+              {item.kind === 'paid' ? (
+                <PaidCancelChip b={item.bar} selected={selected === item.bar.orderNo} showMoney={showMoney} onSelect={onSelect} />
+              ) : (
+                <EventChip
+                  e={item.event}
+                  onOpenDriverChange={onOpenDriverChange}
+                  onOpenEvent={onOpenEvent}
+                  onOpenTrailerChange={onOpenTrailerChange}
+                />
+              )}
             </div>
           ))}
         </div>
@@ -342,6 +391,33 @@ export function TruckTimeline({
         />
       )}
     </div>
+  )
+}
+
+/**
+ * Paid cancellation (09.11.2026): the client pays, the truck did not drive — a chip at the loading
+ * day and hour instead of a bar, so the truck's days stay free for other orders. Opens the order panel.
+ */
+function PaidCancelChip({ b, selected, showMoney, onSelect }: { b: WeekBar; selected: boolean; showMoney: boolean; onSelect: (orderNo: string) => void }) {
+  const colors = selected
+    ? { bg: '#1E4E9C', fg: '#FFFFFF', border: '#1E4E9C' }
+    : b.issue
+      ? { bg: '#F4C77A', fg: '#3A2400', border: '#C9962F' }
+      : PAID_CANCEL_COLORS
+  const text = [b.orderNo, 'anulacja płatna', b.issue ? 'Sprawdź' : null, showMoney ? signedEur(b.margin) : null].filter(Boolean).join(' · ')
+  return (
+    <button
+      type="button"
+      data-testid={`paid-${b.key}`}
+      onClick={() => onSelect(b.orderNo)}
+      aria-label={`${b.orderNo}, anulacja płatna, ${b.title}, załadunek ${dmTime(b.startDate, b.startTime)}${b.issue ? ', do sprawdzenia' : ''}`}
+      title={`${b.orderNo} · ${b.title}\nAnulacja płatna — klient płaci, auto nie jechało (bez km).\nPlanowany załadunek ${dmTime(b.startDate, b.startTime)}`}
+      className="inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] font-semibold"
+      style={{ background: colors.bg, color: colors.fg, borderColor: colors.border }}
+    >
+      <Icon name="ban" size={12} />
+      <span className="truncate">{text}</span>
+    </button>
   )
 }
 

@@ -2034,3 +2034,122 @@ describe('05.11.2026 — a wrong year in the unloading date (79-1585-26: 04.10.2
     expect((await board.orderDetails('79-1-26')).order.loadDate).toBe('2026-09-21')
   })
 })
+
+describe('09.11.2026 — "Anulacja płatna": the client cancelled but pays, the truck did not drive', () => {
+  const rows: Row[] = [
+    { no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 3000, cost: 1200, sub: 'AA1001A', trailer: 'TR200' },
+    // Cancelled by the client, a fee instead of the rate; this carrier gets nothing (margin 100%).
+    { no: '79-2-26', from: 'Budapest', ld: '2026-09-23', to: 'Warszawa', ud: '2026-09-24', rev: 400, cost: 0, sub: 'AA1001A', trailer: 'TR960PE', notes: 'Anulacja płatna — nota obciążeniowa' },
+    { no: '79-3-26', from: 'Budapest', ld: '2026-09-25', to: 'Warszawa', ud: '2026-09-26', rev: 1300, cost: 1000, sub: 'AA1001A', trailer: 'TR200' },
+  ]
+  const truckRow = async (week = '2026-09-21') => (await board.weekView(week)).trucks.find(t => t.plate === 'AA1001A')!
+
+  it('"Anulacja płatna" in the notes: money counts, 0 km, out of the km sequence and the checks; a chip, not a bar', async () => {
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
+    const week = await board.weekView('2026-09-21')
+    const row = week.trucks.find(t => t.plate === 'AA1001A')!
+    const paid = row.bars.find(b => b.orderNo === '79-2-26')!
+    expect(paid).toMatchObject({ paidCancel: true, kmLoaded: 0, kmEmpty: 0, margin: 400 })
+    expect(paid.noteLines).toContain('Anulacja płatna — klient płaci, auto nie jechało (bez km).')
+    expect(row.bars.filter(b => b.orderNo !== '79-2-26').every(b => !b.paidCancel)).toBe(true)
+    expect(row.totals.revenue).toBe(4700)
+    expect(row.totals.margin).toBe(1800 + 400 + 300)
+    expect(week.kpis.orders).toBe(3)
+    const km13 = row.bars.filter(b => b.orderNo !== '79-2-26').reduce((s, b) => s + (b.kmLoaded ?? 0) + (b.kmEmpty ?? 0), 0)
+    expect(row.totals.km).toBe(km13)
+
+    // The next empty run starts where the truck really was: Budapest (79-1-26), not Warszawa.
+    const next = (await board.orderDetails('79-3-26')).legs[0]!
+    expect([next.kmEmptyFrom, next.kmEmpty]).toEqual(['Budapeszt (Vecsés)', 0])
+    // Its trailer is not the truck's: no trailer change TR200 → TR960PE → TR200.
+    expect(row.events.filter(e => e.kind === 'trailer')).toEqual([])
+    expect(row.trailer).toBe('TR200')
+    // A fee with nothing for the carrier is a 100% margin — not a missing PRZ.
+    const open = (await issuesOf()).filter(i => i.ref === '79-2-26' || JSON.stringify(i.details).includes('79-2-26'))
+    expect(open).toEqual([])
+
+    const d = await board.orderDetails('79-2-26')
+    expect(d.order.paidCancel).toEqual({ source: 'notes', createdBy: null, createdAt: null })
+    expect(d.order.excluded).toBeNull()
+    expect(d.legs[0]).toMatchObject({ kmLoaded: 0, kmEmpty: 0 })
+    const listed = (await board.truckView(row.id, '2026-09-21', '2026-09-27')).orders.find(o => o.orderNo === '79-2-26')
+    expect(listed).toMatchObject({ paidCancel: true, km: 0, revAlloc: 400 })
+  })
+
+  it('counts on the export truck also with the forwarding order (or the client order) cancelled in the application', async () => {
+    await board.importFile(await xlsx([rows[0]!, { ...rows[1]!, status: 'A', statusSped: 'A', cost: 150 }, rows[2]!]), 'a.xlsx', 'daily')
+    const row = await truckRow()
+    expect(row.bars.find(b => b.orderNo === '79-2-26')).toMatchObject({ paidCancel: true, noCarrier: false, excluded: null })
+    expect(row.totals.margin).toBe(1800 + 250 + 300)
+  })
+
+  it('marked on the board ("Anuluj zlecenie → Anulacja płatna"): same rules; "Km razem" still adds km; "Przywróć" takes it back', async () => {
+    const plain = rows.map(r => ({ ...r, notes: '' }))
+    await board.importFile(await xlsx(plain), 'a.xlsx', 'daily')
+    expect((await truckRow()).bars.find(b => b.orderNo === '79-2-26')!.paidCancel).toBe(false)
+    await expect(board.setOverride('79-2-26', 'cancel', '0')).rejects.toThrow(/nie ma „Anulacja płatna”/)
+
+    now = '2026-09-28T08:00:00Z'
+    await board.setOverride('79-2-26', 'cancel', 'paid')
+    let row = await truckRow()
+    expect(row.bars.find(b => b.orderNo === '79-2-26')).toMatchObject({ paidCancel: true, kmLoaded: 0, kmEmpty: 0 })
+    expect(row.totals.revenue).toBe(4700)
+    let d = await board.orderDetails('79-2-26')
+    expect(d.order.paidCancel).toEqual({ source: 'manual', createdBy: 'test', createdAt: '2026-09-28T08:00:00Z' })
+    expect(d.history.map(h => h.text)).toContain('anulacja płatna na tablicy (test)')
+    expect((await board.orderDetails('79-3-26')).legs[0]!.kmEmptyFrom).toBe('Budapeszt (Vecsés)')
+
+    // The truck drove to the loading place before the cancellation: "Km razem" says so.
+    await board.setOverride('79-2-26', 'km_total', '300')
+    row = await truckRow()
+    expect(row.bars.find(b => b.orderNo === '79-2-26')).toMatchObject({ kmLoaded: 300, kmEmpty: 0 })
+    await board.clearOverride('79-2-26', 'km_total')
+
+    // Still money: leaving a full export is news (unlike "Klient nie płaci").
+    const s = await board.importFile(await xlsx([plain[0]!, plain[2]!]), 'b.xlsx', 'daily')
+    expect(s.disappeared).toEqual(['79-2-26'])
+    await board.importFile(await xlsx(plain), 'c.xlsx', 'daily')
+
+    // "Klient nie płaci" replaces it.
+    await board.setOverride('79-2-26', 'cancel', '1')
+    expect((await truckRow()).bars.map(b => b.orderNo)).toEqual(['79-1-26', '79-3-26'])
+    await board.setOverride('79-2-26', 'cancel', 'paid')
+
+    await board.clearOverride('79-2-26', 'cancel')
+    row = await truckRow()
+    expect(row.bars.find(b => b.orderNo === '79-2-26')!.paidCancel).toBe(false)
+    expect((await board.orderDetails('79-2-26')).legs[0]!.kmLoaded).toBeGreaterThan(0)
+    d = await board.orderDetails('79-2-26')
+    expect(d.order.paidCancel).toBeNull()
+    expect(d.history.map(h => h.text)).toContain('przywrócone na tablicę (test)')
+  })
+
+  it('from the notes it can be turned off on the board ("To nie anulacja płatna") and back on', async () => {
+    await board.importFile(await xlsx(rows), 'a.xlsx', 'daily')
+    await board.setOverride('79-2-26', 'cancel', '0')
+    let d = await board.orderDetails('79-2-26')
+    expect([d.order.paidCancel, d.order.paidCancelDismissed]).toEqual([null, true])
+    expect((await truckRow()).bars.find(b => b.orderNo === '79-2-26')!.paidCancel).toBe(false)
+    expect(d.history.map(h => h.text)).toContain('nie jest anulacją płatną, wbrew uwagom (test)')
+    expect(d.overrides.find(o => o.field === 'cancel')?.display).toBe('nie jest anulacją płatną')
+
+    await board.clearOverride('79-2-26', 'cancel')
+    d = await board.orderDetails('79-2-26')
+    expect([d.order.paidCancel?.source, d.order.paidCancelDismissed]).toEqual(['notes', false])
+    expect(d.history.map(h => h.text)).toContain('znowu anulacja płatna z uwag (test)')
+  })
+
+  it('shows only in the week of its loading day, even when the planned unloading is in the next week', async () => {
+    await board.importFile(await xlsx([{ ...rows[1]!, ld: '2026-09-27', ud: '2026-09-28' }]), 'a.xlsx', 'daily')
+    expect((await truckRow('2026-09-21')).bars.map(b => b.orderNo)).toEqual(['79-2-26'])
+    expect((await truckRow('2026-09-28')).bars).toEqual([])
+  })
+
+  it('reads the mark in the notes in several spellings, but not "niepłatna"', async () => {
+    const { parsePaidCancel } = await import('./compute.js')
+    for (const t of ['ANULACJA PŁATNA', 'anulacja platna 50%', 'Płatna anulacja', 'ANULOWANE - PŁATNE', 'ref 12; anulacja — płatna']) expect(parsePaidCancel(t), t).toBe(true)
+    for (const t of ['anulacja niepłatna', 'ANULOWANE', 'płatne przelewem', 'niepłatna anulacja', 'PRZ WAW 22.09 AA1001A>AA1002A 1000/900']) {
+      expect(parsePaidCancel(t), t).toBe(false)
+    }
+  })
+})

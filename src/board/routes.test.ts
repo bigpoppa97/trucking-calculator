@@ -27,7 +27,8 @@ beforeEach(async () => {
   await migrateToLatest(db)
   await ensurePlaceSeed(db)
   filesDir = mkdtempSync(join(tmpdir(), 'tablica-pliki-'))
-  const board = new BoardService(db, new DistanceService({ db, allowHere: false }), { filesDir })
+  // A fixed "today": the review queue looks 45 days back, so the real date would drop the test's September order.
+  const board = new BoardService(db, new DistanceService({ db, allowHere: false }), { filesDir, now: () => '2026-09-27T18:00:00Z' })
   app = buildApp({ db, fetchService: {} as RouteFetchService, board })
   cookies = (await seedSession(db, 'dispatcher')).cookies
 })

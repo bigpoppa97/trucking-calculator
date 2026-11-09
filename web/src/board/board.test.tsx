@@ -66,6 +66,7 @@ const WEEK: WeekView = {
           noCarrier: false,
           draft: false,
           coLoadOf: null,
+          paidCancel: false,
           inWeek: true,
           noteLines: [],
           serviceConflict: null,
@@ -110,6 +111,8 @@ const ORDER: OrderDetails = {
     marginPct: 13.33,
     excluded: null,
     cancelledOnBoard: null,
+    paidCancel: null,
+    paidCancelDismissed: false,
     noCarrier: false,
     missing: false,
     notesApp: '',
@@ -533,6 +536,7 @@ const TRUCK_VIEW = (): TruckView => {
         missing: false,
         draft: false,
         coLoadOf: null,
+        paidCancel: false,
         driver: 'Kierowca A',
         driverManual: false,
       },
@@ -1271,7 +1275,7 @@ describe('30.10.2026 — "Anuluj zlecenie"', () => {
     expect(within(panel).getByText(/zniknie z tablicy/)).toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: 'Anuluj' })).not.toBeInTheDocument()
     expect(within(panel).getByRole('button', { name: 'Wróć' })).toBeInTheDocument()
-    await userEvent.click(within(panel).getByRole('button', { name: 'Anuluj zlecenie' }))
+    await userEvent.click(within(panel).getByRole('button', { name: 'Klient nie płaci' }))
     expect(api.setOverride).toHaveBeenCalledWith('79-1000-26', 'cancel', '1')
   })
 
@@ -1331,5 +1335,128 @@ describe('05.11.2026 — a wrong year in the unloading date', () => {
     await userEvent.type(input, '03.11 10:00')
     await userEvent.click(within(panel).getByRole('button', { name: 'Zapisz poprawkę' }))
     expect(api.setOverride).toHaveBeenCalledWith('79-1000-26', 'unload_at', '03.11 10:00')
+  })
+})
+
+describe('09.11.2026 — "Anulacja płatna"', () => {
+  const PAID_BAR: WeekBar = {
+    ...WEEK.trucks[0]!.bars[0]!,
+    key: '79-1001-26|0',
+    orderNo: '79-1001-26',
+    title: 'Budapeszt (Vecsés) → Warszawa',
+    startDate: '2026-09-24',
+    endDate: '2026-09-25',
+    startTime: '12:00',
+    endTime: '18:00',
+    startDay: 3,
+    endDay: 4,
+    revAlloc: 400,
+    amount: 250,
+    margin: 150,
+    kmLoaded: 0,
+    kmEmpty: 0,
+    kmEstimated: false,
+    paidCancel: true,
+    noteLines: ['Anulacja płatna — klient płaci, auto nie jechało (bez km).'],
+  }
+  const weekWithPaid = (): WeekView => {
+    const week = structuredClone(WEEK)
+    week.trucks[0]!.bars.push(structuredClone(PAID_BAR))
+    return week
+  }
+  const PAID_ORDER: OrderDetails = {
+    ...ORDER,
+    order: {
+      ...ORDER.order,
+      orderNo: '79-1001-26',
+      route: 'Budapeszt (Vecsés) → Warszawa',
+      rev: 400,
+      costApp: 250,
+      amountsTotal: 250,
+      margin: 150,
+      marginPct: 37.5,
+      paidCancel: { source: 'manual', createdBy: 'Wojciech', createdAt: '2026-11-09T09:15:00Z' },
+    },
+    legs: [{ ...ORDER.legs[0]!, kmLoaded: 0, kmEmpty: 0, kmEstimated: false, kmManual: false }],
+    overrides: [{ field: 'cancel', value: 'paid', display: 'anulacja płatna', createdAt: '2026-11-09T09:15:00Z' }],
+  }
+
+  it('"Anuluj zlecenie" asks whether the client pays: "Anulacja płatna" marks it', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue(ORDER)
+    api.setOverride.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    await userEvent.click(await within(panel).findByRole('button', { name: 'Popraw ręcznie' }))
+    await userEvent.selectOptions(within(panel).getByLabelText('Co poprawić'), 'cancel')
+    expect(within(panel).getByText(/czy płaci za anulację\?/)).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Klient nie płaci' })).toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Anulacja płatna' }))
+    expect(api.setOverride).toHaveBeenCalledWith('79-1000-26', 'cancel', 'paid')
+  })
+
+  it('is a chip on the loading day, not a bar — it opens the order; the money hides with "Pokaż kwoty"', async () => {
+    api.week.mockResolvedValue(weekWithPaid())
+    api.order.mockResolvedValue(PAID_ORDER)
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const chip = await screen.findByRole('button', { name: /79-1001-26, anulacja płatna, Budapeszt \(Vecsés\) → Warszawa, załadunek 24\.09 12:00/ })
+    expect(screen.queryByTestId('bar-79-1001-26|0')).not.toBeInTheDocument()
+    expect(screen.getByTestId('bar-79-1000-26:0')).toBeInTheDocument()
+    // Thursday (day 3) at 12:00 = 3.5 days from Monday; wider than an event chip (1.5 days).
+    expect((chip.parentElement as HTMLElement).style.left).toContain('0.5')
+    expect((chip.parentElement as HTMLElement).style.maxWidth).toContain(String(1.5 / 7).slice(0, 8))
+    expect(chip).toHaveTextContent('79-1001-26 · anulacja płatna')
+    expect(chip).toHaveTextContent('+150')
+    await userEvent.click(screen.getByLabelText('Pokaż kwoty'))
+    expect(screen.getByTestId('paid-79-1001-26|0')).not.toHaveTextContent('+150')
+    expect(screen.getByText('Anulacja płatna')).toBeInTheDocument() // legend
+    await userEvent.click(screen.getByTestId('paid-79-1001-26|0'))
+    expect(api.order).toHaveBeenCalledWith('79-1001-26')
+  })
+
+  it('the panel says so with who and when, km "bez km", and "Przywróć zlecenie" takes it back', async () => {
+    api.week.mockResolvedValue(weekWithPaid())
+    api.order.mockResolvedValue(PAID_ORDER)
+    api.clearOverride.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByTestId('paid-79-1001-26|0'))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText('Anulacja płatna')).toBeInTheDocument()
+    expect(within(panel).getByText('Oznaczone na tablicy 09.11.26 (Wojciech)')).toBeInTheDocument()
+    expect(within(panel).getByText(/anulacja płatna — bez km/)).toBeInTheDocument()
+    expect(within(panel).getByText('Brak — liczby pochodzą z aplikacji.')).toBeInTheDocument()
+    // Still cancellable as "the client does not pay"; no second "Anulacja płatna".
+    await userEvent.click(within(panel).getByRole('button', { name: 'Popraw ręcznie' }))
+    await userEvent.selectOptions(within(panel).getByLabelText('Co poprawić'), 'cancel')
+    expect(within(panel).getByRole('button', { name: 'Klient nie płaci' })).toBeInTheDocument()
+    expect(within(panel).queryByRole('button', { name: 'Anulacja płatna' })).not.toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Przywróć zlecenie' }))
+    expect(api.clearOverride).toHaveBeenCalledWith('79-1001-26', 'cancel')
+  })
+
+  it('from the notes: "To nie anulacja płatna" turns it off; then "Jednak anulacja płatna" turns it back on', async () => {
+    api.week.mockResolvedValue(weekWithPaid())
+    api.order.mockResolvedValueOnce({
+      ...PAID_ORDER,
+      order: { ...PAID_ORDER.order, notesApp: 'ANULACJA PŁATNA', paidCancel: { source: 'notes', createdBy: null, createdAt: null } },
+      overrides: [],
+    })
+    api.setOverride.mockResolvedValue({ ok: true })
+    api.clearOverride.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByTestId('paid-79-1001-26|0'))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText('Z uwag w aplikacji („Anulacja płatna”).')).toBeInTheDocument()
+    api.order.mockResolvedValue({
+      ...PAID_ORDER,
+      order: { ...PAID_ORDER.order, notesApp: 'ANULACJA PŁATNA', paidCancel: null, paidCancelDismissed: true },
+      overrides: [{ field: 'cancel', value: '0', display: 'nie jest anulacją płatną', createdAt: '2026-11-09T10:00:00Z' }],
+    })
+    await userEvent.click(within(panel).getByRole('button', { name: 'To nie anulacja płatna' }))
+    expect(api.setOverride).toHaveBeenCalledWith('79-1001-26', 'cancel', '0')
+    expect(await within(panel).findByText(/na tablicy wyłączone 09\.11\.26/)).toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Jednak anulacja płatna' }))
+    expect(api.clearOverride).toHaveBeenCalledWith('79-1001-26', 'cancel')
   })
 })
