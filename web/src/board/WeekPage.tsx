@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { boardApi, errorMessage, type NoteKind, type Service, type WeekEvent, type WeekTruck, type WeekView } from './boardApi.js'
-import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, ordersLabel, ordersWithDrafts, pair, pct, perKm, plural, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
+import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, ordersLabel, pair, pct, perKm, plural, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
 import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { RequiredBadges, SERVICE_COLORS, ServiceDialog } from './serviceUi.js'
@@ -198,8 +198,7 @@ export function WeekPage({
         {showMoney && (
           <>
             <Kpi label="Marża tygodnia" value={eur(k.margin)} sub={`${pct(k.margin, k.revenue)} przychodu`} />
-            <Kpi label="Przychód" value={eur(k.revenue)} sub={ordersWithDrafts(k.orders, k.drafts)} />
-            <Kpi label="Koszt przewoźników" value={eur(k.cost)} sub="po skontach i poprawkach" />
+            {/* 09.11.2026: "Przychód" and "Koszt przewoźników" removed — not needed at the top of the board. */}
           </>
         )}
         {/* 29.10.2026: in place of "Km razem" — average week revenue per truck, ours (bold) / the carriers'. */}

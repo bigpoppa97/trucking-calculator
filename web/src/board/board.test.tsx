@@ -761,12 +761,16 @@ describe('DriverPage (certyfikaty)', () => {
 describe('paczka 12.10.2026', () => {
   const bar = (over: Partial<WeekBar>): WeekBar => ({ ...WEEK.trucks[0]!.bars[0]!, ...over })
 
-  it('the week column: our / carrier revenue and EUR/KM; money hidden together; short order count', async () => {
+  it('the week column: our / carrier revenue and EUR/KM; money hidden together; no "Przychód" / "Koszt przewoźników" tiles (09.11.2026)', async () => {
     api.week.mockResolvedValue(WEEK)
     render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
     expect(await screen.findByText('1 500 € / 1 300 €')).toBeInTheDocument()
     expect(screen.getByText('2,21 € / 1,91 €')).toBeInTheDocument()
-    expect(screen.getByText('1 zlecenie')).toBeInTheDocument()
+    const tiles = screen.getByRole('region', { name: 'Wynik tygodnia' })
+    expect(within(tiles).getByText('Marża tygodnia')).toBeInTheDocument()
+    expect(within(tiles).queryByText('Przychód')).not.toBeInTheDocument()
+    expect(within(tiles).queryByText('Koszt przewoźników')).not.toBeInTheDocument()
+    expect(within(tiles).queryByText('1 zlecenie')).not.toBeInTheDocument()
     expect(screen.queryByText(/puste ·|Na km · puste/)).not.toBeInTheDocument()
     await userEvent.click(screen.getByLabelText('Pokaż kwoty'))
     expect(screen.queryByText('2,21 € / 1,91 €')).not.toBeInTheDocument()
