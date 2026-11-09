@@ -2076,7 +2076,7 @@ export class BoardService {
     if (!entry || parsed.errors.length > 0 || parsed.entries.length > 1) {
       throw new BoardError(
         'BAD_PRZ',
-        `Nie rozumiem wpisu przepinki: „${parsed.errors[0] ?? text}”. Wzór: PRZ MIEJSCE DD.MM AUTO>AUTO KWOTA/KWOTA, np. PRZ WAW 28.10 AB123CD>AB456CD 1400/900 (jedna przepinka w jednym wpisie).`,
+        `Nie rozumiem wpisu przepinki: „${parsed.errors[0] ?? text}”. Wzór: PRZ MIEJSCE DD.MM [GG:MM] AUTO>AUTO KWOTA/KWOTA, np. PRZ WAW 28.10 AB123CD>AB456CD 1400/900 albo z godziną PRZ WAW 28.10 14:00 AB123CD>AB456CD 1400/900 (jedna przepinka w jednym wpisie).`,
       )
     }
     const ctx = await loadBoardContext(this.db)

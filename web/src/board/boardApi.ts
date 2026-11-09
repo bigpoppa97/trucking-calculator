@@ -272,7 +272,8 @@ export interface OrderDetails {
     noCarrier: boolean
     missing: boolean
     notesApp: string
-    prz: { place: string; placeCode: string | null; date: string; from: string; to: string; amountFrom: number; amountTo: number; raw: string } | null
+    /** time = hour of the swap ("HH:MM", 09.11.2026), null = not given. */
+    prz: { place: string; placeCode: string | null; date: string; time: string | null; from: string; to: string; amountFrom: number; amountTo: number; raw: string } | null
     /** Set when the PRZ entry was typed on the board (manual correction), not in the application's notes. */
     przManual: { createdBy: string; createdAt: string } | null
     przErrors: string[]

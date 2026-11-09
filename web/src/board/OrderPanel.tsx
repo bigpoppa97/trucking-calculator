@@ -282,7 +282,7 @@ export function OrderPanel({
                 {o.przManual ? 'Przepinka (ręczna poprawka)' : 'Przepinka z uwag'}
               </span>
               <span className="font-mono text-[13px]">
-                {o.prz.place} · {dm(o.prz.date)} · {o.prz.from} → {o.prz.to} · {o.prz.amountFrom} / {o.prz.amountTo} €
+                {o.prz.place} · {dmTime(o.prz.date, o.prz.time)} · {o.prz.from} → {o.prz.to} · {o.prz.amountFrom} / {o.prz.amountTo} €
               </span>
               {o.przManual && (
                 <span className="text-xs text-[#545B63]">
@@ -333,7 +333,7 @@ export function OrderPanel({
           )}
           {o.przErrors.map(raw => (
             <p key={raw} className="rounded-lg bg-[#F4C77A] px-3 py-2 text-[13px] text-[#3A2400]">
-              Nie rozumiem wpisu: <span className="font-mono">{raw}</span>. Wzór: <span className="font-mono">PRZ MIEJSCE DD.MM AUTO&gt;AUTO KWOTA/KWOTA</span>
+              Nie rozumiem wpisu: <span className="font-mono">{raw}</span>. Wzór: <span className="font-mono">PRZ MIEJSCE DD.MM [GG:MM] AUTO&gt;AUTO KWOTA/KWOTA</span> (godzina nieobowiązkowa)
             </p>
           ))}
           {o.ferryEntries.length > 0 && (
@@ -584,7 +584,7 @@ export function OrderPanel({
                         onChange={e => setFixValue(e.target.value)}
                         placeholder={
                           fixField === 'prz'
-                            ? 'PRZ WAW 22.09 AB123CD>AB456CD 1400/900'
+                            ? 'PRZ WAW 22.09 14:00 AB123CD>AB456CD 1400/900 — godzina nieobowiązkowa'
                             : fixField === 'load_at' || fixField === 'unload_at'
                               ? 'np. 07.10 12:00 albo sama godzina 12:00'
                               : fixField.startsWith('km_total')

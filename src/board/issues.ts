@@ -151,7 +151,7 @@ export function deriveIssues(orders: ComputedOrder[], ctx: BoardContext, t: Issu
         key: `PRZ_PARSE:${ref}`,
         kind: 'PRZ_PARSE',
         ref,
-        message: `Nie rozumiem wpisu przepinki: „${raw}”. Wzór: PRZ MIEJSCE DD.MM AUTO>AUTO KWOTA/KWOTA.`,
+        message: `Nie rozumiem wpisu przepinki: „${raw}”. Wzór: PRZ MIEJSCE DD.MM [GG:MM] AUTO>AUTO KWOTA/KWOTA (godzina nieobowiązkowa).`,
         details: { raw },
         fingerprint: raw,
       })

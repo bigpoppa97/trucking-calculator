@@ -961,7 +961,7 @@ describe('paczka 26.10.2026', () => {
       ...ORDER,
       order: {
         ...ORDER.order,
-        prz: { place: 'ŁÓDŹ', placeCode: 'LCJ', date: '2026-09-22', from: 'AA1050H', to: 'AA2050H', amountFrom: 700, amountTo: 600, raw: 'PRZ ŁÓDŹ 22.09 AA1050H>AA2050H 700/600' },
+        prz: { place: 'ŁÓDŹ', placeCode: 'LCJ', date: '2026-09-22', time: null, from: 'AA1050H', to: 'AA2050H', amountFrom: 700, amountTo: 600, raw: 'PRZ ŁÓDŹ 22.09 AA1050H>AA2050H 700/600' },
         przManual: { createdBy: 'Wojciech', createdAt: '2026-10-12T09:31:00Z' },
       },
     })
@@ -972,6 +972,24 @@ describe('paczka 26.10.2026', () => {
     expect(within(panel).queryByText('Przepinka z uwag')).not.toBeInTheDocument()
     expect(within(panel).getByText('Wpisana na tablicy 12.10.26 (Wojciech)')).toBeInTheDocument()
     expect(within(panel).queryByText(/Obowiązuje/)).not.toBeInTheDocument()
+  })
+
+  it('a relay with an hour (09.11.2026) shows it in the box; the entry field suggests the optional hour', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue({
+      ...ORDER,
+      order: {
+        ...ORDER.order,
+        prz: { place: 'ŁÓDŹ', placeCode: 'LCJ', date: '2026-09-22', time: '14:00', from: 'AA1050H', to: 'AA2050H', amountFrom: 700, amountTo: 600, raw: 'PRZ ŁÓDŹ 22.09 14:00 AA1050H>AA2050H 700/600' },
+      },
+    })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText('ŁÓDŹ · 22.09 14:00 · AA1050H → AA2050H · 700 / 600 €')).toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Popraw ręcznie' }))
+    await userEvent.selectOptions(within(panel).getByLabelText('Co poprawić'), 'prz')
+    expect(within(panel).getByLabelText('Nowa wartość')).toHaveAttribute('placeholder', expect.stringContaining('22.09 14:00'))
   })
 
   it('"Czy była przepinka?" opens both orders; a withdrawn tractor with a later order can be brought back', async () => {
@@ -1419,7 +1437,7 @@ describe('09.11.2026 — "Anulacja płatna"', () => {
     api.week.mockResolvedValue(WEEK)
     api.order.mockResolvedValue({
       ...ORDER,
-      order: { ...ORDER.order, prz: { place: 'WAW', placeCode: 'WAW', date: '2026-09-22', from: 'AA1050H', to: 'BB2001B', amountFrom: 700, amountTo: 600, raw: 'PRZ' } },
+      order: { ...ORDER.order, prz: { place: 'WAW', placeCode: 'WAW', date: '2026-09-22', time: null, from: 'AA1050H', to: 'BB2001B', amountFrom: 700, amountTo: 600, raw: 'PRZ' } },
     })
     api.markPaidCancel.mockResolvedValue({ ok: true })
     render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)

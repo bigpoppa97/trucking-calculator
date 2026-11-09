@@ -5,8 +5,9 @@ import { isOneSlip, normalizePlate } from './normalize.js'
  * Trailer swap ("przepinka") entries typed into the client order's notes in
  * the company application:
  *
- *   PRZ <place> <dd.mm> <truck handing over>><truck taking over> <amount A>/<amount B>
+ *   PRZ <place> <dd.mm> [<hh:mm>] <truck handing over>><truck taking over> <amount A>/<amount B>
  *   e.g. PRZ GORZYCZKI 26.04 WGM4518U>KN1050H 700/400
+ *        PRZ GORZYCZKI 26.04 14:00 WGM4518U>KN1050H 700/400   (09.11.2026: optional hour, also 14.00)
  *
  * Amounts are what each truck gets for its leg (a subcontractor's rate, or —
  * for an own-fleet truck — what the own fleet keeps). The order's margin is
@@ -24,6 +25,8 @@ export interface PrzEntry {
   place: string
   day: number
   month: number
+  /** Hour of the swap ("HH:MM", 09.11.2026), null = not given (the whole day). */
+  time: string | null
   /** Normalised plates. */
   from: string
   to: string
@@ -41,7 +44,7 @@ export interface PrzParseResult {
 const MARKER = /\bPRZ(?:EPINKA)?\b/gi
 const NUM = String.raw`\d+(?:[.,]\d+)?`
 const ENTRY = new RegExp(
-  String.raw`^PRZ(?:EPINKA)?:?\s+(.+?)\s+(\d{1,2})\.(\d{1,2})(?:\.(?:\d{4}|\d{2}))?\.?\s+([A-Z0-9 ]+?)\s*>\s*([A-Z0-9 ]+?)\s+(${NUM})\s*\/\s*(${NUM})\s*$`,
+  String.raw`^PRZ(?:EPINKA)?:?\s+(.+?)\s+(\d{1,2})\.(\d{1,2})(?:\.(?:\d{4}|\d{2}))?\.?(?:\s+(\d{1,2})[:.](\d{2}))?\s+([A-Z0-9 ]+?)\s*>\s*([A-Z0-9 ]+?)\s+(${NUM})\s*\/\s*(${NUM})\s*$`,
   'i',
 )
 
@@ -65,9 +68,12 @@ export function parsePrz(notes: string | null | undefined): PrzParseResult {
     }
     const day = Number(m[2])
     const month = Number(m[3])
-    const from = normalizePlate(m[4])
-    const to = normalizePlate(m[5])
-    if (day < 1 || day > 31 || month < 1 || month > 12 || !from || !to || from === to) {
+    const hour = m[4] === undefined ? null : Number(m[4])
+    const minute = m[5] === undefined ? null : Number(m[5])
+    const from = normalizePlate(m[6])
+    const to = normalizePlate(m[7])
+    const badTime = hour !== null && (hour > 23 || minute === null || minute > 59)
+    if (day < 1 || day > 31 || month < 1 || month > 12 || badTime || !from || !to || from === to) {
       result.errors.push(segment)
       continue
     }
@@ -75,10 +81,11 @@ export function parsePrz(notes: string | null | undefined): PrzParseResult {
       place: m[1]!.trim(),
       day,
       month,
+      time: hour === null ? null : `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
       from,
       to,
-      amountFrom: Number(m[6]!.replace(',', '.')),
-      amountTo: Number(m[7]!.replace(',', '.')),
+      amountFrom: Number(m[8]!.replace(',', '.')),
+      amountTo: Number(m[9]!.replace(',', '.')),
       raw: segment,
     })
   }

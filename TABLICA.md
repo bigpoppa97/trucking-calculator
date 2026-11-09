@@ -38,6 +38,9 @@ Wczytanie grafiku można powtórzyć, nie nadpisuje istniejących wpisów.
    zwykle oznacza brak wpisu przepinki, stawka/km poza zakresem — kwotę w PLN.
 4. Przepinka: w uwagach zlecenia klienta w aplikacji `PRZ GORZYCZKI 26.04 WGM4518U>KN1050H 700/400`
    (miejsce, data, auto oddające > auto przejmujące, kwota dla każdego auta). Marża = stawka klienta − suma kwot.
+   Godzina przepinki — nieobowiązkowo, po dacie: `PRZ GORZYCZKI 26.04 14:00 WGM4518U>KN1050H 700/400` (albo `14.00`;
+   tak samo w „Popraw ręcznie” → „Wpis przepinki (PRZ)”). Z godziną pasek auta oddającego kończy się o tej godzinie,
+   a przejmującego od niej zaczyna; bez godziny — na granicy dnia przepinki.
    **Skonto**: gdy koszt w aplikacji to kwota auta z eksportu minus 1,5% (np. 1600 → 1576; albo suma obu kwot, gdy
    oba auta są jednego przewoźnika), to nie błąd — tablica liczy kwotę po skoncie, a panel pokazuje
    „Kwoty dla aut … · po 1,5% skonta”. Inna różnica nadal trafia do „Do sprawdzenia”.

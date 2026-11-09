@@ -2233,3 +2233,45 @@ describe('09.11.2026 — migration 0017: place names without the airport in brac
     expect(bar.title).toBe('Katowice → Bukareszt (przez Budapeszt)')
   })
 })
+
+describe('09.11.2026 — an hour in the PRZ entry places the relay on the board', () => {
+  const row = (notes: string): Row => ({
+    no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 3000, cost: 1300, sub: 'AA1001A', trailer: 'TR100',
+    lh: '08:00 — —', uh: '— — 20:00', notes,
+  })
+  const legsOf = async () =>
+    (await board.weekView('2026-09-21')).trucks.flatMap(t => t.bars.map(b => ({ plate: t.plate, start: [b.startDate, b.startTime], end: [b.endDate, b.endTime] })))
+
+  it('with an hour the first leg ends and the second starts at it; without one, at the day boundary', async () => {
+    await board.importFile(await xlsx([row('PRZ GORZYCZKI 21.09 18:00 AA1001A>AA1002A 1700/1000')], HOURS_HEADERS), 'a.xlsx', 'daily')
+    expect(await legsOf()).toEqual([
+      { plate: 'AA1001A', start: ['2026-09-21', '08:00'], end: ['2026-09-21', '18:00'] },
+      { plate: 'AA1002A', start: ['2026-09-21', '18:00'], end: ['2026-09-22', '20:00'] },
+    ])
+    expect((await board.orderDetails('79-1-26')).order.prz).toMatchObject({ date: '2026-09-21', time: '18:00' })
+
+    // Typed on the board, with an hour too.
+    await board.setOverride('79-1-26', 'prz', 'PRZ GORZYCZKI 22.09 6:30 AA1001A>AA1002A 1700/1000')
+    expect(await legsOf()).toEqual([
+      { plate: 'AA1001A', start: ['2026-09-21', '08:00'], end: ['2026-09-22', '06:30'] },
+      { plate: 'AA1002A', start: ['2026-09-22', '06:30'], end: ['2026-09-22', '20:00'] },
+    ])
+    await expect(board.setOverride('79-1-26', 'prz', 'PRZ GORZYCZKI 22.09 26:00 AA1001A>AA1002A 1700/1000')).rejects.toThrow(/\[GG:MM\]/)
+
+    await board.setOverride('79-1-26', 'prz', 'PRZ GORZYCZKI 21.09 AA1001A>AA1002A 1700/1000')
+    expect(await legsOf()).toEqual([
+      { plate: 'AA1001A', start: ['2026-09-21', '08:00'], end: ['2026-09-21', null] },
+      { plate: 'AA1002A', start: ['2026-09-21', null], end: ['2026-09-22', '20:00'] },
+    ])
+  })
+
+  it('a swap dated before the loading moves to the loading day without the hour', async () => {
+    await board.importFile(await xlsx([row('PRZ GORZYCZKI 19.09 18:00 AA1001A>AA1002A 1700/1000')], HOURS_HEADERS), 'a.xlsx', 'daily')
+    const legs = await legsOf()
+    expect(legs.map(l => l.end)).toEqual([
+      ['2026-09-21', null],
+      ['2026-09-22', '20:00'],
+    ])
+    expect((await issuesOf('PRZ_DATE')).map(i => i.ref)).toEqual(['79-1-26'])
+  })
+})

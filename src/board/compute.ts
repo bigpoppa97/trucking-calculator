@@ -100,6 +100,8 @@ export interface ComputedPrz {
   place: string
   placeCode: string | null
   date: string
+  /** Hour of the swap ("HH:MM", 09.11.2026), null = not given. */
+  time: string | null
   from: string
   to: string
   amountFrom: number
@@ -399,6 +401,7 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
       place: entry.place,
       placeCode,
       date: swapDate,
+      time: entry.time,
       from: entry.from,
       to: entry.to,
       amountFrom: entry.amountFrom,
@@ -418,6 +421,9 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
     const endA = swapDate < startA ? startA : swapDate
     const startB = endA
     const endB = unloadDate < startB ? startB : unloadDate
+    // The swap hour (09.11.2026) ends the first leg and starts the second one — only when the
+    // swap really is on that day (a swap date before the loading is moved to the loading day).
+    const swapTime = endA === swapDate ? entry.time : null
     const a = classify(entry.from, startA)
     const b = classify(entry.to, startB)
     legs.push({
@@ -429,7 +435,7 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
       startDate: startA,
       endDate: endA,
       startTime: loadTime,
-      endTime: null,
+      endTime: swapTime,
       stops: stopsA,
       amount: entry.amountFrom,
       przRole: 'from',
@@ -442,7 +448,7 @@ export function buildOrder(row: OrderRow, overrides: Record<string, OverrideInfo
       kind: b.kind,
       startDate: startB,
       endDate: endB,
-      startTime: null,
+      startTime: swapTime,
       endTime: endB === unloadDate ? unloadTime : null,
       stops: stopsB,
       amount: entry.amountTo,
