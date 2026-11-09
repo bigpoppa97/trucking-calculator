@@ -10,7 +10,7 @@ import type { PlaceIndex } from './context.js'
  * Pairwise road distances between dictionary places.
  *
  * Lookup order: board cache (either direction) → calculator route database
- * (airport pairs, so manual km overrides made in the calculator win) → HERE
+ * (any pair, so manual km overrides made in the calculator win) → HERE
  * (once per pair, ever) → straight-line estimate × ROAD_FACTOR, flagged as an
  * estimate. HERE calls never happen inside a page request: missing pairs are
  * answered with an estimate immediately and queued for a background fetch,
@@ -72,12 +72,12 @@ export class DistanceService {
       if (!prev || rank(row.source) > rank(prev.source)) out.set(key, { km: row.km, source: row.source })
     }
 
-    // Calculator route DB (2-stop airport routes) — read live every time so a
-    // km override made in the calculator wins over HERE/estimates here.
+    // Calculator route DB (2-stop routes) — read live every time so a km
+    // override made in the calculator wins over HERE/estimates here. Since
+    // 09.11.2026 calculator routes may use dictionary places too (WAW-WYSO),
+    // so every pair is looked up, not only airport pairs.
     const routeCodes: string[] = []
-    for (const [a, b] of wanted.values()) {
-      if (/^[A-Z]{3}$/.test(a) && /^[A-Z]{3}$/.test(b)) routeCodes.push(`${a}-${b}`, `${b}-${a}`)
-    }
+    for (const [a, b] of wanted.values()) routeCodes.push(`${a}-${b}`, `${b}-${a}`)
     if (routeCodes.length > 0) {
       const routes = await this.deps.db
         .selectFrom('routes')

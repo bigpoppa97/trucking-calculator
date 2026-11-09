@@ -3,8 +3,12 @@ import type { DB, KmSource, TollStatusDb } from '../db/schema.js'
 import type { RoutePolylineSection } from '../here/routeParser.js'
 import { sanitizeTollCheck, type TollCheck } from '../here/tollChecks.js'
 
-/** Route ID format per PRD §3.1: hyphen-separated IATA codes, 2+ stops. */
-export const ROUTE_CODE_REGEX = /^[A-Z]{3}(-[A-Z]{3})+$/
+/**
+ * Route ID format (PRD §3.1, widened 09.11.2026): hyphen-separated stop codes,
+ * 2+ stops. A stop is an airport (3-letter IATA) or a board dictionary place
+ * (own code, usually 4 characters, e.g. WAW-WYSO-FRA; letters and digits).
+ */
+export const ROUTE_CODE_REGEX = /^[A-Z0-9]{2,12}(-[A-Z0-9]{2,12})+$/
 
 export interface RouteToll {
   country: string
@@ -83,7 +87,7 @@ export class RouteRepository {
 
   async create(input: NewRouteInput): Promise<RouteDetails> {
     if (!ROUTE_CODE_REGEX.test(input.routeCode)) {
-      throw new Error(`Invalid route code: must be hyphen-separated 3-letter IATA codes with 2+ stops.`)
+      throw new Error(`Invalid route code: must be hyphen-separated stop codes (airports or places) with 2+ stops.`)
     }
     const stops = input.routeCode.split('-')
 

@@ -18,6 +18,32 @@ export interface AirportDto {
   lon: number
 }
 
+/**
+ * A route stop (GET /api/places, 09.11.2026): an airport (3-letter IATA) or a
+ * place from the board's dictionary (own code, e.g. WYSO, TCZE).
+ */
+export interface PlaceDto {
+  code: string
+  /** Polish name from the board dictionary when known, else the airport's city. */
+  name: string
+  /** Airport's full name; '' for dictionary places. */
+  detail: string
+  country: string
+  lat: number
+  lon: number
+  kind: 'airport' | 'place'
+  /** Folded spellings (lowercase, no diacritics) — search only. */
+  aliases: string[]
+}
+
+/** A HERE geocoding hit for "Dodaj miejsce". */
+export interface GeocodeCandidateDto {
+  title: string
+  lat: number
+  lon: number
+  country: string
+}
+
 export interface RouteTollDto {
   country: string
   tollEur: number

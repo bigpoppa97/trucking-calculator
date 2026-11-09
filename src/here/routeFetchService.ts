@@ -1,4 +1,5 @@
 import type { AirportRepository } from '../repositories/airportRepository.js'
+import type { PlaceDirectory } from '../repositories/placeDirectory.js'
 import type { ConfigRepository } from '../repositories/configRepository.js'
 import type { RouteDetails, RouteRepository } from '../repositories/routeRepository.js'
 import type { RouteWaypointRepository } from '../repositories/routeWaypointRepository.js'
@@ -27,7 +28,7 @@ const BALTIC_DEFAULT_ZERO = ['EE', 'LV', 'LT']
 
 export class RouteFetchError extends Error {
   constructor(
-    readonly code: 'INVALID_ROUTE_CODE' | 'ROUTE_ALREADY_EXISTS' | 'ROUTE_NOT_FOUND' | 'AIRPORT_NOT_FOUND' | 'HERE_UNAVAILABLE',
+    readonly code: 'INVALID_ROUTE_CODE' | 'ROUTE_ALREADY_EXISTS' | 'ROUTE_NOT_FOUND' | 'PLACE_NOT_FOUND' | 'HERE_UNAVAILABLE',
     message: string,
   ) {
     super(message)
@@ -150,6 +151,11 @@ const balticWarning = (country: string): string =>
 export interface RouteFetchServiceDeps {
   client: Pick<HereRoutingClient, 'fetchRoute'>
   airports: AirportRepository
+  /**
+   * Airports + the board's place dictionary (09.11.2026). When absent, stops
+   * resolve against airports only (older wiring, unit tests).
+   */
+  places?: Pick<PlaceDirectory, 'findByCode'>
   routes: RouteRepository
   config: ConfigRepository
   /** Optional: toll-system correction rules applied at parse time. */
@@ -180,15 +186,20 @@ export class RouteFetchService {
     }
   }
 
-  /** Airport coordinates for each stop, in order — fails before any HERE call. */
+  /** Coordinates for each stop (airport or dictionary place), in order — fails before any HERE call. */
   private async resolvePlaces(stops: string[]): Promise<HerePlace[]> {
     const places: HerePlace[] = []
-    for (const iata of stops) {
-      const airport = await this.deps.airports.findByIata(iata)
-      if (!airport) {
-        throw new RouteFetchError('AIRPORT_NOT_FOUND', `Airport ${iata} is not in the airport database.`)
+    for (const code of stops) {
+      const found = this.deps.places
+        ? await this.deps.places.findByCode(code)
+        : await this.deps.airports.findByIata(code)
+      if (!found) {
+        throw new RouteFetchError(
+          'PLACE_NOT_FOUND',
+          `Nie znam miejsca ${code} — dodaj je przyciskiem „Dodaj miejsce” albo na Tablicy (Flota → Miejsca i odległości).`,
+        )
       }
-      places.push({ lat: airport.lat, lon: airport.lon })
+      places.push({ lat: found.lat, lon: found.lon })
     }
     return places
   }
@@ -258,7 +269,7 @@ export class RouteFetchService {
     if (!ROUTE_CODE_REGEX.test(code)) {
       throw new RouteFetchError(
         'INVALID_ROUTE_CODE',
-        'Route code must be 3-letter IATA codes separated by hyphens, e.g. WAW-PRG.',
+        'Kod trasy to kody lotnisk lub miejsc rozdzielone myślnikami, np. WAW-PRG albo WAW-WYSO-FRA.',
       )
     }
     if (await this.deps.routes.existsByCode(code)) {

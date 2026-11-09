@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path'
 import fastifyStatic from '@fastify/static'
 import { createDatabase, migrateToLatest } from '../db/database.js'
 import { AirportRepository } from '../repositories/airportRepository.js'
+import { PlaceDirectory } from '../repositories/placeDirectory.js'
 import { ConfigRepository } from '../repositories/configRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
 import { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
@@ -33,6 +34,8 @@ const configRepo = new ConfigRepository(db)
 const fetchService = new RouteFetchService({
   client: routingClient,
   airports: new AirportRepository(db),
+  // Route stops: airports + the board's place dictionary (09.11.2026).
+  places: new PlaceDirectory(db),
   routes: new RouteRepository(db),
   config: configRepo,
   tollRules: new TollSystemRuleRepository(db),

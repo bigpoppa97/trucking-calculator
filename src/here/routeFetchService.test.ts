@@ -4,6 +4,7 @@ import type { Kysely } from 'kysely'
 import type { DB } from '../db/schema.js'
 import { createTestDatabase, migrateToLatest } from '../db/database.js'
 import { AirportRepository } from '../repositories/airportRepository.js'
+import { PlaceDirectory } from '../repositories/placeDirectory.js'
 import { ConfigRepository } from '../repositories/configRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
 import { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
@@ -108,15 +109,18 @@ describe('RouteFetchService.fetchNewRoute', () => {
     expect(requests).toHaveLength(0) // no quota spent
   })
 
-  it('rejects unknown airports before any HERE call', async () => {
+  it('rejects unknown stops before any HERE call', async () => {
     const service = makeService()
-    await expect(service.fetchNewRoute('WAW-XXX')).rejects.toMatchObject({ code: 'AIRPORT_NOT_FOUND' })
+    await expect(service.fetchNewRoute('WAW-XXX')).rejects.toMatchObject({ code: 'PLACE_NOT_FOUND' })
     expect(requests).toHaveLength(0)
   })
 
   it('rejects malformed route codes', async () => {
     const service = makeService()
     await expect(service.fetchNewRoute('WAW')).rejects.toMatchObject({ code: 'INVALID_ROUTE_CODE' })
+    await expect(service.fetchNewRoute('WAW-WY SO')).rejects.toMatchObject({ code: 'INVALID_ROUTE_CODE' })
+    await expect(service.fetchNewRoute('WAW--PRG')).rejects.toMatchObject({ code: 'INVALID_ROUTE_CODE' })
+    expect(requests).toHaveLength(0)
   })
 
   it('maps client failures to a graceful HERE_UNAVAILABLE error', async () => {
@@ -150,6 +154,102 @@ describe('RouteFetchService.fetchNewRoute', () => {
     expect(fetched.tollEstimates['EE']).toBe(0)
     expect(fetched.tollEstimates['PL']).toBe(88)
     expect(fetched.warnings.some(w => w.includes('EE') && w.includes('€0'))).toBe(true)
+  })
+})
+
+describe('route stops from the board dictionary (09.11.2026)', () => {
+  function makePlaceService(): RouteFetchService {
+    requests = []
+    return new RouteFetchService({
+      client: {
+        fetchRoute: async (req: HereRouteRequest) => {
+          requests.push(req)
+          return fakeResponse()
+        },
+      },
+      airports: new AirportRepository(db),
+      places: new PlaceDirectory(db),
+      routes: new RouteRepository(db),
+      config: new ConfigRepository(db),
+      now: () => '2026-07-02T12:00:00.000Z',
+    })
+  }
+
+  beforeEach(async () => {
+    await db
+      .insertInto('board_places')
+      .values([
+        // Same code as an airport but other coordinates: the airport row must win.
+        { code: 'WAW', name: 'Warszawa', country: 'PL', lat: 52.0, lon: 21.0, kind: 'airport' },
+        { code: 'WYSO', name: 'Wysogotowo', country: 'PL', lat: 52.405, lon: 16.795, kind: 'custom' },
+        { code: 'LUX', name: 'Luksemburg', country: 'LU', lat: 49.6266, lon: 6.2115, kind: 'custom' },
+      ])
+      .execute()
+  })
+
+  it('resolves own place codes (4 characters) through the dictionary', async () => {
+    const service = makePlaceService()
+    const fetched = await service.fetchNewRoute('waw-wyso-prg')
+    expect(fetched.routeCode).toBe('WAW-WYSO-PRG')
+    expect(fetched.stops).toEqual(['WAW', 'WYSO', 'PRG'])
+    expect(requests[0]?.via).toEqual([{ lat: 52.405, lon: 16.795 }])
+    const saved = await service.saveFetchedRoute(fetched, 'dispatcher@company')
+    expect(saved.stops).toEqual(['WAW', 'WYSO', 'PRG'])
+  })
+
+  it('keeps airport coordinates when a code is in both lists', async () => {
+    const service = makePlaceService()
+    await service.fetchNewRoute('WAW-PRG')
+    expect(requests[0]?.origin).toEqual({ lat: 52.1657, lon: 20.9671 })
+  })
+
+  it('reaches airports that exist only in the dictionary (LUX)', async () => {
+    const service = makePlaceService()
+    await service.fetchNewRoute('WAW-LUX')
+    expect(requests[0]?.destination).toEqual({ lat: 49.6266, lon: 6.2115 })
+  })
+
+  it('rejects a code unknown to both lists, before any HERE call', async () => {
+    const service = makePlaceService()
+    const error = await service.fetchNewRoute('WAW-BARW').catch((e: unknown) => e)
+    expect(error).toMatchObject({ code: 'PLACE_NOT_FOUND' })
+    expect((error as Error).message).toContain('BARW')
+    expect(requests).toHaveLength(0)
+  })
+
+  it('without the directory resolves airports only (older wiring)', async () => {
+    const service = makeService()
+    await expect(service.fetchNewRoute('WAW-WYSO')).rejects.toMatchObject({ code: 'PLACE_NOT_FOUND' })
+  })
+})
+
+describe('PlaceDirectory.listAll', () => {
+  it('merges airports and dictionary places, the board lending names and spellings', async () => {
+    await db
+      .insertInto('board_places')
+      .values([
+        { code: 'TLL', name: 'Tallin', country: 'EE', lat: 59.4133, lon: 24.8328, kind: 'airport' },
+        { code: 'TCZE', name: 'Tczew', country: 'PL', lat: 54.092, lon: 18.778, kind: 'custom' },
+      ])
+      .execute()
+    await db
+      .insertInto('board_place_aliases')
+      .values([
+        { alias: 'tallinn', place_code: 'TLL' },
+        { alias: 'tallin', place_code: 'TLL' },
+        { alias: 'tczew', place_code: 'TCZE' },
+      ])
+      .execute()
+    const places = await new PlaceDirectory(db).listAll()
+    expect(places.map(p => p.code)).toEqual(['BER', 'PRG', 'TCZE', 'TLL', 'WAW'])
+    expect(places.find(p => p.code === 'TLL')).toMatchObject({
+      kind: 'airport',
+      name: 'Tallin',
+      detail: 'Tallinn Lennart Meri',
+      aliases: ['tallin', 'tallinn'],
+    })
+    expect(places.find(p => p.code === 'WAW')).toMatchObject({ kind: 'airport', name: 'Warsaw', aliases: [] })
+    expect(places.find(p => p.code === 'TCZE')).toMatchObject({ kind: 'place', name: 'Tczew', detail: '', country: 'PL' })
   })
 })
 

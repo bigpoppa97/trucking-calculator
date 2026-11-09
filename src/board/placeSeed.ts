@@ -74,7 +74,8 @@ export const SEED_PLACES: SeedPlace[] = [
   { code: 'BRQ', name: 'Brno', country: 'CZ', lat: 49.1513, lon: 16.6944, kind: 'airport', aliases: ['brno', 'brq'] },
   { code: 'OSR', name: 'Ostrawa', country: 'CZ', lat: 49.6963, lon: 18.1111, kind: 'airport', aliases: ['ostrawa', 'ostrava', 'osr'] },
   { code: 'LUZ', name: 'Lublin', country: 'PL', lat: 51.2403, lon: 22.7136, kind: 'airport', aliases: ['lublin', 'luz'] },
-  // Airports missing from the calculator's airport table — kind 'custom' (no calculator route lookup)
+  // Airports missing from the calculator's airport table — kind 'custom'. Since 09.11.2026 the calculator
+  // reaches them through this dictionary; board pairs with them are still not saved to the route database.
   { code: 'LUX', name: 'Luksemburg', country: 'LU', lat: 49.6266, lon: 6.2115, kind: 'custom', aliases: ['luksemburg', 'luxemburg', 'luxembourg', 'findel', 'lux'] },
   { code: 'BLL', name: 'Billund', country: 'DK', lat: 55.74, lon: 9.152, kind: 'custom', aliases: ['billund', 'bll'] },
   { code: 'FLR', name: 'Florencja', country: 'IT', lat: 43.81, lon: 11.205, kind: 'custom', aliases: ['florencja', 'florence', 'firenze', 'flr'] },
@@ -92,6 +93,9 @@ export const SEED_PLACES: SeedPlace[] = [
   { code: 'PRUS', name: 'Pruszków', country: 'PL', lat: 52.17, lon: 20.8, kind: 'custom', aliases: ['pruszkow'] },
   { code: 'NWWR', name: 'Nowa Wieś Wrocławska', country: 'PL', lat: 51.032, lon: 16.925, kind: 'custom', aliases: ['nowa wies wroclawska'] },
   { code: 'TCZE', name: 'Tczew', country: 'PL', lat: 54.092, lon: 18.778, kind: 'custom', aliases: ['tczew'] },
+  // 09.11.2026: 47-175 Barwinek — part of Kadłub, gm. Strzelce Opolskie (opolskie); NOT the Barwinek border
+  // crossing to Slovakia (podkarpackie, 38-4xx).
+  { code: 'BARW', name: 'Barwinek', country: 'PL', lat: 50.6034, lon: 18.2818, kind: 'custom', aliases: ['barwinek'] },
 ]
 
 /**

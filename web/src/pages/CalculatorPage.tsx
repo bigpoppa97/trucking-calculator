@@ -8,7 +8,7 @@ import {
   type DriverCount,
 } from '@domain'
 import { api, ApiError } from '../lib/api.js'
-import type { AirportDto, FleetVariantDto } from '../lib/types.js'
+import type { FleetVariantDto, PlaceDto } from '../lib/types.js'
 import { NumberField } from '../components/NumberField.js'
 import { CostBreakdownPanel } from '../components/CostBreakdownPanel.js'
 import { RoutePanel, type RouteState } from '../components/RoutePanel.js'
@@ -66,7 +66,7 @@ const restoredCode = (route: CalcSession['route']): string | undefined =>
 type StaticData =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; config: CalculatorConfig; variants: FleetVariantDto[]; airports: AirportDto[] }
+  | { kind: 'ready'; config: CalculatorConfig; variants: FleetVariantDto[]; places: PlaceDto[] }
 
 export function CalculatorPage() {
   const [staticData, setStaticData] = useState<StaticData>({ kind: 'loading' })
@@ -80,10 +80,10 @@ export function CalculatorPage() {
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([api.getConfig(), api.getFleetVariants(), api.getAirports()])
-      .then(([config, variants, airports]) => {
+    Promise.all([api.getConfig(), api.getFleetVariants(), api.getPlaces()])
+      .then(([config, variants, places]) => {
         if (cancelled) return
-        setStaticData({ kind: 'ready', config, variants, airports })
+        setStaticData({ kind: 'ready', config, variants, places })
         // Keep a remembered variant while it still exists (and is active).
         setForm(f => ({
           ...f,
@@ -134,6 +134,12 @@ export function CalculatorPage() {
         message: error instanceof ApiError ? error.message : 'Nie udało się sprawdzić trasy. Spróbuj ponownie.',
       })
     }
+  }
+
+  /** After "Dodaj miejsce": the new place joins the suggestions and the map. */
+  const reloadPlaces = async () => {
+    const places = await api.getPlaces()
+    setStaticData(prev => (prev.kind === 'ready' ? { ...prev, places } : prev))
   }
 
   const confirmHereFetch = async () => {
@@ -326,10 +332,11 @@ export function CalculatorPage() {
         <RoutePanel
           initialCode={restoredCode(session.route)}
           routeState={routeState}
-          airports={staticData.airports}
+          places={staticData.places}
           onLookup={lookup}
           onConfirmHereFetch={confirmHereFetch}
           onSaveFetched={saveFetched}
+          onPlacesChanged={reloadPlaces}
         />
 
         <section aria-label="Parametry zlecenia" className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -442,7 +449,7 @@ export function CalculatorPage() {
     {previewData !== null && routeData !== null && (
       <RoutePreview
         stops={previewData.stops}
-        airports={staticData.airports}
+        places={staticData.places}
         sections={previewData.sections}
         countryKm={previewData.countryKm}
         tolls={routeData.tolls}

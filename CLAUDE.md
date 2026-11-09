@@ -1,7 +1,8 @@
 # Trucking calculator + Tablica floty
 
 Two tools in one app for the forwarding department (8 subcontractor trucks):
-- **Kalkulator**: break-even cost calculator for airport-to-airport routes (HERE routing, tolls).
+- **Kalkulator**: break-even cost calculator for routes between airports and the board's dictionary places
+  (HERE routing, tolls). Route stops resolve via `PlaceDirectory` (airports first, then `board_places`), 09.11.2026.
 - **Tablica floty** (the board): replaces the Excel planner "Grafik podwykonawców"; imports the
   company application's AG Grid export (.xlsx) and lays orders out per truck and week.
 

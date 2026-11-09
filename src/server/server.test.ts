@@ -5,6 +5,7 @@ import type { Kysely } from 'kysely'
 import type { DB } from '../db/schema.js'
 import { createTestDatabase, migrateToLatest } from '../db/database.js'
 import { AirportRepository } from '../repositories/airportRepository.js'
+import { PlaceDirectory } from '../repositories/placeDirectory.js'
 import { ConfigRepository } from '../repositories/configRepository.js'
 import { RouteRepository } from '../repositories/routeRepository.js'
 import { TollSystemRuleRepository } from '../repositories/tollSystemRuleRepository.js'
@@ -98,6 +99,7 @@ describe('API endpoints', () => {
         },
       },
       airports: new AirportRepository(db),
+      places: new PlaceDirectory(db),
       routes: new RouteRepository(db),
       config: new ConfigRepository(db),
       tollRules: new TollSystemRuleRepository(db),
@@ -340,10 +342,56 @@ describe('API endpoints', () => {
     expect(hereCalls).toBe(0)
   })
 
-  it('maps unknown airports to a specific 404', async () => {
-    const res = await inject({ method: 'POST', url: '/api/here/route-fetch', payload: { routeCode: 'WAW-XXX' } })
+  it('maps unknown stops to a specific 404 with a Polish hint', async () => {
+    const res = await inject({ method: 'POST', url: '/api/here/route-fetch', payload: { routeCode: 'WAW-XXXX' } })
     expect(res.statusCode).toBe(404)
-    expect((res.json() as { error: { code: string } }).error.code).toBe('AIRPORT_NOT_FOUND')
+    const body = res.json() as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('PLACE_NOT_FOUND')
+    expect(body.error.message).toContain('Nie znam miejsca XXXX')
+    expect(hereCalls).toBe(0)
+  })
+
+  describe('places outside the airport list (09.11.2026)', () => {
+    beforeEach(async () => {
+      await db
+        .insertInto('board_places')
+        .values([
+          { code: 'WAW', name: 'Warszawa', country: 'PL', lat: 52.1657, lon: 20.9671, kind: 'airport' },
+          { code: 'WYSO', name: 'Wysogotowo', country: 'PL', lat: 52.405, lon: 16.795, kind: 'custom' },
+        ])
+        .execute()
+      await db
+        .insertInto('board_place_aliases')
+        .values([
+          { alias: 'warszawa', place_code: 'WAW' },
+          { alias: 'wysogotowo', place_code: 'WYSO' },
+        ])
+        .execute()
+    })
+
+    it('GET /api/places lists airports and dictionary places together', async () => {
+      const res = await inject({ method: 'GET', url: '/api/places' })
+      expect(res.statusCode).toBe(200)
+      const { places } = res.json() as { places: Array<{ code: string; name: string; kind: string; aliases: string[] }> }
+      const waw = places.find(p => p.code === 'WAW')
+      expect(waw).toMatchObject({ kind: 'airport', name: 'Warszawa', aliases: ['warszawa'] })
+      expect(places.find(p => p.code === 'WYSO')).toMatchObject({ kind: 'place', name: 'Wysogotowo', aliases: ['wysogotowo'] })
+      expect(places.filter(p => p.code === 'WAW')).toHaveLength(1)
+    })
+
+    it('fetches and saves a route to a dictionary place', async () => {
+      const fetched = await inject({ method: 'POST', url: '/api/here/route-fetch', payload: { routeCode: 'waw-wyso' } })
+      expect(fetched.statusCode).toBe(200)
+      const body = fetched.json() as { fetched: { routeCode: string; stops: string[] } }
+      expect(body.fetched.routeCode).toBe('WAW-WYSO')
+      expect(lastHereRequest?.destination).toEqual({ lat: 52.405, lon: 16.795 })
+
+      const saved = await inject({ method: 'POST', url: '/api/routes', payload: body.fetched })
+      expect(saved.statusCode).toBe(201)
+      const lookup = await inject({ method: 'GET', url: '/api/routes/WAW-WYSO' })
+      expect(lookup.statusCode).toBe(200)
+      expect((lookup.json() as { route: { stops: string[] } }).route.stops).toEqual(['WAW', 'WYSO'])
+    })
   })
 
   it('returns a graceful 502 when HERE is down — no internal details in the body', async () => {

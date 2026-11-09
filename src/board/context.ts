@@ -193,9 +193,10 @@ export class PlaceIndex {
     if (!key) return null
     const direct = this.aliases.get(key)
     if (direct) return direct
-    // "NOWA WIEŚ 55-080" → try without a trailing postcode
-    const noPostcode = key.replace(/\s*\d{2}\s?\d{3}$/, '').trim()
-    if (noPostcode !== key) {
+    // "NOWA WIEŚ 55-080" / "83-110 Tczew" → try without a trailing or leading postcode
+    // (aliasKey turns the hyphen into a space: "83 110 tczew")
+    for (const noPostcode of [key.replace(/\s*\d{2}\s?\d{3}$/, '').trim(), key.replace(/^\d{2}\s?\d{3}\s+/, '').trim()]) {
+      if (noPostcode === key || noPostcode === '') continue
       const hit = this.aliases.get(noPostcode)
       if (hit) return hit
     }

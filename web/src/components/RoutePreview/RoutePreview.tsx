@@ -1,6 +1,6 @@
 import { useMemo, type ReactNode } from 'react'
 import type { CountryToll } from '@domain'
-import type { AirportDto, PolylineSectionDto } from '../../lib/types.js'
+import type { PlaceDto, PolylineSectionDto } from '../../lib/types.js'
 import { RouteMap } from './RouteMap.js'
 import { TollBreakdown, type TollBreakdownRow } from './TollBreakdown.js'
 
@@ -12,7 +12,7 @@ import { TollBreakdown, type TollBreakdownRow } from './TollBreakdown.js'
 
 export interface RoutePreviewProps {
   stops: string[]
-  airports: AirportDto[]
+  places: PlaceDto[]
   sections: PolylineSectionDto[] | null
   countryKm: Record<string, number>
   tolls: CountryToll[]
@@ -22,7 +22,7 @@ export interface RoutePreviewProps {
   tollFooter?: ReactNode
 }
 
-export function RoutePreview({ stops, airports, sections, countryKm, tolls, onRefreshShape, tollFooter }: RoutePreviewProps) {
+export function RoutePreview({ stops, places, sections, countryKm, tolls, onRefreshShape, tollFooter }: RoutePreviewProps) {
   const rows = useMemo((): TollBreakdownRow[] => {
     const tollByCountry = new Map(tolls.map(t => [t.country, t]))
     const countries = new Set([...Object.keys(countryKm), ...tolls.map(t => t.country)])
@@ -54,7 +54,7 @@ export function RoutePreview({ stops, airports, sections, countryKm, tolls, onRe
   return (
     <section aria-label="Podgląd trasy" className="grid gap-4 md:grid-cols-3">
       <div className="md:col-span-2">
-        <RouteMap stops={stops} airports={airports} sections={sections} onRefreshShape={onRefreshShape} />
+        <RouteMap stops={stops} places={places} sections={sections} onRefreshShape={onRefreshShape} />
       </div>
       <TollBreakdown rows={rows} footer={tollFooter} />
     </section>

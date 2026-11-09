@@ -187,8 +187,8 @@ function WaypointsSection() {
 
   const load = async () => {
     const code = routeCode.trim().toUpperCase()
-    if (!/^[A-Z]{3}(-[A-Z]{3})+$/.test(code)) {
-      setMessage({ kind: 'error', text: 'Podaj kod trasy w formacie WAW-BUD.' })
+    if (!/^[A-Z0-9]{2,12}(-[A-Z0-9]{2,12})+$/.test(code)) {
+      setMessage({ kind: 'error', text: 'Podaj kod trasy w formacie WAW-BUD (albo z miejscem ze słownika, np. WAW-WYSO).' })
       return
     }
     setMessage(null)

@@ -12,6 +12,7 @@ import { BoardService, type ServiceInput as ServiceInputT } from './boardService
 import { DistanceService } from './distances.js'
 import { ExportFormatError, readExport } from './exportReader.js'
 import { ensurePlaceSeed } from './placeSeed.js'
+import { loadBoardContext } from './context.js'
 import { parseFleetList } from './fleetList.js'
 
 /**
@@ -524,6 +525,35 @@ describe('kilometres', () => {
     const d = await board.orderDetails('79-70-26')
     expect(d.legs[0]?.kmLoaded).toBe(777)
     expect(d.legs[0]?.kmEstimated).toBe(false)
+  })
+
+  it('09.11.2026: a calculator route to a dictionary place (not an airport) also gives the board its km', async () => {
+    await db
+      .insertInto('routes')
+      .values({ route_code: 'GORZ-WAW', stops: '["GORZ","WAW"]', total_km: 333, km_source: 'here', created_by: 'test' })
+      .execute()
+    await board.importFile(
+      await xlsx([{ no: '79-71-26', from: 'Warszawa', ld: '2026-09-21', to: 'Gorzyczki', ud: '2026-09-22', rev: 900, cost: 700, sub: 'AA1001A', trailer: 'TR100' }]),
+      'a.xlsx',
+      'daily',
+    )
+    const d = await board.orderDetails('79-71-26')
+    expect(d.legs[0]?.kmLoaded).toBe(333)
+    expect(d.legs[0]?.kmEstimated).toBe(false)
+  })
+})
+
+describe('09.11.2026 — place dictionary: Barwinek, Tczew, Kowno; postcodes before the name', () => {
+  it('resolves the new and existing places, with a leading or trailing postcode', async () => {
+    const { places } = await loadBoardContext(db)
+    expect(places.resolve('47-175 Barwinek')).toBe('BARW')
+    expect(places.resolve('BARWINEK')).toBe('BARW')
+    expect(places.resolve('83-110 Tczew')).toBe('TCZE')
+    expect(places.resolve('Tczew 83-110')).toBe('TCZE')
+    expect(places.resolve('Kowno')).toBe('KUN')
+    expect(places.resolve('KAUNAS')).toBe('KUN')
+    expect(places.resolve('83-110')).toBeNull()
+    expect(places.get('BARW')).toMatchObject({ name: 'Barwinek', country: 'PL', kind: 'custom' })
   })
 })
 

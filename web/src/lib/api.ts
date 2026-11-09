@@ -5,6 +5,8 @@ import type {
   FetchedRouteDto,
   FleetVariantDto,
   GapFillResultDto,
+  GeocodeCandidateDto,
+  PlaceDto,
   RouteDetailsDto,
   RouteSummaryDto,
   RouteWaypointDto,
@@ -157,6 +159,22 @@ export const api = {
 
   async getAirports(): Promise<AirportDto[]> {
     return (await request<{ airports: AirportDto[] }>('GET', '/api/airports')).airports
+  },
+
+  /** Route stops: airports + the board's place dictionary. */
+  async getPlaces(): Promise<PlaceDto[]> {
+    return (await request<{ places: PlaceDto[] }>('GET', '/api/places')).places
+  },
+
+  /** HERE search for a new place (same service as the board's "Nowe miejsce"). */
+  async geocodePlace(query: string): Promise<GeocodeCandidateDto[]> {
+    return (await request<{ candidates: GeocodeCandidateDto[] }>('GET', `/api/board/geocode?q=${encodeURIComponent(query)}`))
+      .candidates
+  },
+
+  /** Adds a place to the shared dictionary; returns its code (e.g. BARW). */
+  async createPlace(input: { name: string; code?: string; country?: string; lat: number; lon: number }): Promise<string> {
+    return (await request<{ code: string }>('POST', '/api/board/places', input)).code
   },
 
   /** Table-first lookup (PRD §3.2 step 1). Returns null on the explicit not-found state. */

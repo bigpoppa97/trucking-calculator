@@ -4,6 +4,7 @@ import type { Kysely } from 'kysely'
 import type { DB } from '../db/schema.js'
 import { buildAuthDeps, registerAuthHook, registerAuthRoutes, requireRole } from './auth.js'
 import { AirportRepository } from '../repositories/airportRepository.js'
+import { PlaceDirectory } from '../repositories/placeDirectory.js'
 import { ConfigRepository } from '../repositories/configRepository.js'
 import { FleetVariantRepository } from '../repositories/fleetVariantRepository.js'
 import { CalculationRepository } from '../repositories/calculationRepository.js'
@@ -47,14 +48,14 @@ export interface AppDeps {
 
 const ROUTE_CODE_PARAM_SCHEMA = {
   type: 'object',
-  properties: { routeCode: { type: 'string', minLength: 7, maxLength: 64 } },
+  properties: { routeCode: { type: 'string', minLength: 5, maxLength: 64 } },
   required: ['routeCode'],
 } as const
 
 const TOLL_PARAMS_SCHEMA = {
   type: 'object',
   properties: {
-    routeCode: { type: 'string', minLength: 7, maxLength: 64 },
+    routeCode: { type: 'string', minLength: 5, maxLength: 64 },
     country: { type: 'string', minLength: 2, maxLength: 2 },
   },
   required: ['routeCode', 'country'],
@@ -62,7 +63,7 @@ const TOLL_PARAMS_SCHEMA = {
 
 const FETCH_BODY_SCHEMA = {
   type: 'object',
-  properties: { routeCode: { type: 'string', minLength: 7, maxLength: 64 } },
+  properties: { routeCode: { type: 'string', minLength: 5, maxLength: 64 } },
   required: ['routeCode'],
   additionalProperties: false,
 } as const
@@ -70,7 +71,7 @@ const FETCH_BODY_SCHEMA = {
 const SAVE_BODY_SCHEMA = {
   type: 'object',
   properties: {
-    routeCode: { type: 'string', minLength: 7, maxLength: 64 },
+    routeCode: { type: 'string', minLength: 5, maxLength: 64 },
     stops: { type: 'array', items: { type: 'string' }, minItems: 2 },
     totalKm: { type: 'number', exclusiveMinimum: 0 },
     countryKm: { type: 'object', additionalProperties: { type: 'number', minimum: 0 } },
@@ -130,6 +131,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const configRepo = new ConfigRepository(deps.db)
   const variantRepo = new FleetVariantRepository(deps.db)
   const airportRepo = new AirportRepository(deps.db)
+  const placeDirectory = new PlaceDirectory(deps.db)
   const calculationRepo = new CalculationRepository(deps.db)
   const calculationService = new CalculationService({
     routes: routeRepo,
@@ -185,6 +187,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.get('/api/airports', async (_request, reply) => {
     const airports = await airportRepo.listAll()
     return reply.send({ airports })
+  })
+
+  // Route stops: airports + the board's place dictionary (suggestions, map pins).
+  app.get('/api/places', async (_request, reply) => {
+    return reply.send({ places: await placeDirectory.listAll() })
   })
 
   // Route DB screen (PRD §5.3): list with pending/estimate flags.
@@ -451,7 +458,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         body: {
           type: 'object',
           properties: {
-            routeCode: { type: 'string', minLength: 7, maxLength: 64 },
+            routeCode: { type: 'string', minLength: 5, maxLength: 64 },
             days: { type: 'number', minimum: 0.5 },
             drivers: { type: 'integer', enum: [1, 2] },
             fleetVariantId: { type: 'integer', minimum: 1 },
@@ -485,7 +492,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         querystring: {
           type: 'object',
           properties: {
-            route: { type: 'string', minLength: 7, maxLength: 64 },
+            route: { type: 'string', minLength: 5, maxLength: 64 },
             limit: { type: 'string', pattern: '^\\d+$' },
           },
           additionalProperties: false,
@@ -670,7 +677,7 @@ function sendRouteFetchError(
   if (error instanceof RouteFetchError) {
     const status =
       error.code === 'INVALID_ROUTE_CODE' ? 400
-      : error.code === 'AIRPORT_NOT_FOUND' ? 404
+      : error.code === 'PLACE_NOT_FOUND' ? 404
       : error.code === 'ROUTE_NOT_FOUND' ? 404
       : error.code === 'ROUTE_ALREADY_EXISTS' ? 409
       : 502

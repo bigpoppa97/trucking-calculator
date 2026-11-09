@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import { encode } from '@here/flexpolyline'
-import type { AirportDto } from '../../lib/types.js'
+import type { PlaceDto } from '../../lib/types.js'
 import { TollBreakdown } from './TollBreakdown.js'
 import { RoutePreview } from './RoutePreview.js'
 
@@ -22,10 +22,11 @@ vi.mock('react-leaflet', () => ({
   useMap: () => ({ fitBounds: () => {} }),
 }))
 
-const AIRPORTS: AirportDto[] = [
-  { iata: 'WAW', name: 'Warsaw Chopin', city: 'Warsaw', country: 'PL', lat: 52.1657, lon: 20.9671 },
-  { iata: 'BER', name: 'Berlin Brandenburg', city: 'Berlin', country: 'DE', lat: 52.3667, lon: 13.5033 },
-  { iata: 'FRA', name: 'Frankfurt', city: 'Frankfurt', country: 'DE', lat: 50.0333, lon: 8.5706 },
+const PLACES: PlaceDto[] = [
+  { code: 'WAW', name: 'Warszawa', detail: 'Warsaw Chopin', country: 'PL', lat: 52.1657, lon: 20.9671, kind: 'airport', aliases: [] },
+  { code: 'BER', name: 'Berlin', detail: 'Berlin Brandenburg', country: 'DE', lat: 52.3667, lon: 13.5033, kind: 'airport', aliases: [] },
+  { code: 'FRA', name: 'Frankfurt', detail: 'Frankfurt', country: 'DE', lat: 50.0333, lon: 8.5706, kind: 'airport', aliases: [] },
+  { code: 'WYSO', name: 'Wysogotowo', detail: '', country: 'PL', lat: 52.405, lon: 16.795, kind: 'place', aliases: ['wysogotowo'] },
 ]
 
 describe('TollBreakdown', () => {
@@ -58,7 +59,7 @@ describe('RoutePreview / RouteMap', () => {
     render(
       <RoutePreview
         stops={['WAW', 'FRA']}
-        airports={AIRPORTS}
+        places={PLACES}
         sections={null}
         countryKm={{ PL: 420, DE: 660 }}
         tolls={[{ country: 'PL', tollEur: 102, status: 'verified' }]}
@@ -73,6 +74,21 @@ describe('RoutePreview / RouteMap', () => {
     expect(screen.getByText('FRA')).toBeInTheDocument()
   })
 
+  it('09.11.2026: pins a dictionary place (not an airport) under its name', () => {
+    render(
+      <RoutePreview
+        stops={['WAW', 'WYSO', 'FRA']}
+        places={PLACES}
+        sections={null}
+        countryKm={{ PL: 300, DE: 660 }}
+        tolls={[]}
+      />,
+    )
+    expect(screen.getAllByTestId('circle-marker')).toHaveLength(3)
+    expect(screen.getByText('Wysogotowo')).toBeInTheDocument()
+    expect(screen.getByText(/linia prosta między punktami/)).toBeInTheDocument()
+  })
+
   it('offers the shape backfill button in the fallback banner and reports failure explicitly', async () => {
     const userEvent = (await import('@testing-library/user-event')).default
     const user = userEvent.setup()
@@ -80,7 +96,7 @@ describe('RoutePreview / RouteMap', () => {
     render(
       <RoutePreview
         stops={['WAW', 'FRA']}
-        airports={AIRPORTS}
+        places={PLACES}
         sections={null}
         countryKm={{ PL: 420 }}
         tolls={[{ country: 'PL', tollEur: 102, status: 'verified' }]}
@@ -105,7 +121,7 @@ describe('RoutePreview / RouteMap', () => {
     render(
       <RoutePreview
         stops={['WAW', 'BER', 'FRA']}
-        airports={AIRPORTS}
+        places={PLACES}
         sections={[{ polyline, spans: [{ offset: 0, country: 'PL' }, { offset: 2, country: 'DE' }] }]}
         countryKm={{ PL: 400, DE: 700 }}
         tolls={[
@@ -136,7 +152,7 @@ describe('RoutePreview / RouteMap', () => {
     render(
       <RoutePreview
         stops={['WAW', 'FRA']}
-        airports={AIRPORTS}
+        places={PLACES}
         sections={[{ polyline, spans: [{ offset: 0, country: 'PL' }, { offset: 1, country: 'DE' }] }]}
         countryKm={{ DE: 660, PL: 420 }}
         tolls={[

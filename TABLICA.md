@@ -125,6 +125,17 @@ rozładunku (kliknięcie otwiera to zlecenie) albo późniejszej „Pozycji auta
 tygodnia ÷ liczba aut na tablicy (pod spodem — przewoźnika). Panel zlecenia przy odcinku pokazuje daty i km razem
 (z ładunkiem + pusty dojazd); kwoty są w kafelkach pod odcinkami.
 
+## Kalkulator: miejsca spoza lotnisk (od 09.11.2026)
+
+Kalkulator i tablica mają jeden słownik miejsc. W kodzie trasy obok lotnisk (WAW, BUD) można użyć każdego miejsca
+ze słownika tablicy (WYSO, TCZE, BARW…): `WAW-WYSO-FRA`. Można też wpisać nazwę — „WAW-Kowno” zamienia się na
+`WAW-KUN`; podpowiedzi pod polem szukają po kodzie, nazwie i innych zapisach. Nieznane miejsce: zamiast „Zapytaj HERE
+API” kalkulator pokazuje „Nie znam miejsca …” z podobnymi miejscami i przyciskiem „Dodaj … jako nowe miejsce”
+(wyszukiwanie HERE albo współrzędne ręcznie). Dodane miejsce od razu zna też tablica. Gdy kod jest i lotniskiem,
+i miejscem tablicy, kalkulator bierze współrzędne lotniska (stare trasy liczą się jak dotąd). LUX, BLL i FLR działają
+w kalkulatorze bez importu CSV. Tablica bierze km z Bazy tras dla każdej pary (ręczna korekta km w kalkulatorze wygrywa
+też np. dla WYSO-WAW), ale sama zapisuje do Bazy tras tylko pary lotnisk — przepinki liczą tylko km.
+
 ## Serwis i strona zestawu
 
 - **Serwis** = okres, w którym auto (albo naczepa) jest niedostępne. Nie zmienia km ani kwot.

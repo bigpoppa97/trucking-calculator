@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { MapContainer, TileLayer, Polyline, CircleMarker, Tooltip, useMap } from 'react-leaflet'
 import { decode } from '@here/flexpolyline'
 import type { LatLngBoundsExpression, LatLngExpression } from 'leaflet'
-import type { AirportDto, PolylineSectionDto } from '../../lib/types.js'
+import type { PlaceDto, PolylineSectionDto } from '../../lib/types.js'
 import 'leaflet/dist/leaflet.css'
 
 /**
  * Left panel of the route preview: the HERE route shape on OSM tiles,
- * color-coded per country, with airport markers. Display-only (sprint rule).
+ * color-coded per country, with markers for its stops (airports and dictionary places). Display-only (sprint rule).
  * CircleMarkers are used instead of Leaflet's default icons — no bundler
  * asset fix needed and they match the reference layout.
  */
@@ -17,7 +17,8 @@ const SEGMENT_COLORS = ['#2563eb', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '
 
 export interface RouteMapProps {
   stops: string[]
-  airports: AirportDto[]
+  /** Airports + dictionary places (GET /api/places). */
+  places: PlaceDto[]
   /** Null → no stored shape; straight dashed line fallback. */
   sections: PolylineSectionDto[] | null
   /** When set, the fallback banner offers to backfill the shape from HERE. */
@@ -66,10 +67,10 @@ function FitBounds({ bounds }: { bounds: LatLngBoundsExpression | null }) {
   return null
 }
 
-export function RouteMap({ stops, airports, sections, onRefreshShape }: RouteMapProps) {
+export function RouteMap({ stops, places, sections, onRefreshShape }: RouteMapProps) {
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
-  const airportByIata = useMemo(() => new Map(airports.map(a => [a.iata, a])), [airports])
+  const placeByCode = useMemo(() => new Map(places.map(p => [p.code, p])), [places])
 
   const refreshShape = async () => {
     if (onRefreshShape === undefined) return
@@ -84,8 +85,8 @@ export function RouteMap({ stops, airports, sections, onRefreshShape }: RouteMap
     }
   }
   const stopPoints = stops
-    .map(iata => ({ iata, airport: airportByIata.get(iata) }))
-    .filter((s): s is { iata: string; airport: AirportDto } => s.airport !== undefined)
+    .map(code => ({ code, place: placeByCode.get(code) }))
+    .filter((s): s is { code: string; place: PlaceDto } => s.place !== undefined)
 
   const segments = useMemo(() => (sections === null ? null : buildSegments(sections)), [sections])
 
@@ -93,7 +94,7 @@ export function RouteMap({ stops, airports, sections, onRefreshShape }: RouteMap
     const points: Array<[number, number]> =
       segments !== null && segments.length > 0
         ? segments.flatMap(s => s.points as Array<[number, number]>)
-        : stopPoints.map(s => [s.airport.lat, s.airport.lon])
+        : stopPoints.map(s => [s.place.lat, s.place.lon])
     if (points.length < 2) return null
     const lats = points.map(p => p[0])
     const lons = points.map(p => p[1])
@@ -106,7 +107,7 @@ export function RouteMap({ stops, airports, sections, onRefreshShape }: RouteMap
   if (stopPoints.length < 2 && (segments === null || segments.length === 0)) {
     return (
       <p className="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
-        Podgląd mapy niedostępny — brak współrzędnych lotnisk tej trasy.
+        Podgląd mapy niedostępny — brak współrzędnych punktów tej trasy.
       </p>
     )
   }
@@ -126,7 +127,7 @@ export function RouteMap({ stops, airports, sections, onRefreshShape }: RouteMap
           ))
         ) : (
           <Polyline
-            positions={stopPoints.map(s => [s.airport.lat, s.airport.lon] as LatLngExpression)}
+            positions={stopPoints.map(s => [s.place.lat, s.place.lon] as LatLngExpression)}
             pathOptions={{ color: '#2563eb', weight: 3, opacity: 0.6, dashArray: '8 8' }}
           />
         )}
@@ -135,8 +136,8 @@ export function RouteMap({ stops, airports, sections, onRefreshShape }: RouteMap
           const isEndpoint = i === 0 || i === stopPoints.length - 1
           return (
             <CircleMarker
-              key={stop.iata}
-              center={[stop.airport.lat, stop.airport.lon]}
+              key={`${stop.code}-${i}`}
+              center={[stop.place.lat, stop.place.lon]}
               radius={isEndpoint ? 8 : 5}
               pathOptions={{
                 color: '#ffffff',
@@ -146,7 +147,7 @@ export function RouteMap({ stops, airports, sections, onRefreshShape }: RouteMap
               }}
             >
               <Tooltip permanent direction="top" offset={[0, -8]}>
-                {stop.iata}
+                {stop.place.kind === 'airport' ? stop.code : stop.place.name}
               </Tooltip>
             </CircleMarker>
           )
@@ -154,7 +155,7 @@ export function RouteMap({ stops, airports, sections, onRefreshShape }: RouteMap
       </MapContainer>
       {segments === null && (
         <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
-          <span>Podgląd trasy niedostępny — trasa z bazy danych (linia prosta między lotniskami).</span>
+          <span>Podgląd trasy niedostępny — trasa z bazy danych (linia prosta między punktami).</span>
           {onRefreshShape !== undefined && (
             <button
               type="button"

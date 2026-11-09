@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import type { AirportDto, FetchedRouteDto, RouteDetailsDto } from '../lib/types.js'
+import type { FetchedRouteDto, PlaceDto, RouteDetailsDto } from '../lib/types.js'
 import { formatEur, formatKm } from '../lib/format.js'
+import { normalizeRouteInput, searchPlaces, titleCase, unknownStops } from '../lib/places.js'
+import { AddPlaceForm } from './AddPlaceForm.js'
 import { RouteStatusBadge, type RouteStatus } from './RouteStatusBadge.js'
 import { TollCheckDetails, TollCheckWarnings } from './TollCheck.js'
 
@@ -9,6 +11,10 @@ import { TollCheckDetails, TollCheckWarnings } from './TollCheck.js'
  * any HERE call, explicit save step afterwards. Purely presentational —
  * state transitions live in CalculatorPage so the stale-reset rule is
  * enforced in one place.
+ *
+ * Stops (09.11.2026): airports or places from the board's dictionary, typed
+ * as codes or names ("WAW-Kowno" → WAW-KUN). An unknown stop is offered as a
+ * new dictionary place instead of a HERE call that would fail.
  */
 
 export type RouteState =
@@ -24,10 +30,13 @@ export interface RoutePanelProps {
   /** Route code to show in the field when the calculator restores a remembered route. */
   initialCode?: string | undefined
   routeState: RouteState
-  airports: AirportDto[]
+  /** Airports + dictionary places (GET /api/places). */
+  places: PlaceDto[]
   onLookup: (routeCode: string) => void
   onConfirmHereFetch: () => void
   onSaveFetched: () => void
+  /** Reloads the place list after "Dodaj miejsce". */
+  onPlacesChanged?: (() => Promise<void>) | undefined
 }
 
 export function routeStatusOf(state: RouteState): RouteStatus | null {
@@ -45,22 +54,46 @@ export function routeStatusOf(state: RouteState): RouteStatus | null {
   }
 }
 
-export function RoutePanel({ initialCode, routeState, airports, onLookup, onConfirmHereFetch, onSaveFetched }: RoutePanelProps) {
+export function RoutePanel({
+  initialCode,
+  routeState,
+  places,
+  onLookup,
+  onConfirmHereFetch,
+  onSaveFetched,
+  onPlacesChanged,
+}: RoutePanelProps) {
   const [input, setInput] = useState(initialCode ?? '')
   const status = routeStatusOf(routeState)
 
-  const lastSegment = input.split('-').pop() ?? ''
-  const suggestions =
-    lastSegment.length >= 1 && lastSegment.length < 3
-      ? airports
-          .filter(a => a.iata.startsWith(lastSegment.toUpperCase()))
-          .slice(0, 6)
-      : []
+  const lastSegment = (input.split('-').pop() ?? '').trim()
+  const lastIsCode = places.some(p => p.code === lastSegment.toUpperCase())
+  // Right after a lookup with unknown stops, the "Nie znam miejsca" box offers matches instead.
+  const justLookedUp = routeState.kind === 'notFound' && routeState.routeCode === input
+  const suggestions = lastSegment.length >= 1 && !lastIsCode && !justLookedUp ? searchPlaces(lastSegment, places, 6) : []
 
-  const applySuggestion = (iata: string) => {
+  const applySuggestion = (code: string) => {
     const parts = input.split('-')
-    parts[parts.length - 1] = iata
+    parts[parts.length - 1] = code
     setInput(parts.join('-'))
+  }
+
+  const submit = (raw: string) => {
+    const code = normalizeRouteInput(raw, places)
+    if (code === '') return
+    setInput(code)
+    onLookup(code)
+  }
+
+  /** Swap one stop of the looked-up route for another code and look it up again. */
+  const replaceStop = async (routeCode: string, stop: string, code: string) => {
+    const next = routeCode
+      .split('-')
+      .map(s => (s === stop ? code : s))
+      .join('-')
+    await onPlacesChanged?.()
+    setInput(next)
+    onLookup(next)
   }
 
   return (
@@ -74,7 +107,7 @@ export function RoutePanel({ initialCode, routeState, airports, onLookup, onConf
         className="flex gap-2"
         onSubmit={e => {
           e.preventDefault()
-          if (input.trim() !== '') onLookup(input)
+          if (input.trim() !== '') submit(input)
         }}
       >
         <label htmlFor="route-code" className="sr-only">
@@ -85,7 +118,7 @@ export function RoutePanel({ initialCode, routeState, airports, onLookup, onConf
           type="text"
           value={input}
           onChange={e => setInput(e.target.value.toUpperCase())}
-          placeholder="np. WAW-PRG lub WAW-BER-FRA"
+          placeholder="np. WAW-PRG lub WAW-WYSO-FRA"
           className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm uppercase shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-300"
         />
         <button
@@ -98,16 +131,10 @@ export function RoutePanel({ initialCode, routeState, airports, onLookup, onConf
       </form>
 
       {suggestions.length > 0 && (
-        <ul className="mt-1 flex flex-wrap gap-1" aria-label="Podpowiedzi lotnisk">
-          {suggestions.map(a => (
-            <li key={a.iata}>
-              <button
-                type="button"
-                onClick={() => applySuggestion(a.iata)}
-                className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-100"
-              >
-                {a.iata} · {a.city}
-              </button>
+        <ul className="mt-1 flex flex-wrap gap-1" aria-label="Podpowiedzi miejsc">
+          {suggestions.map(p => (
+            <li key={p.code}>
+              <SuggestionButton place={p} onClick={() => applySuggestion(p.code)} />
             </li>
           ))}
         </ul>
@@ -115,7 +142,10 @@ export function RoutePanel({ initialCode, routeState, airports, onLookup, onConf
 
       <div className="mt-3">
         {routeState.kind === 'idle' && (
-          <p className="text-sm text-slate-500">Podaj kod trasy (kody IATA rozdzielone myślnikami) i sprawdź bazę.</p>
+          <p className="text-sm text-slate-500">
+            Podaj trasę: kody lotnisk lub miejsc rozdzielone myślnikami (np. WAW-PRG, WAW-TCZE). Możesz wpisać nazwę
+            miejscowości — podpowiem kod.
+          </p>
         )}
 
         {routeState.kind === 'loading' && <p className="text-sm text-slate-500">Sprawdzam bazę tras…</p>}
@@ -126,7 +156,16 @@ export function RoutePanel({ initialCode, routeState, airports, onLookup, onConf
           </p>
         )}
 
-        {routeState.kind === 'notFound' && (
+        {routeState.kind === 'notFound' && places.length > 0 && unknownStops(routeState.routeCode, places).length > 0 && (
+          <UnknownStops
+            key={routeState.routeCode}
+            routeCode={routeState.routeCode}
+            places={places}
+            onReplace={(stop, code) => replaceStop(routeState.routeCode, stop, code)}
+          />
+        )}
+
+        {routeState.kind === 'notFound' && (places.length === 0 || unknownStops(routeState.routeCode, places).length === 0) && (
           <div className="rounded bg-orange-50 px-3 py-3 text-sm text-orange-900">
             <p className="mb-2">
               Trasy <strong>{routeState.routeCode}</strong> nie ma w bazie. Zapytać HERE API? (Zużywa limit
@@ -180,6 +219,77 @@ export function RoutePanel({ initialCode, routeState, airports, onLookup, onConf
         )}
       </div>
     </section>
+  )
+}
+
+function SuggestionButton({ place, onClick }: { place: PlaceDto; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={place.kind === 'airport' ? `Lotnisko${place.detail ? `: ${place.detail}` : ''}` : 'Miejsce ze słownika'}
+      className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-100"
+    >
+      <span className="font-mono">{place.code}</span> · {place.name}
+      {place.kind === 'place' && place.country !== '' && <span className="text-slate-400"> ({place.country})</span>}
+    </button>
+  )
+}
+
+/**
+ * The looked-up route has stops nobody knows: offer close matches (a typo, a
+ * partial name) or "Dodaj miejsce" — one unknown stop at a time.
+ */
+function UnknownStops({
+  routeCode,
+  places,
+  onReplace,
+}: {
+  routeCode: string
+  places: PlaceDto[]
+  onReplace: (stop: string, code: string) => Promise<void>
+}) {
+  const unknown = unknownStops(routeCode, places)
+  const stop = unknown[0]!
+  const close = searchPlaces(stop, places, 3)
+  const [adding, setAdding] = useState(false)
+
+  return (
+    <div className="rounded bg-amber-50 px-3 py-3 text-sm text-amber-900" data-testid="unknown-stops">
+      <p>
+        Nie znam {unknown.length === 1 ? 'miejsca' : 'miejsc'}{' '}
+        {unknown.map((u, i) => (
+          <span key={u}>
+            {i > 0 && ', '}
+            <strong>{u}</strong>
+          </span>
+        ))}
+        . To nie jest lotnisko ani miejsce ze słownika.
+      </p>
+      {close.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          <span className="text-xs">Może chodziło o:</span>
+          {close.map(p => (
+            <SuggestionButton key={p.code} place={p} onClick={() => void onReplace(stop, p.code)} />
+          ))}
+        </div>
+      )}
+      {adding ? (
+        <AddPlaceForm
+          initialName={titleCase(stop)}
+          onCreated={code => onReplace(stop, code)}
+          onCancel={() => setAdding(false)}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="mt-2 rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700"
+        >
+          Dodaj „{titleCase(stop)}” jako nowe miejsce
+        </button>
+      )}
+    </div>
   )
 }
 

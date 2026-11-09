@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { CalculatorConfig } from '@domain'
-import type { FetchedRouteDto, RouteDetailsDto } from '../lib/types.js'
+import type { FetchedRouteDto, PlaceDto, RouteDetailsDto } from '../lib/types.js'
+import { ApiError } from '../lib/api.js'
 import { CalculatorPage } from './CalculatorPage.js'
 
 // Leaflet needs a real layout engine — stub react-leaflet out; the map's own
@@ -23,7 +24,9 @@ vi.mock('../lib/api.js', async importOriginal => {
     api: {
       getConfig: vi.fn(),
       getFleetVariants: vi.fn(),
-      getAirports: vi.fn(),
+      getPlaces: vi.fn(),
+      geocodePlace: vi.fn(),
+      createPlace: vi.fn(),
       getRoute: vi.fn(),
       fetchRouteFromHere: vi.fn(),
       saveFetchedRoute: vi.fn(),
@@ -84,7 +87,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocked.getConfig.mockResolvedValue(CONFIG)
   mocked.getFleetVariants.mockResolvedValue(VARIANTS)
-  mocked.getAirports.mockResolvedValue([])
+  mocked.getPlaces.mockResolvedValue([])
 })
 
 async function renderPage() {
@@ -459,5 +462,92 @@ describe('route kept for the tab (27.10.2026 — leaving the calculator must not
     mocked.getRoute.mockResolvedValue(WAW_PRG)
     await leaveAndReturn()
     expect(await screen.findByTestId('route-total-km')).toHaveTextContent('680 km')
+  })
+})
+
+describe('09.11.2026 — places other than airports', () => {
+  const PLACES: PlaceDto[] = [
+    { code: 'WAW', name: 'Warszawa', detail: 'Warsaw Chopin', country: 'PL', lat: 52.1657, lon: 20.9671, kind: 'airport', aliases: ['warszawa', 'warsaw'] },
+    { code: 'KUN', name: 'Kowno', detail: 'Kaunas', country: 'LT', lat: 54.9639, lon: 24.0848, kind: 'airport', aliases: ['kaunas', 'kowno'] },
+    { code: 'TCZE', name: 'Tczew', detail: '', country: 'PL', lat: 54.092, lon: 18.778, kind: 'place', aliases: ['tczew'] },
+    { code: 'WYSO', name: 'Wysogotowo', detail: '', country: 'PL', lat: 52.405, lon: 16.795, kind: 'place', aliases: ['wysogotowo'] },
+  ]
+  const BARW: PlaceDto = { code: 'BARW', name: 'Barwinek', detail: '', country: 'PL', lat: 50.6034, lon: 18.2818, kind: 'place', aliases: ['barwinek'] }
+
+  beforeEach(() => {
+    mocked.getPlaces.mockResolvedValue(PLACES)
+  })
+
+  it('a stop typed as a name becomes its code (Kowno → KUN)', async () => {
+    mocked.getRoute.mockResolvedValue(null)
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-Kowno')
+    await waitFor(() => expect(mocked.getRoute).toHaveBeenCalledWith('WAW-KUN'))
+    expect(screen.getByLabelText('Kod trasy')).toHaveValue('WAW-KUN')
+    // Known stops only → the usual HERE confirmation.
+    expect(await screen.findByRole('button', { name: 'Zapytaj HERE API' })).toBeInTheDocument()
+  })
+
+  it('suggests dictionary places by name, not only airports by code', async () => {
+    const user = await renderPage()
+    await user.type(screen.getByLabelText('Kod trasy'), 'WAW-TCZ')
+    const list = screen.getByRole('list', { name: 'Podpowiedzi miejsc' })
+    await user.click(within(list).getByRole('button', { name: /TCZE · Tczew/ }))
+    expect(screen.getByLabelText('Kod trasy')).toHaveValue('WAW-TCZE')
+  })
+
+  it('an unknown stop: no HERE button, a close match offered instead', async () => {
+    mocked.getRoute.mockResolvedValueOnce(null)
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-WYSOG')
+    expect(await screen.findByTestId('unknown-stops')).toHaveTextContent('Nie znam miejsca WYSOG')
+    expect(screen.queryByRole('button', { name: 'Zapytaj HERE API' })).not.toBeInTheDocument()
+
+    mocked.getRoute.mockResolvedValueOnce(null)
+    await user.click(screen.getByRole('button', { name: /WYSO · Wysogotowo/ }))
+    await waitFor(() => expect(mocked.getRoute).toHaveBeenLastCalledWith('WAW-WYSO'))
+    expect(screen.getByLabelText('Kod trasy')).toHaveValue('WAW-WYSO')
+    expect(await screen.findByRole('button', { name: 'Zapytaj HERE API' })).toBeInTheDocument()
+  })
+
+  it('"Dodaj miejsce": HERE search, pick, save to the dictionary, look the route up again', async () => {
+    mocked.getRoute.mockResolvedValue(null)
+    mocked.geocodePlace.mockResolvedValue([
+      { title: 'Barwinek, 47-175 Kadłub, Polska', lat: 50.6034, lon: 18.2818, country: 'PL' },
+    ])
+    mocked.createPlace.mockResolvedValue('BARW')
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-BARWINEK')
+    await user.click(await screen.findByRole('button', { name: 'Dodaj „Barwinek” jako nowe miejsce' }))
+
+    const form = screen.getByRole('form', { name: 'Dodaj miejsce' })
+    expect(within(form).getByLabelText('Nazwa *')).toHaveValue('Barwinek')
+    await user.click(within(form).getByRole('button', { name: 'Szukaj' }))
+    expect(mocked.geocodePlace).toHaveBeenCalledWith('Barwinek')
+    await user.click(await within(form).findByRole('button', { name: /Barwinek, 47-175 Kadłub/ }))
+
+    mocked.getPlaces.mockResolvedValue([...PLACES, BARW])
+    await user.click(within(form).getByRole('button', { name: 'Dodaj miejsce' }))
+    await waitFor(() =>
+      expect(mocked.createPlace).toHaveBeenCalledWith({ name: 'Barwinek', lat: 50.6034, lon: 18.2818, country: 'PL' }),
+    )
+    await waitFor(() => expect(mocked.getRoute).toHaveBeenLastCalledWith('WAW-BARW'))
+    expect(screen.getByLabelText('Kod trasy')).toHaveValue('WAW-BARW')
+    expect(await screen.findByRole('button', { name: 'Zapytaj HERE API' })).toBeInTheDocument()
+    expect(screen.queryByTestId('unknown-stops')).not.toBeInTheDocument()
+  })
+
+  it('a refused save shows the server message and keeps the form', async () => {
+    mocked.getRoute.mockResolvedValue(null)
+    mocked.createPlace.mockRejectedValue(new ApiError('BAD_COORDS', 'Podaj poprawne współrzędne (szerokość i długość geograficzną).', 400))
+    const user = await renderPage()
+    await lookupRoute(user, 'WAW-BARWINEK')
+    await user.click(await screen.findByRole('button', { name: 'Dodaj „Barwinek” jako nowe miejsce' }))
+    const form = screen.getByRole('form', { name: 'Dodaj miejsce' })
+    await user.type(within(form).getByLabelText('Szerokość *'), '50,6034')
+    await user.type(within(form).getByLabelText('Długość *'), '18,2818')
+    await user.click(within(form).getByRole('button', { name: 'Dodaj miejsce' }))
+    expect(await within(form).findByRole('alert')).toHaveTextContent('Podaj poprawne współrzędne')
+    expect(mocked.createPlace).toHaveBeenCalledWith({ name: 'Barwinek', lat: 50.6034, lon: 18.2818 })
   })
 })

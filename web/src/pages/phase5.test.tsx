@@ -29,7 +29,9 @@ vi.mock('../lib/api.js', async importOriginal => {
     api: {
       getConfig: vi.fn(),
       getFleetVariants: vi.fn(),
-      getAirports: vi.fn(),
+      getPlaces: vi.fn(),
+      geocodePlace: vi.fn(),
+      createPlace: vi.fn(),
       getRoute: vi.fn(),
       fetchRouteFromHere: vi.fn(),
       saveFetchedRoute: vi.fn(),
