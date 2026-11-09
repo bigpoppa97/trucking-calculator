@@ -10,6 +10,8 @@ export interface WeekBar {
   legIndex: number
   legCount: number
   title: string
+  /** Route in place codes ("WAW → KTW → BUD") — prototype. */
+  codeTitle?: string
   startDate: string
   endDate: string
   /** Hours at the start / end of the leg ("HH:MM"), null = unknown. */

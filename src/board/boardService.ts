@@ -98,6 +98,8 @@ export interface WeekBar {
   legIndex: number
   legCount: number
   title: string
+  /** The route in place codes, every stop ("WAW → KTW → BUD") — prototype of short bar labels. */
+  codeTitle: string
   startDate: string
   endDate: string
   /** Hours at the start / end of the leg ("HH:MM", null = unknown) — two orders sharing a day can share a row. */
@@ -1008,6 +1010,7 @@ export class BoardService {
       legIndex: l.index,
       legCount: o.legs.length,
       title: legTitle(l, ctx),
+      codeTitle: legCodeTitle(l),
       startDate: l.startDate,
       endDate: l.endDate,
       startTime: l.startTime,
@@ -2887,6 +2890,12 @@ function legTitle(l: ComputedLeg, ctx: BoardContext): string {
   const middle = l.stops.slice(1, -1).map(st => (st.code ? ctx.places.name(st.code) : st.raw))
   const via = middle.length > 0 ? ` (przez ${middle.join(', ')})` : ''
   return `${from} → ${to}${via}`
+}
+
+/** "WAW → KTW → BUD": every stop by its place code (raw text when unknown), repeats merged. */
+function legCodeTitle(l: ComputedLeg): string {
+  const codes = l.stops.map(st => st.code ?? st.raw).filter((c, i, arr) => i === 0 || c !== arr[i - 1])
+  return codes.length > 0 ? codes.join(' → ') : '?'
 }
 
 function legMargin(o: ComputedOrder, l: ComputedLeg): number | null {

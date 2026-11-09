@@ -59,15 +59,15 @@ export interface PlacedBar extends WeekBar {
  * (loading from its start, unloading to its end). A short bar is at least BAR_MIN_DAYS wide so the
  * route can be read. Bars go into rows ("lanes"): one row holds orders that do not overlap.
  */
-export function placeBars(bars: WeekBar[]): PlacedBar[] {
+export function placeBars(bars: WeekBar[], minDays = BAR_MIN_DAYS): PlacedBar[] {
   const items = bars.map(b => {
     const startFrac = b.startDay < 0 ? 0 : (dayFraction(b.startTime) ?? 0)
     const endFrac = b.endDay > 6 ? 1 : (dayFraction(b.endTime) ?? 1)
     let start = Math.max(0, Math.min(7, Math.max(0, b.startDay) + startFrac))
     let end = Math.max(0, Math.min(7, Math.min(6, b.endDay) + endFrac))
-    if (end - start < BAR_MIN_DAYS) {
-      end = Math.min(7, start + BAR_MIN_DAYS)
-      start = Math.min(start, end - BAR_MIN_DAYS)
+    if (end - start < minDays) {
+      end = Math.min(7, start + minDays)
+      start = Math.min(start, end - minDays)
     }
     return { b, start, end }
   })
@@ -223,6 +223,40 @@ const LANE_H = 50
 const LANE_GAP = 6
 const CHIP_ROW_H = 24
 
+/**
+ * PROTOTYPE (09.11.2026, branch proto/czytelne-paski): how the route reads on a bar.
+ * cut = today (one line, cut with "…"); wrap = variant A (full names wrapped, the row grows
+ * downwards, bars at least WRAP_MIN_DAYS wide so the longest word fits); codes = variant B
+ * (place codes "WAW → BUD" on one line). Chosen with ?paski=a / ?paski=b in the address.
+ */
+export type BarLabelMode = 'cut' | 'wrap' | 'codes'
+function barLabelMode(): BarLabelMode {
+  try {
+    const v = new URLSearchParams(window.location.search).get('paski')
+    return v === 'a' ? 'wrap' : v === 'b' ? 'codes' : 'cut'
+  } catch {
+    return 'cut'
+  }
+}
+export const WRAP_MIN_DAYS = 0.75
+/** Half-hour columns of the week grid (variant A): 48 per day, a 4 px gap column between days. */
+const SLOTS = 48
+const BAR_GRID_COLS = Array.from({ length: 7 }, () => `repeat(${SLOTS}, minmax(0, 1fr))`).join(' 4px ')
+/** Grid line of a position x (days from Monday 00:00); an end on a day boundary closes the previous day. */
+export function gridLine(x: number, end: boolean): number {
+  let day = Math.floor(x + 1e-9)
+  let frac = x - day
+  if (end && frac < 1e-9 && day > 0) {
+    day -= 1
+    frac = 1
+  }
+  if (day > 6) {
+    day = 6
+    frac = 1
+  }
+  return day * (SLOTS + 1) + Math.round(frac * SLOTS) + 1
+}
+
 export function TruckTimeline({
   row,
   weekStart,
@@ -239,8 +273,12 @@ export function TruckTimeline({
   onOpenEvent,
   onOpenTrailerChange,
 }: TruckTimelineProps) {
+  const mode = barLabelMode()
   // A paid cancellation (09.11.2026) is not a bar: the truck did not drive — a chip on the loading day.
-  const bars = placeBars(row.bars.filter(b => !b.paidCancel))
+  const bars = placeBars(
+    row.bars.filter(b => !b.paidCancel),
+    mode === 'wrap' ? WRAP_MIN_DAYS : BAR_MIN_DAYS,
+  )
   const lanes = bars.reduce((m, b) => Math.max(m, b.lane), 0)
   const chips = placeChips(
     [
@@ -254,7 +292,14 @@ export function TruckTimeline({
   return (
     <div className="relative min-w-0 p-2">
       <DayGrid todayIndex={todayIndex} />
-      <div className="relative" style={{ height: lanes > 0 ? lanes * LANE_H + (lanes - 1) * LANE_GAP : 0 }}>
+      <div
+        className={mode === 'wrap' ? 'relative grid' : 'relative'}
+        style={
+          mode === 'wrap'
+            ? { gridTemplateColumns: BAR_GRID_COLS, gridAutoRows: `minmax(${LANE_H}px, auto)`, rowGap: LANE_GAP }
+            : { height: lanes > 0 ? lanes * LANE_H + (lanes - 1) * LANE_GAP : 0 }
+        }
+      >
         {bars.map(b => {
           const isSel = selected === b.orderNo
           const c = barColors(b, isSel)
@@ -271,19 +316,25 @@ export function TruckTimeline({
             b.coLoadOf ? null : km(b.kmLoaded === null && b.kmEmpty === null ? null : (b.kmLoaded ?? 0) + (b.kmEmpty ?? 0), b.kmEstimated),
           ]
             .filter(Boolean)
+            // Variant A: a line breaks only between the parts, never inside "≈258 km" or "+90 €".
+            .map(part => (mode === 'wrap' ? String(part).replace(/ /g, '\u00A0') : part))
             .join(' · ')
           const tipKey = `${weekStart}|${b.key}`
           return (
             <div
               key={b.key}
               data-testid={`bar-${b.key}`}
-              className="absolute flex min-w-0 items-stretch rounded-[7px]"
+              className={`${mode === 'wrap' ? 'relative' : 'absolute'} flex min-w-0 items-stretch rounded-[7px]`}
               style={{
-                top: (b.lane - 1) * (LANE_H + LANE_GAP),
-                height: LANE_H,
-                left: startCss(b.start),
-                // 3 px of air before the next bar in the same row
-                width: `calc(${endCss(b.end)} - ${startCss(b.start)} - 3px)`,
+                ...(mode === 'wrap'
+                  ? { gridRow: b.lane, gridColumn: `${gridLine(b.start, false)} / ${gridLine(b.end, true)}`, marginRight: 3 }
+                  : {
+                      top: (b.lane - 1) * (LANE_H + LANE_GAP),
+                      height: LANE_H,
+                      left: startCss(b.start),
+                      // 3 px of air before the next bar in the same row
+                      width: `calc(${endCss(b.end)} - ${startCss(b.start)} - 3px)`,
+                    }),
                 background: c.bg,
                 color: c.fg,
                 outline: c.outline,
@@ -296,14 +347,16 @@ export function TruckTimeline({
                 onClick={() => onSelect(b.orderNo)}
                 title={`${b.orderNo}${b.draft ? ' (wstępne)' : ''}${b.coLoadOf ? ` (doładunek do ${b.coLoadOf})` : ''} · ${b.title}\n${dmTime(b.startDate, b.startTime)} → ${dmTime(b.endDate, b.endTime)}`}
                 aria-label={`${b.orderNo}${b.draft ? ', zlecenie wstępne' : ''}${b.coLoadOf ? `, doładunek do ${b.coLoadOf}` : ''}, ${b.title}, ${dmTime(b.startDate, b.startTime)}–${dmTime(b.endDate, b.endTime)}${b.serviceConflict ? `. ${b.serviceConflict}` : ''}`}
-                className="flex min-w-0 flex-1 cursor-pointer flex-col justify-center gap-0.5 px-2 py-1 text-left text-[13px]"
+                className={`flex min-w-0 flex-1 cursor-pointer flex-col justify-center gap-0.5 text-left text-[13px] ${mode === 'wrap' ? 'px-1.5 py-1.5 leading-tight' : 'px-2 py-1'}`}
               >
-                <span className="block w-full truncate font-semibold">
+                <span className={`block w-full font-semibold ${mode === 'wrap' ? '[overflow-wrap:break-word]' : 'truncate'}`}>
+                  {/* Variant A: the note icon sits in the top-right corner — only the first line makes room for it. */}
+                  {mode === 'wrap' && b.noteLines.length > 0 && <span aria-hidden="true" className="float-right h-3.5 w-4" />}
                   {b.startDay < 0 ? '‹ ' : ''}
-                  {b.title}
+                  {mode === 'codes' ? (b.codeTitle ?? b.title) : b.title}
                   {b.endDay > 6 ? ' ›' : ''}
                 </span>
-                <span className="block w-full truncate font-mono text-[11.5px]">{sub}</span>
+                <span className={`block w-full font-mono text-[11.5px] ${mode === 'wrap' ? '[overflow-wrap:break-word]' : 'truncate'}`}>{sub}</span>
               </button>
               {b.noteLines.length > 0 && (
                 <button
@@ -313,7 +366,11 @@ export function TruckTimeline({
                   onMouseLeave={() => onTip(null)}
                   onFocus={() => onTip(tipKey)}
                   onBlur={() => onTip(null)}
-                  className="flex w-6 flex-none cursor-help items-start justify-center pt-[7px]"
+                  className={
+                    mode === 'wrap'
+                      ? 'absolute right-0.5 top-1 flex h-5 w-5 cursor-help items-center justify-center'
+                      : 'flex w-6 flex-none cursor-help items-start justify-center pt-[7px]'
+                  }
                   style={b.serviceConflict ? { color: isSel ? '#FFFFFF' : SERVICE_COLORS.conflict } : undefined}
                 >
                   <Icon name={b.serviceConflict ? 'alert' : 'note'} size={14} />
