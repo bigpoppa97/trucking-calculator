@@ -117,7 +117,9 @@ zlecenie” (obie odmiany) obowiązują, dopóki ktoś ich nie usunie.
 Tablica: wiersz z dniami (ciemny pasek, „dziś” na niebiesko) zostaje u góry ekranu przy przewijaniu; cienkie linie
 oddzielają dni, kolumna „dziś” jest lekko podbarwiona. Pasek zlecenia zaczyna się o godzinie załadunku i kończy o godzinie
 rozładunku (bez godziny — cały dzień; najkrótszy pasek ma ¾ dnia). Trasa, kwota i km są na pasku w całości — w tylu
-liniach, ile trzeba (bez „…”); nazwy lotnisk bez dopisku w nawiasie („Budapeszt”, nie „Budapeszt (Vecsés)”). Znaczki zdarzeń stoją przy swojej godzinie
+liniach, ile trzeba (bez „…”); nazwy lotnisk bez dopisku w nawiasie („Budapeszt”, nie „Budapeszt (Vecsés)”). Auto bez
+żadnego zlecenia w tygodniu ma na początku tygodnia kafelek „Pusty · Wilno, od 06.11 18:00” — miejsce i czas ostatniego
+rozładunku (kliknięcie otwiera to zlecenie) albo późniejszej „Pozycji auta” z miejscem. Znaczki zdarzeń stoją przy swojej godzinie
 (automatyczna zmiana naczepy — przy godzinie załadunku). Kolumna auta: ciągnik (i jego serwisy wymagane), naczepa
 (i jej serwisy), kierowca z telefonem (i ostrzeżenia AVSEC), przewoźnik. Kafelek „Średni obrót na auto”: przychód aut
 tygodnia ÷ liczba aut na tablicy (pod spodem — przewoźnika). Panel zlecenia przy odcinku pokazuje daty i km razem

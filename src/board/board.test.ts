@@ -2275,3 +2275,54 @@ describe('09.11.2026 — an hour in the PRZ entry places the relay on the board'
     expect((await issuesOf('PRZ_DATE')).map(i => i.ref)).toEqual(['79-1-26'])
   })
 })
+
+describe('09.11.2026 — "Pusty · <miejsce>": a truck without an order in a week shows where it stands', () => {
+  const r = (over: Partial<Row>): Row => ({
+    no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1500, cost: 1300, sub: 'AA1001A', trailer: 'TR100',
+    lh: '08:00 — —', uh: '— — 20:00', ...over,
+  })
+  const rowOf = async (week: string, plate = 'AA1001A') => (await board.weekView(week)).trucks.find(t => t.plate === plate)!
+
+  it('the last unloading before the week, since when; nothing for a week with an order or a truck with no history', async () => {
+    await board.importFile(await xlsx([r({})], HOURS_HEADERS), 'a.xlsx', 'daily')
+    const next = await rowOf('2026-09-28')
+    expect(next.bars).toEqual([])
+    expect(next.idle).toEqual({ placeName: 'Budapeszt', since: '2026-09-22', sinceTime: '20:00', via: 'order', orderNo: '79-1-26', title: 'Warszawa → Budapeszt' })
+    expect((await rowOf('2026-09-21')).idle).toBeNull()
+    expect((await rowOf('2026-09-28', 'AA1002A')).idle).toBeNull()
+  })
+
+  it('a later "Pozycja auta" with a place wins; one before the last unloading does not', async () => {
+    await board.importFile(await xlsx([r({})], HOURS_HEADERS), 'a.xlsx', 'daily')
+    const truckId = (await rowOf('2026-09-21')).id
+    await board.addTruckEvent({ truckId, day: '2026-09-20', kind: 'position', text: 'stara', place: 'KRK' })
+    expect((await rowOf('2026-09-28')).idle?.placeName).toBe('Budapeszt')
+    await board.addTruckEvent({ truckId, day: '2026-09-25', kind: 'position', text: 'baza', place: 'WAW', time: '10:00' })
+    expect((await rowOf('2026-09-28')).idle).toEqual({ placeName: 'Warszawa', since: '2026-09-25', sinceTime: '10:00', via: 'position', orderNo: null, title: null })
+  })
+
+  it('cancelled orders and paid cancellations are not trips: the earlier unloading counts and the tile shows', async () => {
+    await board.importFile(
+      await xlsx(
+        [
+          r({}),
+          r({ no: '79-2-26', from: 'Budapest', ld: '2026-09-29', to: 'Wien', ud: '2026-09-29', lh: '08:00 — —', uh: '— — 14:00' }),
+          r({ no: '79-3-26', from: 'Wien', ld: '2026-09-30', to: 'Vilnius', ud: '2026-10-01', notes: 'Anulacja płatna' }),
+        ],
+        HOURS_HEADERS,
+      ),
+      'a.xlsx',
+      'daily',
+    )
+    expect((await rowOf('2026-09-28')).idle).toBeNull()
+    await board.setOverride('79-2-26', 'cancel', '1')
+    const row = await rowOf('2026-09-28')
+    expect(row.bars.map(b => [b.orderNo, b.paidCancel])).toEqual([['79-3-26', true]])
+    expect(row.idle).toMatchObject({ placeName: 'Budapeszt', orderNo: '79-1-26' })
+  })
+
+  it('a truck standing for weeks: the last unloading is found further back than the board reads for a week', async () => {
+    await board.importFile(await xlsx([r({ ld: '2026-08-03', ud: '2026-08-04' })], HOURS_HEADERS), 'a.xlsx', 'daily')
+    expect((await rowOf('2026-09-28')).idle).toMatchObject({ placeName: 'Budapeszt', since: '2026-08-04', orderNo: '79-1-26' })
+  })
+})

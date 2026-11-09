@@ -76,6 +76,7 @@ const WEEK: WeekView = {
       services: [],
       required: [],
       totals: { revenue: 1500, carrier: 1300, cost: 1300, margin: 200, km: 680, kmEmpty: 0, legs: 1, kmEstimated: true },
+      idle: null,
     },
   ],
   kpis: { margin: 200, revenue: 1500, cost: 1300, orders: 1, drafts: 0, km: 680, kmEmpty: 0, revenuePerKm: 2.21, costPerKm: 1.91, kmEstimated: true, openIssues: 2, trucks: 1, revenuePerTruck: 1500, carrierPerTruck: 1300 },
@@ -1515,5 +1516,34 @@ describe('09.11.2026 — "Anulacja płatna"', () => {
     expect(await within(panel).findByText(/na tablicy wyłączone 09\.11\.26/)).toBeInTheDocument()
     await userEvent.click(within(panel).getByRole('button', { name: 'Jednak anulacja płatna' }))
     expect(api.clearOverride).toHaveBeenCalledWith('79-1001-26', 'cancel')
+  })
+})
+
+describe('09.11.2026 — "Pusty · <miejsce>"', () => {
+  it('a truck without an order this week shows where it stands; the tile opens the last order', async () => {
+    const week = structuredClone(WEEK)
+    week.trucks[0]!.bars = []
+    week.trucks[0]!.idle = { placeName: 'Wilno', since: '2026-09-18', sinceTime: '14:00', via: 'order', orderNo: '79-0999-26', title: 'Wiedeń → Wilno' }
+    api.week.mockResolvedValue(week)
+    api.order.mockResolvedValue(ORDER)
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const tile = await screen.findByTestId('idle-tile')
+    expect(tile).toHaveTextContent('Pusty · Wilno')
+    expect(tile).toHaveTextContent('od 18.09 14:00')
+    expect(tile).toHaveAttribute('title', expect.stringContaining('Ostatni rozładunek: 79-0999-26 Wiedeń → Wilno'))
+    expect(screen.getByText('Pusty (gdzie stoi auto)')).toBeInTheDocument()
+    await userEvent.click(tile)
+    expect(api.order).toHaveBeenCalledWith('79-0999-26')
+  })
+
+  it('from a "Pozycja auta": said so, not a button', async () => {
+    const week = structuredClone(WEEK)
+    week.trucks[0]!.bars = []
+    week.trucks[0]!.idle = { placeName: 'Warszawa', since: '2026-09-20', sinceTime: null, via: 'position', orderNo: null, title: null }
+    api.week.mockResolvedValue(week)
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const tile = await screen.findByTestId('idle-tile')
+    expect(tile.tagName).toBe('DIV')
+    expect(tile).toHaveTextContent('od 20.09 · pozycja auta')
   })
 })

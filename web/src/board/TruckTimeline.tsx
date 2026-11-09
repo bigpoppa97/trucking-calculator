@@ -1,4 +1,4 @@
-import type { Service, WeekBar, WeekEvent, WeekTruck } from './boardApi.js'
+import type { IdleSpot, Service, WeekBar, WeekEvent, WeekTruck } from './boardApi.js'
 import { EVENT_LABELS, dm, dmTime, km, signedEur, stamp } from './format.js'
 import { EVENT_ICON, Icon } from './Icon.js'
 import { SERVICE_COLORS, ServiceStrip } from './serviceUi.js'
@@ -274,6 +274,8 @@ export function TruckTimeline({
     <div className="relative min-w-0 p-2">
       <DayGrid todayIndex={todayIndex} />
       <div className="relative grid" style={{ gridTemplateColumns: BAR_GRID_COLS, gridAutoRows: `minmax(${LANE_H}px, auto)`, rowGap: LANE_GAP }}>
+        {/* "Pusty · Wilno" (09.11.2026): no order this week — where the truck stands, at the start of the week. */}
+        {row.idle && bars.length === 0 && <IdleTile idle={row.idle} onSelect={onSelect} />}
         {bars.map(b => {
           const isSel = selected === b.orderNo
           const c = barColors(b, isSel)
@@ -412,6 +414,38 @@ export function TruckTimeline({
           style={{ left: `calc(8px + ${startCss(nowFraction * 7, '(100% - 16px)')})` }}
         />
       )}
+    </div>
+  )
+}
+
+/** Empty-truck tile colours (09.11.2026): white with a dashed border — "nothing on it". */
+export const IDLE_COLORS = { bg: '#FFFFFF', fg: '#3D444C', border: '#9AA3AC' } as const
+
+/**
+ * "Pusty · Wilno" (09.11.2026): the truck has no order this week; the tile says where it stands and
+ * since when (the last unloading — opens that order — or a "Pozycja auta"). As wide as its text.
+ */
+function IdleTile({ idle, onSelect }: { idle: IdleSpot; onSelect: (orderNo: string) => void }) {
+  const since = `od ${dmTime(idle.since, idle.sinceTime)}${idle.via === 'position' ? ' · pozycja auta' : ''}`
+  const tip =
+    idle.via === 'order'
+      ? `Brak zleceń w tym tygodniu. Ostatni rozładunek: ${idle.orderNo ?? ''} ${idle.title ?? ''}, ${dmTime(idle.since, idle.sinceTime)}.`
+      : `Brak zleceń w tym tygodniu. Pozycja auta ${dmTime(idle.since, idle.sinceTime)}: ${idle.placeName}.`
+  const content = (
+    <>
+      <span className="block font-semibold">Pusty · {idle.placeName}</span>
+      <span className="block font-mono text-[11.5px]">{since}</span>
+    </>
+  )
+  const style = { gridRow: 1, gridColumn: '1 / -1', justifySelf: 'start', background: IDLE_COLORS.bg, color: IDLE_COLORS.fg, borderColor: IDLE_COLORS.border } as const
+  const cls = 'flex min-h-[50px] flex-col justify-center gap-0.5 rounded-[7px] border border-dashed px-2.5 py-1.5 text-left text-[13px] leading-tight'
+  return idle.via === 'order' && idle.orderNo ? (
+    <button type="button" data-testid="idle-tile" onClick={() => onSelect(idle.orderNo!)} title={tip} aria-label={`Pusty, ${idle.placeName}, ${since}`} className={`${cls} cursor-pointer hover:border-[#545B63]`} style={style}>
+      {content}
+    </button>
+  ) : (
+    <div data-testid="idle-tile" title={tip} className={cls} style={style}>
+      {content}
     </div>
   )
 }

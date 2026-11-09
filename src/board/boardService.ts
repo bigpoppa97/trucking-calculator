@@ -3,7 +3,17 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Kysely, Selectable } from 'kysely'
 import type { BoardOrdersTable, DB, ImportMode, NoteKind, ServiceTarget } from '../db/schema.js'
-import { computeOrders, normalizeOrderNo, parsePaidCancel, routeLabel, type ComputedLeg, type ComputedOrder } from './compute.js'
+import {
+  buildOrder,
+  computeOrders,
+  linkCoLoads,
+  normalizeOrderNo,
+  parsePaidCancel,
+  routeLabel,
+  type ComputedLeg,
+  type ComputedOrder,
+  type OverrideInfo,
+} from './compute.js'
 import { parseNumberInput } from './amount.js'
 import { loadBoardContext, retiredOn, servesBetween, type BoardContext, type TruckRecord } from './context.js'
 import type { DistanceService } from './distances.js'
@@ -91,6 +101,8 @@ const NUMERIC_OVERRIDES = new Set(['rev', 'cost', 'extra_cost', 'km_total', 'km_
 
 /** Free-form day events; a service has its own record (board_services). */
 const NOTE_KINDS: NoteKind[] = ['note', 'pause', 'driver', 'trailer', 'position']
+/** How far back the board looks for a truck's last unloading when its week is empty ("Pusty", 09.11.2026). */
+const IDLE_LOOKBACK_DAYS = 120
 
 export interface WeekBar {
   key: string
@@ -195,6 +207,23 @@ export interface WeekTruck {
   required: ServiceDto[]
   /** revenue = ours; carrier = what the carrier gets (sum of the truck's amounts, without ferries). */
   totals: { revenue: number; carrier: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean }
+  /**
+   * "Pusty · Wilno" (09.11.2026): the truck has no order in this week — where it stands since when:
+   * the last unloading of an order it drove before the week, or a later "Pozycja auta". null when
+   * the week has an order, or nothing is known (no earlier order on the board).
+   */
+  idle: IdleSpot | null
+}
+
+export interface IdleSpot {
+  placeName: string
+  since: string
+  sinceTime: string | null
+  /** order = the last unloading (the order opens on click); position = a "Pozycja auta" event. */
+  via: 'order' | 'position'
+  orderNo: string | null
+  /** The last order's route, for the tooltip ("Wiedeń → Wilno"). */
+  title: string | null
 }
 
 export interface TruckOrderRow {
@@ -832,6 +861,52 @@ export class BoardService {
       if (r.status === 'planned' && r.target === 'truck' && w) coveredDays.set(r.id, fullyCoveredDays(w))
     }
 
+    // "Pusty · <miejsce>" for a truck without an order in a week (09.11.2026): the last order it
+    // drove before the week (as in the km chain: not cancelled, not a paid cancellation, not a
+    // co-load) or a later "Pozycja auta" with a place. Orders older than the computed window are
+    // read only when a truck has none in it — without km (buildOrder), up to IDLE_LOOKBACK_DAYS back.
+    const driven = (x: { o: ComputedOrder; l: ComputedLeg }) => !x.o.excluded && !x.o.noCarrier && !x.o.paidCancel && !x.l.coLoad
+    const shownTrucks = ctx.fleet.trucks.filter(include)
+    const older = shownTrucks.some(t => !(legsByTruck.get(t.id) ?? []).some(x => driven(x) && x.l.endDate < first))
+      ? await this.fleetLegsLoadedBetween(ctx, addDays(first, -IDLE_LOOKBACK_DAYS), addDays(first, -1))
+      : new Map<number, Array<{ o: ComputedOrder; l: ComputedLeg }>>()
+    const positionNotes = await this.db
+      .selectFrom('board_notes')
+      .select(['id', 'truck_id', 'day', 'time', 'place_code'])
+      .where('scope', '=', 'truck_day')
+      .where('deleted', '=', 0)
+      .where('kind', '=', 'position')
+      .where('place_code', 'is not', null)
+      .where('day', '>=', addDays(first, -IDLE_LOOKBACK_DAYS))
+      .where('day', '<=', last)
+      .execute()
+    const idleAt = (truckId: number, start: string): IdleSpot | null => {
+      const legs = [...(legsByTruck.get(truckId) ?? []), ...(older.get(truckId) ?? [])].filter(x => driven(x) && x.l.endDate < start)
+      const lastLeg = legs.reduce<(typeof legs)[number] | null>((best, x) => {
+        if (!best) return x
+        const a = `${x.l.endDate} ${x.l.endTime ?? '24:00'} ${x.l.orderNo}`
+        const b = `${best.l.endDate} ${best.l.endTime ?? '24:00'} ${best.l.orderNo}`
+        return a > b ? x : best
+      }, null)
+      const position = positionNotes
+        .filter(n => n.truck_id === truckId && n.day !== null && n.day < start && (!lastLeg || n.day >= lastLeg.l.endDate))
+        .sort((a, b) => `${a.day} ${a.time ?? ''}`.localeCompare(`${b.day} ${b.time ?? ''}`) || a.id - b.id)
+        .pop()
+      if (position?.place_code) {
+        return { placeName: ctx.places.name(position.place_code), since: position.day!, sinceTime: position.time, via: 'position', orderNo: null, title: null }
+      }
+      if (!lastLeg) return null
+      const stop = lastLeg.l.stops[lastLeg.l.stops.length - 1]
+      return {
+        placeName: stop ? (stop.code ? ctx.places.name(stop.code) : stop.raw) : '?',
+        since: lastLeg.l.endDate,
+        sinceTime: lastLeg.l.endTime,
+        via: 'order',
+        orderNo: lastLeg.o.orderNo,
+        title: legTitle(lastLeg.l, ctx),
+      }
+    }
+
     const weeks = weekStarts.map(start => {
       const end = addDays(start, 6)
       const days = Array.from({ length: 7 }, (_, i) => addDays(start, i))
@@ -969,12 +1044,58 @@ export class BoardService {
             legs: counted.length,
             kmEstimated: counted.some(x => x.l.kmEstimated),
           },
+          // Only when nothing is on the truck's row this week (a paid cancellation is not a trip).
+          idle: visible.some(x => !x.o.paidCancel) ? null : idleAt(truck.id, start),
         })
       }
       return { start, end, days, weekNumber: isoWeekNumber(start), trucks }
     })
     const requiredAll = serviceRows.filter(r => r.status === 'required').map(r => dtos.get(r.id)!)
     return { ctx, orders, weeks, today, nowLocal, legsByTruck, requiredAll, certsByDriver }
+  }
+
+  /**
+   * Fleet legs of orders loaded in [from, to], without km — enough to know where a truck
+   * unloaded last ("Pusty", 09.11.2026). Corrections count (cancelled, paid cancellation, PRZ).
+   */
+  private async fleetLegsLoadedBetween(ctx: BoardContext, from: string, to: string) {
+    const rows = await this.db
+      .selectFrom('board_orders')
+      .selectAll()
+      .where('history', '=', 0)
+      .where('load_date', '>=', from)
+      .where('load_date', '<=', to)
+      .execute()
+    const byTruck = new Map<number, Array<{ o: ComputedOrder; l: ComputedLeg }>>()
+    if (rows.length === 0) return byTruck
+    const overrideRows = await this.db
+      .selectFrom('board_overrides')
+      .selectAll()
+      .where('active', '=', 1)
+      .where(
+        'order_no',
+        'in',
+        rows.map(r => r.order_no),
+      )
+      .orderBy('id')
+      .execute()
+    const overrides = new Map<string, Record<string, OverrideInfo>>()
+    for (const ov of overrideRows) {
+      const rec = overrides.get(ov.order_no) ?? {}
+      rec[ov.field] = { value: ov.value, appValue: ov.app_value, createdAt: ov.created_at, createdBy: ov.created_by }
+      overrides.set(ov.order_no, rec)
+    }
+    const orders = rows.map(r => buildOrder(r, overrides.get(r.order_no) ?? {}, ctx))
+    linkCoLoads(orders)
+    for (const o of orders) {
+      for (const l of o.legs) {
+        if (l.kind !== 'fleet' || l.truckId === null) continue
+        const list = byTruck.get(l.truckId) ?? []
+        list.push({ o, l })
+        byTruck.set(l.truckId, list)
+      }
+    }
+    return byTruck
   }
 
   private toBar(

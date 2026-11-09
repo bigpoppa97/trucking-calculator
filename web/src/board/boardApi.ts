@@ -146,6 +146,8 @@ export interface WeekTruck {
   required: Service[]
   /** revenue = ours, carrier = what the carrier gets (without ferries). */
   totals: { revenue: number; carrier: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean }
+  /** "Pusty · Wilno" (09.11.2026): no order this week — where the truck stands since when; null otherwise. */
+  idle: IdleSpot | null
 }
 
 export interface TruckOrderRow {
@@ -595,4 +597,15 @@ export const boardApi = {
 
 export function errorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback
+}
+
+/** Where a truck without an order this week stands (09.11.2026). */
+export interface IdleSpot {
+  placeName: string
+  since: string
+  sinceTime: string | null
+  /** order = the last unloading (opens that order); position = a "Pozycja auta" event. */
+  via: 'order' | 'position'
+  orderNo: string | null
+  title: string | null
 }
