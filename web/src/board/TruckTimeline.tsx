@@ -14,7 +14,9 @@ import { SERVICE_COLORS, ServiceStrip } from './serviceUi.js'
  * with 4 px gaps (bars, chips, the row of days above and the day lines share it), so a moment
  * is placed in its day column in proportion to the hour (29.10.2026).
  */
-export const BAR_MIN_DAYS = 0.5
+// 09.11.2026: ¾ of a day (was ½) — the route is written in full on the bar, in as many lines as
+// it needs, and the longest word of a place name ("Budapeszt", "Dobrzykowice") must fit.
+export const BAR_MIN_DAYS = 0.75
 /** Room a chip takes for stacking (it is at most one day wide and may run into the next day). */
 export const CHIP_DAYS = 0.95
 /** A paid cancellation chip is wider (09.11.2026): number, "anulacja płatna" and the margin should fit. */
@@ -41,12 +43,6 @@ export function startCss(x: number, box = '100%'): string {
   return `calc((${box} - 24px) * ${(x / 7).toFixed(6)} + ${gaps * 4}px)`
 }
 
-/** CSS offset of an end position x (days): a whole day ends at the end of the previous column. */
-export function endCss(x: number): string {
-  const gaps = Math.max(0, Math.min(6, Math.ceil(x - 1e-9) - 1))
-  return `calc((100% - 24px) * ${(x / 7).toFixed(6)} + ${gaps * 4}px)`
-}
-
 export interface PlacedBar extends WeekBar {
   /** Days from Monday 00:00, clipped to the week; `end` includes the minimum width. */
   start: number
@@ -57,7 +53,7 @@ export interface PlacedBar extends WeekBar {
 /**
  * Bars from the loading hour to the unloading hour (29.10.2026); a missing hour = the whole day
  * (loading from its start, unloading to its end). A short bar is at least BAR_MIN_DAYS wide so the
- * route can be read. Bars go into rows ("lanes"): one row holds orders that do not overlap.
+ * route can be read in full. Bars go into rows ("lanes"): one row holds orders that do not overlap.
  */
 export function placeBars(bars: WeekBar[]): PlacedBar[] {
   const items = bars.map(b => {
@@ -223,6 +219,30 @@ const LANE_H = 50
 const LANE_GAP = 6
 const CHIP_ROW_H = 24
 
+/**
+ * Bars sit on a grid of half-hour columns (09.11.2026): 48 per day, a 4 px gap column between
+ * days (the same geometry as startCss, the row of days and the day lines). A grid row
+ * grows with the tallest bar in it, so a route wraps onto as many lines as it needs instead of
+ * being cut with "…".
+ */
+const SLOTS = 48
+const BAR_GRID_COLS = Array.from({ length: 7 }, () => `repeat(${SLOTS}, minmax(0, 1fr))`).join(' 4px ')
+
+/** Grid line of a position x (days from Monday 00:00); an end on a day boundary closes the previous day. */
+export function gridLine(x: number, end: boolean): number {
+  let day = Math.floor(x + 1e-9)
+  let frac = x - day
+  if (end && frac < 1e-9 && day > 0) {
+    day -= 1
+    frac = 1
+  }
+  if (day > 6) {
+    day = 6
+    frac = 1
+  }
+  return day * (SLOTS + 1) + Math.round(frac * SLOTS) + 1
+}
+
 export function TruckTimeline({
   row,
   weekStart,
@@ -241,7 +261,6 @@ export function TruckTimeline({
 }: TruckTimelineProps) {
   // A paid cancellation (09.11.2026) is not a bar: the truck did not drive — a chip on the loading day.
   const bars = placeBars(row.bars.filter(b => !b.paidCancel))
-  const lanes = bars.reduce((m, b) => Math.max(m, b.lane), 0)
   const chips = placeChips(
     [
       ...row.bars.filter(b => b.paidCancel).map(bar => ({ kind: 'paid' as const, bar })),
@@ -254,7 +273,7 @@ export function TruckTimeline({
   return (
     <div className="relative min-w-0 p-2">
       <DayGrid todayIndex={todayIndex} />
-      <div className="relative" style={{ height: lanes > 0 ? lanes * LANE_H + (lanes - 1) * LANE_GAP : 0 }}>
+      <div className="relative grid" style={{ gridTemplateColumns: BAR_GRID_COLS, gridAutoRows: `minmax(${LANE_H}px, auto)`, rowGap: LANE_GAP }}>
         {bars.map(b => {
           const isSel = selected === b.orderNo
           const c = barColors(b, isSel)
@@ -271,19 +290,20 @@ export function TruckTimeline({
             b.coLoadOf ? null : km(b.kmLoaded === null && b.kmEmpty === null ? null : (b.kmLoaded ?? 0) + (b.kmEmpty ?? 0), b.kmEstimated),
           ]
             .filter(Boolean)
+            // A line breaks only between the parts, never inside "≈258 km" or "+90 €".
+            .map(part => String(part).replace(/ /g, '\u00A0'))
             .join(' · ')
           const tipKey = `${weekStart}|${b.key}`
           return (
             <div
               key={b.key}
               data-testid={`bar-${b.key}`}
-              className="absolute flex min-w-0 items-stretch rounded-[7px]"
+              className="relative flex min-w-0 items-stretch rounded-[7px]"
               style={{
-                top: (b.lane - 1) * (LANE_H + LANE_GAP),
-                height: LANE_H,
-                left: startCss(b.start),
+                gridRow: b.lane,
+                gridColumn: `${gridLine(b.start, false)} / ${gridLine(b.end, true)}`,
                 // 3 px of air before the next bar in the same row
-                width: `calc(${endCss(b.end)} - ${startCss(b.start)} - 3px)`,
+                marginRight: 3,
                 background: c.bg,
                 color: c.fg,
                 outline: c.outline,
@@ -296,14 +316,16 @@ export function TruckTimeline({
                 onClick={() => onSelect(b.orderNo)}
                 title={`${b.orderNo}${b.draft ? ' (wstępne)' : ''}${b.coLoadOf ? ` (doładunek do ${b.coLoadOf})` : ''} · ${b.title}\n${dmTime(b.startDate, b.startTime)} → ${dmTime(b.endDate, b.endTime)}`}
                 aria-label={`${b.orderNo}${b.draft ? ', zlecenie wstępne' : ''}${b.coLoadOf ? `, doładunek do ${b.coLoadOf}` : ''}, ${b.title}, ${dmTime(b.startDate, b.startTime)}–${dmTime(b.endDate, b.endTime)}${b.serviceConflict ? `. ${b.serviceConflict}` : ''}`}
-                className="flex min-w-0 flex-1 cursor-pointer flex-col justify-center gap-0.5 px-2 py-1 text-left text-[13px]"
+                className="flex min-w-0 flex-1 cursor-pointer flex-col justify-center gap-0.5 px-1.5 py-1.5 text-left text-[13px] leading-tight"
               >
-                <span className="block w-full truncate font-semibold">
+                {/* The whole route, wrapped (09.11.2026); the note icon sits in the top-right corner — only the first line makes room for it. */}
+                <span className="block w-full font-semibold [overflow-wrap:break-word]">
+                  {b.noteLines.length > 0 && <span aria-hidden="true" className="float-right h-3.5 w-4" />}
                   {b.startDay < 0 ? '‹ ' : ''}
                   {b.title}
                   {b.endDay > 6 ? ' ›' : ''}
                 </span>
-                <span className="block w-full truncate font-mono text-[11.5px]">{sub}</span>
+                <span className="block w-full font-mono text-[11.5px] [overflow-wrap:break-word]">{sub}</span>
               </button>
               {b.noteLines.length > 0 && (
                 <button
@@ -313,7 +335,7 @@ export function TruckTimeline({
                   onMouseLeave={() => onTip(null)}
                   onFocus={() => onTip(tipKey)}
                   onBlur={() => onTip(null)}
-                  className="flex w-6 flex-none cursor-help items-start justify-center pt-[7px]"
+                  className="absolute right-0.5 top-1 flex h-5 w-5 cursor-help items-center justify-center"
                   style={b.serviceConflict ? { color: isSel ? '#FFFFFF' : SERVICE_COLORS.conflict } : undefined}
                 >
                   <Icon name={b.serviceConflict ? 'alert' : 'note'} size={14} />

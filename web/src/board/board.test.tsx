@@ -787,7 +787,7 @@ describe('paczka 12.10.2026', () => {
     const placed = placeBars([a, b])
     expect(placed.map(p => [p.orderNo, p.lane, round(p.start), round(p.end)])).toEqual([
       ['A', 1, 1.25, 2.667],
-      ['B', 1, 2.708, 3.208], // 6 h, stretched to the minimum width of half a day
+      ['B', 1, 2.708, 3.458], // 6 h, stretched to the minimum width of ¾ of a day (09.11.2026; was ½)
     ])
     // Unknown hours = whole days: they overlap on the shared day → two rows.
     expect(placeBars([{ ...a, endTime: null }, { ...b, startTime: null }]).map(p => [p.lane, round(p.start), round(p.end)])).toEqual([

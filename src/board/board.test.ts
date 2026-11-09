@@ -491,7 +491,7 @@ describe('kilometres', () => {
       'daily',
     )
     let d = await board.orderDetails('79-61-26')
-    expect(d.legs[0]?.kmEmptyFrom).toBe('Budapeszt (Vecsés)')
+    expect(d.legs[0]?.kmEmptyFrom).toBe('Budapeszt')
     expect(d.legs[0]?.kmEmpty).toBeGreaterThan(150) // Budapest → Vienna ≈ 250 km by road
     expect(d.legs[0]?.kmEstimated).toBe(true) // no HERE in tests
 
@@ -499,7 +499,7 @@ describe('kilometres', () => {
     // A service never moves the start of the empty run (08.10.2026: km corrections are manual)…
     await board.createService({ truckId: truck.id, target: 'truck', status: 'planned', allDay: true, startDay: '2026-09-22', endDay: '2026-09-22', place: 'Bratislava' })
     d = await board.orderDetails('79-61-26')
-    expect(d.legs[0]?.kmEmptyFrom).toBe('Budapeszt (Vecsés)')
+    expect(d.legs[0]?.kmEmptyFrom).toBe('Budapeszt')
     // …a position event with a place does.
     await board.addTruckEvent({ truckId: truck.id, day: '2026-09-22', kind: 'position', text: 'Pozycja', place: 'Bratislava' })
     d = await board.orderDetails('79-61-26')
@@ -1044,11 +1044,11 @@ describe('paczka 12.10.2026 — hours, totals, route header, "zniknęło"', () =
       'a.xlsx',
       'daily',
     )
-    expect((await board.orderDetails('79-6-26')).order.route).toBe('Warszawa + Katowice (Pyrzowice) → Budapeszt (Vecsés)')
-    expect((await board.orderDetails('79-7-26')).order.route).toBe('Gdańsk + Łódź → Katowice (Pyrzowice)')
+    expect((await board.orderDetails('79-6-26')).order.route).toBe('Warszawa + Katowice → Budapeszt')
+    expect((await board.orderDetails('79-7-26')).order.route).toBe('Gdańsk + Łódź → Katowice')
     // The bar keeps the short title with the destination first.
     const bar = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!.bars[0]!
-    expect(bar.title).toBe('Warszawa → Budapeszt (Vecsés) (przez Katowice (Pyrzowice))')
+    expect(bar.title).toBe('Warszawa → Budapeszt (przez Katowice)')
   })
 
   it('"zniknęło" is told only in the order panel, not on the bar', async () => {
@@ -1186,7 +1186,7 @@ describe('day events on the board (12.10.2026 bug: place hidden, no edit, km mov
     )
     const truck = (await board.fleet()).find(t => t.currentPlate === 'AA1001A')!
     await board.addTruckEvent({ truckId: truck.id, day: '2026-09-22', kind: 'note', text: 'TEST', place: 'POZ' })
-    expect((await board.orderDetails('79-91-26')).legs[0]?.kmEmptyFrom).toBe('Budapeszt (Vecsés)')
+    expect((await board.orderDetails('79-91-26')).legs[0]?.kmEmptyFrom).toBe('Budapeszt')
 
     const event = (await board.weekView('2026-09-21')).trucks.find(t => t.id === truck.id)!.events.find(e => e.text === 'TEST')!
     expect(event).toMatchObject({ kind: 'note', place: 'POZ', placeName: 'Poznań', createdBy: 'test', auto: false })
@@ -1198,7 +1198,7 @@ describe('day events on the board (12.10.2026 bug: place hidden, no edit, km mov
     await board.updateTruckEvent(event.id!, { place: '', text: 'stoi na bazie', day: '2026-09-21' })
     const changed = (await board.weekView('2026-09-21')).trucks.find(t => t.id === truck.id)!.events.find(e => e.id === event.id)!
     expect(changed).toMatchObject({ day: '2026-09-21', text: 'stoi na bazie', place: null })
-    expect((await board.orderDetails('79-91-26')).legs[0]?.kmEmptyFrom).toBe('Budapeszt (Vecsés)')
+    expect((await board.orderDetails('79-91-26')).legs[0]?.kmEmptyFrom).toBe('Budapeszt')
 
     await board.deleteNote(event.id!)
     expect((await board.weekView('2026-09-21')).trucks.find(t => t.id === truck.id)!.events.some(e => e.id === event.id)).toBe(false)
@@ -1318,7 +1318,7 @@ describe('paczka 26.10.2026 — withdrawn tractor, "Km razem", manual PRZ label,
     const [gap] = await issuesOf('ROUTE_GAP')
     expect(gap).toMatchObject({ ref: '79-2-26' })
     expect(gap!.details['orders']).toEqual(['79-1-26', '79-2-26'])
-    expect(gap!.message).toMatch(/^Czy była przepinka\? AA1001A: rozładunek 79-1-26 — Budapeszt \(Vecsés\) 22\.09 13:00, załadunek 79-2-26 — Warszawa 22\.09 16:00: ok\. \d+ km pustych w 3 h\./)
+    expect(gap!.message).toMatch(/^Czy była przepinka\? AA1001A: rozładunek 79-1-26 — Budapeszt 22\.09 13:00, załadunek 79-2-26 — Warszawa 22\.09 16:00: ok\. \d+ km pustych w 3 h\./)
 
     // The truck really handed the first order over in Bratislava: entering the relay clears it.
     await board.setOverride('79-1-26', 'prz', 'PRZ BRATISLAVA 21.09 AA1001A>BB2001B 700/600')
@@ -2060,7 +2060,7 @@ describe('09.11.2026 — "Anulacja płatna": the client cancelled but pays, the 
 
     // The next empty run starts where the truck really was: Budapest (79-1-26), not Warszawa.
     const next = (await board.orderDetails('79-3-26')).legs[0]!
-    expect([next.kmEmptyFrom, next.kmEmpty]).toEqual(['Budapeszt (Vecsés)', 0])
+    expect([next.kmEmptyFrom, next.kmEmpty]).toEqual(['Budapeszt', 0])
     // Its trailer is not the truck's: no trailer change TR200 → TR960PE → TR200.
     expect(row.events.filter(e => e.kind === 'trailer')).toEqual([])
     expect(row.trailer).toBe('TR200')
@@ -2097,7 +2097,7 @@ describe('09.11.2026 — "Anulacja płatna": the client cancelled but pays, the 
     let d = await board.orderDetails('79-2-26')
     expect(d.order.paidCancel).toEqual({ source: 'manual', createdBy: 'test', createdAt: '2026-09-28T08:00:00Z' })
     expect(d.history.map(h => h.text)).toContain('anulacja płatna na tablicy (test)')
-    expect((await board.orderDetails('79-3-26')).legs[0]!.kmEmptyFrom).toBe('Budapeszt (Vecsés)')
+    expect((await board.orderDetails('79-3-26')).legs[0]!.kmEmptyFrom).toBe('Budapeszt')
 
     // The truck drove to the loading place before the cancellation: "Km razem" says so.
     await board.setOverride('79-2-26', 'km_total', '300')
@@ -2193,5 +2193,43 @@ describe('09.11.2026 — "Anulacja płatna": the client cancelled but pays, the 
     for (const t of ['anulacja niepłatna', 'ANULOWANE', 'płatne przelewem', 'niepłatna anulacja', 'PRZ WAW 22.09 AA1001A>AA1002A 1000/900']) {
       expect(parsePaidCancel(t), t).toBe(false)
     }
+  })
+})
+
+describe('09.11.2026 — migration 0017: place names without the airport in brackets', () => {
+  it('shortens the seeded names; a name edited before stays; the bars and the panel show the short ones', async () => {
+    const raw = createTestDatabase()
+    try {
+      const migrator = new Migrator({ db: raw, provider: { getMigrations: async () => migrations } })
+      await migrator.migrateTo('0016_board_event_hours')
+      await raw
+        .insertInto('board_places')
+        .values([
+          { code: 'BUD', name: 'Budapeszt (Vecsés)', lat: 47.43, lon: 19.26, kind: 'airport' },
+          { code: 'KTW', name: 'Katowice (Pyrzowice)', lat: 50.47, lon: 19.08, kind: 'airport' },
+          { code: 'OTP', name: 'Otopeni cargo', lat: 44.57, lon: 26.08, kind: 'airport' },
+          { code: 'GORZ', name: 'Gorzyczki (parking)', lat: 49.94, lon: 18.4, kind: 'custom' },
+        ])
+        .execute()
+      await migrateToLatest(raw)
+      const names = await raw.selectFrom('board_places').select(['code', 'name']).orderBy('code').execute()
+      expect(names).toEqual([
+        { code: 'BUD', name: 'Budapeszt' },
+        { code: 'GORZ', name: 'Gorzyczki (parking)' },
+        { code: 'KTW', name: 'Katowice' },
+        { code: 'OTP', name: 'Otopeni cargo' },
+      ])
+    } finally {
+      await raw.destroy()
+    }
+    // A fresh database gets the short names from the seed; the airport's name still resolves.
+    await board.importFile(
+      await xlsx([{ no: '79-1-26', from: 'Pyrzowice', ld: '2026-09-21', to: 'Vecsés + Otopeni', ud: '2026-09-22', rev: 1500, cost: 1300, sub: 'AA1001A', trailer: 'TR100' }]),
+      'a.xlsx',
+      'daily',
+    )
+    expect((await board.orderDetails('79-1-26')).order.route).toBe('Katowice + Budapeszt → Bukareszt')
+    const bar = (await board.weekView('2026-09-21')).trucks.find(t => t.plate === 'AA1001A')!.bars[0]!
+    expect(bar.title).toBe('Katowice → Bukareszt (przez Budapeszt)')
   })
 })

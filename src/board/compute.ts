@@ -774,7 +774,7 @@ async function attachKilometres(
 /**
  * Route of a whole order for the order panel (12.10.2026): every place in the
  * application's order except the last unloading, joined with "+", then "→" and
- * the last unloading — "Warszawa + Katowice (Pyrzowice) → Budapeszt (Vecsés)".
+ * the last unloading — "Warszawa + Katowice → Budapeszt".
  */
 export function routeLabel(loadRaw: string, unloadRaw: string, ctx: BoardContext): string {
   const names = (raw: string) =>

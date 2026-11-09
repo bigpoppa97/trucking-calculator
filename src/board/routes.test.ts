@@ -59,7 +59,7 @@ describe('board API', () => {
     res = await call({ method: 'GET', url: '/api/board/week?date=2026-09-23' })
     const week = res.json()
     expect(week.weekNumber).toBe(39)
-    expect(week.trucks[0].bars[0]).toMatchObject({ orderNo: '79-1-26', title: 'Warszawa → Budapeszt (Vecsés)', margin: 200 })
+    expect(week.trucks[0].bars[0]).toMatchObject({ orderNo: '79-1-26', title: 'Warszawa → Budapeszt', margin: 200 })
 
     res = await call({ method: 'POST', url: '/api/board/orders/79-1-26/notes', payload: { text: 'Awizacja' } })
     expect(res.statusCode).toBe(200)

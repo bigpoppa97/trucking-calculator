@@ -11,7 +11,8 @@ import { aliasKey } from './normalize.js'
  * entry. New spellings are learned from the review queue.
  *
  * Coordinates are approximate (cargo area / town centre) — enough for road
- * routing, which snaps to the network.
+ * routing, which snaps to the network. Names are the city only (09.11.2026: "Budapeszt", not
+ * "Budapeszt (Vecsés)"); the airport's own name is an alias.
  */
 
 interface SeedPlace {
@@ -27,11 +28,11 @@ interface SeedPlace {
 export const SEED_PLACES: SeedPlace[] = [
   // Airports (IATA)
   { code: 'WAW', name: 'Warszawa', country: 'PL', lat: 52.1657, lon: 20.9671, kind: 'airport', aliases: ['warszawa', 'warsaw', 'warschau', 'warszawa airport', 'warsaw airport', 'warszawa okecie', 'okecie', 'waw'] },
-  { code: 'BUD', name: 'Budapeszt (Vecsés)', country: 'HU', lat: 47.4298, lon: 19.2611, kind: 'airport', aliases: ['budapeszt', 'budapest', 'vecses', 'ferihegy', 'budapest airport', 'bud'] },
+  { code: 'BUD', name: 'Budapeszt', country: 'HU', lat: 47.4298, lon: 19.2611, kind: 'airport', aliases: ['budapeszt', 'budapest', 'vecses', 'ferihegy', 'budapest airport', 'bud'] },
   { code: 'VIE', name: 'Wiedeń', country: 'AT', lat: 48.1103, lon: 16.5697, kind: 'airport', aliases: ['wieden', 'wien', 'vienna', 'schwechat', 'flughafen wien', 'wien flughafen', 'vienna airport', 'wien schwechat', 'vie'] },
   { code: 'FRA', name: 'Frankfurt', country: 'DE', lat: 50.0333, lon: 8.5706, kind: 'airport', aliases: ['frankfurt', 'frankfurt am main', 'frankfurt airport', 'frankfurt flughafen', 'flughafen frankfurt', 'fra'] },
-  { code: 'KRK', name: 'Kraków (Balice)', country: 'PL', lat: 50.0778, lon: 19.7848, kind: 'airport', aliases: ['krakow', 'balice', 'krakow airport', 'krk'] },
-  { code: 'KTW', name: 'Katowice (Pyrzowice)', country: 'PL', lat: 50.4743, lon: 19.08, kind: 'airport', aliases: ['katowice', 'pyrzowice', 'ozarowice', 'katowice airport', 'ktw'] },
+  { code: 'KRK', name: 'Kraków', country: 'PL', lat: 50.0778, lon: 19.7848, kind: 'airport', aliases: ['krakow', 'balice', 'krakow airport', 'krk'] },
+  { code: 'KTW', name: 'Katowice', country: 'PL', lat: 50.4743, lon: 19.08, kind: 'airport', aliases: ['katowice', 'pyrzowice', 'ozarowice', 'katowice airport', 'ktw'] },
   { code: 'LCJ', name: 'Łódź', country: 'PL', lat: 51.7219, lon: 19.3981, kind: 'airport', aliases: ['lodz', 'lodz airport', 'lcj'] },
   { code: 'VNO', name: 'Wilno', country: 'LT', lat: 54.6341, lon: 25.2858, kind: 'airport', aliases: ['wilno', 'vilnius', 'vno'] },
   { code: 'RIX', name: 'Ryga', country: 'LV', lat: 56.9236, lon: 23.9711, kind: 'airport', aliases: ['ryga', 'riga', 'rix'] },
@@ -39,7 +40,7 @@ export const SEED_PLACES: SeedPlace[] = [
   { code: 'KUN', name: 'Kowno', country: 'LT', lat: 54.9639, lon: 24.0848, kind: 'airport', aliases: ['kowno', 'kaunas', 'kauns', 'kun'] },
   { code: 'PRG', name: 'Praga', country: 'CZ', lat: 50.1008, lon: 14.26, kind: 'airport', aliases: ['praga', 'praha', 'prague', 'ruzyne', 'praha 6 ruzyne', 'praha 6', 'prague 6', 'prg'] },
   { code: 'BER', name: 'Berlin', country: 'DE', lat: 52.3667, lon: 13.5033, kind: 'airport', aliases: ['berlin', 'schonefeld', 'berlin schonefeld', 'berlin brandenburg', 'ber'] },
-  { code: 'OTP', name: 'Bukareszt (Otopeni)', country: 'RO', lat: 44.5722, lon: 26.1022, kind: 'airport', aliases: ['bukareszt', 'bucharest', 'bucuresti', 'otopeni', 'otopeni ilfov', 'otp'] },
+  { code: 'OTP', name: 'Bukareszt', country: 'RO', lat: 44.5722, lon: 26.1022, kind: 'airport', aliases: ['bukareszt', 'bucharest', 'bucuresti', 'otopeni', 'otopeni ilfov', 'otp'] },
   { code: 'SOF', name: 'Sofia', country: 'BG', lat: 42.6967, lon: 23.4114, kind: 'airport', aliases: ['sofia', 'sof'] },
   { code: 'MUC', name: 'Monachium', country: 'DE', lat: 48.3538, lon: 11.7861, kind: 'airport', aliases: ['monachium', 'munchen', 'muenchen', 'munich', 'muc'] },
   { code: 'BTS', name: 'Bratysława', country: 'SK', lat: 48.1702, lon: 17.2127, kind: 'airport', aliases: ['bratyslawa', 'bratislava', 'bts'] },
@@ -58,17 +59,17 @@ export const SEED_PLACES: SeedPlace[] = [
   { code: 'DUS', name: 'Düsseldorf', country: 'DE', lat: 51.2895, lon: 6.7668, kind: 'airport', aliases: ['dusseldorf', 'duesseldorf', 'dus'] },
   { code: 'HHN', name: 'Hahn', country: 'DE', lat: 49.9487, lon: 7.2639, kind: 'airport', aliases: ['hahn', 'frankfurt hahn', 'hhn'] },
   { code: 'HAM', name: 'Hamburg', country: 'DE', lat: 53.6304, lon: 9.9882, kind: 'airport', aliases: ['hamburg', 'ham'] },
-  { code: 'AMS', name: 'Amsterdam (Schiphol)', country: 'NL', lat: 52.3086, lon: 4.7639, kind: 'airport', aliases: ['amsterdam', 'schiphol', 'ams'] },
+  { code: 'AMS', name: 'Amsterdam', country: 'NL', lat: 52.3086, lon: 4.7639, kind: 'airport', aliases: ['amsterdam', 'schiphol', 'ams'] },
   { code: 'BRU', name: 'Bruksela', country: 'BE', lat: 50.9014, lon: 4.4844, kind: 'airport', aliases: ['bruksela', 'brussels', 'bruxelles', 'brussel', 'zaventem', 'bru'] },
   { code: 'CDG', name: 'Paryż', country: 'FR', lat: 49.0097, lon: 2.5479, kind: 'airport', aliases: ['paryz', 'paris', 'roissy', 'cdg'] },
-  { code: 'MXP', name: 'Mediolan (Malpensa)', country: 'IT', lat: 45.6306, lon: 8.7281, kind: 'airport', aliases: ['mediolan', 'milan', 'milano', 'malpensa', 'mxp'] },
+  { code: 'MXP', name: 'Mediolan', country: 'IT', lat: 45.6306, lon: 8.7281, kind: 'airport', aliases: ['mediolan', 'milan', 'milano', 'malpensa', 'mxp'] },
   { code: 'MAD', name: 'Madryt', country: 'ES', lat: 40.4936, lon: -3.5668, kind: 'airport', aliases: ['madryt', 'madrid', 'mad'] },
   { code: 'LYS', name: 'Lyon', country: 'FR', lat: 45.7256, lon: 5.0811, kind: 'airport', aliases: ['lyon', 'lys'] },
   { code: 'MRS', name: 'Marsylia', country: 'FR', lat: 43.4393, lon: 5.2214, kind: 'airport', aliases: ['marsylia', 'marseille', 'mrs'] },
   { code: 'ZAG', name: 'Zagrzeb', country: 'HR', lat: 45.7429, lon: 16.0688, kind: 'airport', aliases: ['zagrzeb', 'zagreb', 'zag'] },
   { code: 'LJU', name: 'Lublana', country: 'SI', lat: 46.2237, lon: 14.4576, kind: 'airport', aliases: ['lublana', 'ljubljana', 'ljublana', 'lju'] },
   { code: 'MMX', name: 'Malmö', country: 'SE', lat: 55.5363, lon: 13.3762, kind: 'airport', aliases: ['malmo', 'mmx'] },
-  { code: 'ARN', name: 'Sztokholm (Arlanda)', country: 'SE', lat: 59.6519, lon: 17.9186, kind: 'airport', aliases: ['sztokholm', 'stockholm', 'arlanda', 'arn'] },
+  { code: 'ARN', name: 'Sztokholm', country: 'SE', lat: 59.6519, lon: 17.9186, kind: 'airport', aliases: ['sztokholm', 'stockholm', 'arlanda', 'arn'] },
   { code: 'ZRH', name: 'Zurych', country: 'CH', lat: 47.4647, lon: 8.5492, kind: 'airport', aliases: ['zurych', 'zurich', 'zrh'] },
   { code: 'BRQ', name: 'Brno', country: 'CZ', lat: 49.1513, lon: 16.6944, kind: 'airport', aliases: ['brno', 'brq'] },
   { code: 'OSR', name: 'Ostrawa', country: 'CZ', lat: 49.6963, lon: 18.1111, kind: 'airport', aliases: ['ostrawa', 'ostrava', 'osr'] },
