@@ -218,14 +218,15 @@ describe('WeekPage', () => {
     expect(screen.queryByText('Marża tygodnia')).not.toBeInTheDocument()
   })
 
-  it('opens the order panel: a leg shows its dates and one km figure (no amounts, no loaded / empty split)', async () => {
+  it('opens the order panel: one km figure for the truck (no amounts, no loaded / empty split)', async () => {
     api.week.mockResolvedValue(WEEK)
     api.order.mockResolvedValue(ORDER)
     render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
     await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
     const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
     expect(await within(panel).findByText('Klient testowy')).toBeInTheDocument()
-    expect(within(panel).getByText('22.09–23.09 · ≈680 km')).toBeInTheDocument()
+    // Since 10.11.2026 a single leg has no own dates line (they are the order's, in the header).
+    expect(within(panel).getByText('· ≈680 km')).toBeInTheDocument()
     expect(within(panel).queryByText(/Twoje auto|z ładunkiem|dojazd pusty|kwota|przychód \d/)).not.toBeInTheDocument()
 
     await userEvent.keyboard('{Escape}')
@@ -1349,7 +1350,6 @@ describe('05.11.2026 — a wrong year in the unloading date', () => {
     await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
     const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
     expect(await within(panel).findByText(/02\.11 20:00 → 04\.10\.2027 12:00/)).toBeInTheDocument()
-    expect(within(panel).getByText(/02\.11–04\.10\.2027/)).toBeInTheDocument()
     await userEvent.click(within(panel).getByRole('button', { name: 'Popraw rozładunek' }))
     expect(within(panel).getByLabelText('Co poprawić')).toHaveValue('unload_at')
     const input = within(panel).getByLabelText('Nowa wartość')
@@ -1545,5 +1545,60 @@ describe('09.11.2026 — "Pusty · <miejsce>"', () => {
     const tile = await screen.findByTestId('idle-tile')
     expect(tile.tagName).toBe('DIV')
     expect(tile).toHaveTextContent('od 20.09 · pozycja auta')
+  })
+})
+
+describe('10.11.2026 — panel without repeated route and dates', () => {
+  it('one truck, no relay: truck, km and driver under the dates; no "Odcinki" section', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue(ORDER)
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    const truck = await within(panel).findByTestId('order-truck')
+    expect(within(truck).getByText('AA1050H')).toBeInTheDocument()
+    expect(within(truck).getByText(/· ≈\s?680 km/)).toBeInTheDocument()
+    expect(within(truck).getByText('Kierowca A → Kierowca B (zmiana 23.09)')).toBeInTheDocument()
+    expect(within(panel).queryByText('Odcinki')).not.toBeInTheDocument()
+    // The route and the dates appear once, in the header.
+    expect(within(panel).getAllByText(/Warszawa → Budapeszt/)).toHaveLength(1)
+    expect(within(panel).queryByText(/22\.09–23\.09/)).not.toBeInTheDocument()
+  })
+
+  it('a relay keeps "Odcinki": each truck with its own part, dates, km and driver', async () => {
+    api.week.mockResolvedValue(WEEK)
+    api.order.mockResolvedValue({
+      ...ORDER,
+      order: {
+        ...ORDER.order,
+        prz: { place: 'GORZYCZKI', placeCode: 'GORZ', date: '2026-09-22', time: null, from: 'AA1050H', to: 'BB2000K', amountFrom: 700, amountTo: 600, raw: 'PRZ GORZYCZKI 22.09 AA1050H>BB2000K 700/600' },
+      },
+      legs: [
+        { ...ORDER.legs[0]!, to: 'Gorzyczki', stops: ['Warszawa', 'Gorzyczki'], endDate: '2026-09-22', kmLoaded: 300, kmEstimated: false },
+        {
+          ...ORDER.legs[0]!,
+          index: 1,
+          plate: 'BB2000K',
+          truckId: 2,
+          from: 'Gorzyczki',
+          stops: ['Gorzyczki', 'Budapeszt (Vecsés)'],
+          startDate: '2026-09-22',
+          kmLoaded: 450,
+          kmEmpty: 20,
+          kmEstimated: false,
+          driver: 'Kierowca C',
+        },
+      ],
+    })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /79-1000-26, Warszawa/ }))
+    const panel = await screen.findByRole('complementary', { name: 'Szczegóły zlecenia' })
+    expect(await within(panel).findByText('Odcinki')).toBeInTheDocument()
+    expect(within(panel).queryByTestId('order-truck')).not.toBeInTheDocument()
+    expect(within(panel).getByText('Warszawa → Gorzyczki')).toBeInTheDocument()
+    expect(within(panel).getByText('Gorzyczki → Budapeszt (Vecsés)')).toBeInTheDocument()
+    expect(within(panel).getByText(/22\.09–22\.09 · 300 km/)).toBeInTheDocument()
+    expect(within(panel).getByText(/22\.09–23\.09 · 470 km/)).toBeInTheDocument()
+    expect(within(panel).getByText('Kierowca C')).toBeInTheDocument()
   })
 })

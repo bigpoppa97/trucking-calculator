@@ -95,6 +95,9 @@ export function OrderPanel({
   }
 
   const o = data?.order
+  // One truck of the department, no relay (10.11.2026): the leg's route and dates are the order's,
+  // already in the header — only truck, km and driver go there, without an "Odcinki" section.
+  const onlyLeg = data && data.legs.length === 1 && data.legs[0]!.kind === 'fleet' ? data.legs[0]! : null
   return (
     <aside
       aria-label="Szczegóły zlecenia"
@@ -139,6 +142,16 @@ export function OrderPanel({
               )}{' '}
               · {o.carrier}
             </span>
+            {onlyLeg && (
+              <span className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 text-[13px]" data-testid="order-truck">
+                <span className="font-mono font-semibold">{onlyLeg.plate}</span>
+                <span className="text-[#545B63]">· {legKm(onlyLeg, o.paidCancel !== null)}</span>
+                <span>
+                  <span className="text-[#545B63]">· Kierowca:</span> <span className="font-semibold">{onlyLeg.driver || '—'}</span>
+                  {onlyLeg.driverManual && <span className="text-xs text-[#545B63]"> (poprawione ręcznie)</span>}
+                </span>
+              </span>
+            )}
             {((o.excluded && o.excluded !== 'cancelled_board') || o.noCarrier || o.missing) && (
               <span className="mt-1 rounded bg-[#F1F2F0] px-2 py-1 text-[13px] text-[#3D444C]">
                 {o.excluded === 'cancelled' && 'Anulowane w aplikacji (status A) — poza wynikami. '}
@@ -360,6 +373,9 @@ export function OrderPanel({
             </p>
           ))}
 
+          {/* Legs only when they say something the header does not: a relay (each truck its own part,
+              dates, km, driver) or a leg outside the department (10.11.2026). */}
+          {!onlyLeg && data.legs.length > 0 && (
           <div className="flex flex-col">
             <span className="pb-1 text-[11.5px] font-semibold uppercase tracking-wider text-[#545B63]">Odcinki</span>
             {data.legs.map(l => (
@@ -383,6 +399,7 @@ export function OrderPanel({
               </div>
             ))}
           </div>
+          )}
 
           {showMoney && (
             <div className="grid grid-cols-3 gap-2">
