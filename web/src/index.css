@@ -1,8 +1,13 @@
 @import "tailwindcss";
 
+/*
+ * Fonts are bundled with the app (@fontsource, imported in main.tsx) — no Google Fonts request.
+ * Mono since 10.11.2026: Azeret Mono instead of IBM Plex Mono — plain zero (Plex Mono's dotted
+ * zero read oddly in amounts); digits keep a fixed width, so numbers still line up.
+ */
 @theme {
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-mono: "Azeret Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 body {

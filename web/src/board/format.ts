@@ -1,6 +1,6 @@
 /** Formatting for the board (Polish conventions, amounts always EUR). */
 
-const group = (n: number) => String(Math.round(Math.abs(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+const group = (n: number) => String(Math.round(Math.abs(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
 
 export function eur(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—'
