@@ -2356,3 +2356,41 @@ describe('09.11.2026 — "Pusty · <miejsce>": a truck without an order in a wee
     expect((await rowOf('2026-09-28')).idle).toMatchObject({ placeName: 'Budapeszt', since: '2026-08-04', orderNo: '79-1-26' })
   })
 })
+
+describe('10.11.2026 — Frankfurt spellings; unknown place shown in the order panel', () => {
+  const row = (no: string, from: string, ld: string, to: string, ud: string): Row => ({ no, from, ld, to, ud, rev: 2000, cost: 1600, sub: 'AA1001A', trailer: 'TR100' })
+
+  it('"Frankfurt/M. + Frankfurt am Main" — both are FRA; the order has km and no empty run after a WAW → FRA order', async () => {
+    await board.importFile(
+      await xlsx([
+        row('79-1-26', 'WARSZAWA', '2026-11-09', 'Frankfurt', '2026-11-10'),
+        row('79-2-26', 'Frankfurt/M. + Frankfurt am Main', '2026-11-11', 'WARSZAWA', '2026-11-13'),
+      ]),
+      'a.xlsx',
+      'daily',
+    )
+    const d = await board.orderDetails('79-2-26')
+    expect(d.order.route).toBe('Frankfurt → Warszawa')
+    expect(d.legs[0]?.kmLoaded).toBeGreaterThan(1000)
+    expect(d.legs[0]?.kmEmpty).toBe(0)
+    expect((await board.listIssues()).filter(i => i.kind === 'UNKNOWN_PLACE')).toEqual([])
+  })
+
+  it('other Frankfurt am Main spellings resolve to FRA, Frankfurt (Oder) to its own place', async () => {
+    const { places } = await loadBoardContext(db)
+    for (const s of ['Frankfurt/M', 'FRANKFURT A.M.', 'Frankfurt (Main)', 'Frankfurt/Main', 'Frankfurt-Main']) expect(places.resolve(s), s).toBe('FRA')
+    for (const s of ['Frankfurt (Oder)', 'Frankfurt/Oder', 'Frankfurt nad Odrą']) expect(places.resolve(s), s).toBe('FROD')
+  })
+
+  it('an unknown place is shown in the panel of its order, with the same resolution', async () => {
+    await board.importFile(await xlsx([row('79-3-26', 'Nibylandia', '2026-11-11', 'WARSZAWA', '2026-11-13')]), 'a.xlsx', 'daily')
+    const d = await board.orderDetails('79-3-26')
+    expect(d.legs[0]?.kmLoaded).toBeNull()
+    const issue = d.issues.find(i => i.kind === 'UNKNOWN_PLACE')
+    expect(issue?.message).toContain('Nie znam miejsca „Nibylandia”')
+    await board.resolveIssue(issue!.id, 'alias', { code: 'BUD' })
+    const after = await board.orderDetails('79-3-26')
+    expect(after.issues.filter(i => i.kind === 'UNKNOWN_PLACE')).toEqual([])
+    expect(after.legs[0]?.kmLoaded).toBeGreaterThan(500)
+  })
+})

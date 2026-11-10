@@ -30,7 +30,9 @@ export const SEED_PLACES: SeedPlace[] = [
   { code: 'WAW', name: 'Warszawa', country: 'PL', lat: 52.1657, lon: 20.9671, kind: 'airport', aliases: ['warszawa', 'warsaw', 'warschau', 'warszawa airport', 'warsaw airport', 'warszawa okecie', 'okecie', 'waw'] },
   { code: 'BUD', name: 'Budapeszt', country: 'HU', lat: 47.4298, lon: 19.2611, kind: 'airport', aliases: ['budapeszt', 'budapest', 'vecses', 'ferihegy', 'budapest airport', 'bud'] },
   { code: 'VIE', name: 'Wiedeń', country: 'AT', lat: 48.1103, lon: 16.5697, kind: 'airport', aliases: ['wieden', 'wien', 'vienna', 'schwechat', 'flughafen wien', 'wien flughafen', 'vienna airport', 'wien schwechat', 'vie'] },
-  { code: 'FRA', name: 'Frankfurt', country: 'DE', lat: 50.0333, lon: 8.5706, kind: 'airport', aliases: ['frankfurt', 'frankfurt am main', 'frankfurt airport', 'frankfurt flughafen', 'flughafen frankfurt', 'fra'] },
+  { code: 'FRA', name: 'Frankfurt', country: 'DE', lat: 50.0333, lon: 8.5706, kind: 'airport', aliases: ['frankfurt', 'frankfurt am main', 'frankfurt airport', 'frankfurt flughafen', 'flughafen frankfurt', 'fra',
+    // 10.11.2026 (79-1626-26: "Frankfurt/M. + Frankfurt am Main" — "Frankfurt/M." was unknown, the order had no km)
+    'frankfurt/m.', 'frankfurt/m', 'frankfurt a.m.', 'frankfurt a. m.', 'frankfurt a.main', 'frankfurt/main', 'frankfurt (main)', 'frankfurt main'] },
   { code: 'KRK', name: 'Kraków', country: 'PL', lat: 50.0778, lon: 19.7848, kind: 'airport', aliases: ['krakow', 'balice', 'krakow airport', 'krk'] },
   { code: 'KTW', name: 'Katowice', country: 'PL', lat: 50.4743, lon: 19.08, kind: 'airport', aliases: ['katowice', 'pyrzowice', 'ozarowice', 'katowice airport', 'ktw'] },
   { code: 'LCJ', name: 'Łódź', country: 'PL', lat: 51.7219, lon: 19.3981, kind: 'airport', aliases: ['lodz', 'lodz airport', 'lcj'] },
@@ -96,6 +98,9 @@ export const SEED_PLACES: SeedPlace[] = [
   // 09.11.2026: 47-175 Barwinek — part of Kadłub, gm. Strzelce Opolskie (opolskie); NOT the Barwinek border
   // crossing to Slovakia (podkarpackie, 38-4xx).
   { code: 'BARW', name: 'Barwinek', country: 'PL', lat: 50.6034, lon: 18.2818, kind: 'custom', aliases: ['barwinek'] },
+  // 10.11.2026: Frankfurt nad Odrą (Świecko / Słubice) is not FRA — its own place, so its spellings are never
+  // suggested or saved as Frankfurt am Main (~550 km off).
+  { code: 'FROD', name: 'Frankfurt (Oder)', country: 'DE', lat: 52.3472, lon: 14.5506, kind: 'custom', aliases: ['frankfurt (oder)', 'frankfurt/oder', 'frankfurt/o.', 'frankfurt oder', 'frankfurt an der oder', 'frankfurt nad odra'] },
 ]
 
 /**

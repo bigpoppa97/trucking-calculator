@@ -1514,12 +1514,19 @@ export class BoardService {
       this.db.selectFrom('board_notes').selectAll().where('order_no', '=', orderNo).where('deleted', '=', 0).orderBy('id').execute(),
       this.db.selectFrom('board_order_changes').selectAll().where('order_no', '=', orderNo).orderBy('id').execute(),
       this.db.selectFrom('board_overrides').selectAll().where('order_no', '=', orderNo).orderBy('id').execute(),
-      // Items about this order; "Czy była przepinka?" also in the panel of the first of its two orders.
+      // Items about this order; "Czy była przepinka?" also in the panel of the first of its two orders;
+      // "Nie znam miejsca" (one item per spelling, listing its orders) in the panel of each such order —
+      // otherwise the order showed "— km" with no reason and no way to fix it there (10.11.2026).
       this.db
         .selectFrom('board_issues')
         .selectAll()
         .where('status', '=', 'open')
-        .where(eb => eb.or([eb('ref', '=', orderNo), eb.and([eb('kind', '=', 'ROUTE_GAP'), eb('details', 'like', `%"${orderNo}"%`)])]))
+        .where(eb =>
+          eb.or([
+            eb('ref', '=', orderNo),
+            eb.and([eb('kind', 'in', ['ROUTE_GAP', 'UNKNOWN_PLACE']), eb('details', 'like', `%"${orderNo}"%`)]),
+          ]),
+        )
         .orderBy('id')
         .execute(),
     ])
