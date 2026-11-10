@@ -119,7 +119,11 @@ oddzielają dni, kolumna „dziś” jest lekko podbarwiona. Pasek zlecenia zacz
 rozładunku (bez godziny — cały dzień; najkrótszy pasek ma ¾ dnia). Trasa, kwota i km są na pasku w całości — w tylu
 liniach, ile trzeba (bez „…”); nazwy lotnisk bez dopisku w nawiasie („Budapeszt”, nie „Budapeszt (Vecsés)”). Auto bez
 żadnego zlecenia w tygodniu ma na początku tygodnia kafelek „Pusty · Wilno, od 06.11 18:00” — miejsce i czas ostatniego
-rozładunku (kliknięcie otwiera to zlecenie) albo późniejszej „Pozycji auta” z miejscem. Znaczki zdarzeń stoją przy swojej godzinie
+rozładunku (kliknięcie otwiera to zlecenie) albo późniejszej „Pozycji auta” z miejscem. Pod dniem, w którym auto kończy
+ostatnie wpisane zlecenie, obok „+” stoi pinezka „📍 Frankfurt / wolny od 10:00” (od 10.11.2026; tylko ta jedna — inne dni są
+puste). Domyślnie to rozładunek (przy przepince — miejsce i godzina przepinki); kliknięcie pozwala wpisać inny dzień i godzinę
+(ołówek = wpisane ręcznie, „Przywróć rozładunek” cofa). Wpis obowiązuje, dopóki nie zmieni się rozładunek tego zlecenia, i liczy
+się też w kafelku „Pusty” w następnych tygodniach. Późniejsza „Pozycja auta” przejmuje pinezkę. Znaczki zdarzeń stoją przy swojej godzinie
 (automatyczna zmiana naczepy — przy godzinie załadunku). Kolumna auta: ciągnik (i jego serwisy wymagane), naczepa
 (i jej serwisy), kierowca z telefonem (i ostrzeżenia AVSEC), przewoźnik. Kafelek „Średni obrót na auto”: przychód aut
 tygodnia ÷ liczba aut na tablicy (pod spodem — przewoźnika). Panel zlecenia przy odcinku pokazuje daty i km razem

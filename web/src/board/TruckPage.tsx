@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { boardApi, errorMessage, type Service, type TruckView, type WeekEvent, type WeekTruck } from './boardApi.js'
+import { boardApi, errorMessage, type EndSpot, type Service, type TruckView, type WeekEvent, type WeekTruck } from './boardApi.js'
 import { DAY_NAMES, addDaysIso, dm, dmYear, eur, km, ordersLabel, pair, pct, perKm, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
 import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { PHASE_LABELS, RequiredBadges, SERVICE_COLORS, ServiceDialog, defaultServiceDay, serviceTitle } from './serviceUi.js'
 import { TruckTimeline, nowFractionFor } from './TruckTimeline.js'
-import { EventDialog, EventEditDialog, Kpi, Total, TrailerChangeDialog, readShowMoney, writeShowMoney } from './WeekPage.js'
+import { EventDialog, EventEditDialog, FreeAtDialog, Kpi, Total, TrailerChangeDialog, readShowMoney, writeShowMoney } from './WeekPage.js'
 import { DriverChangeDialog, DriverWarnings } from './driversUi.js'
 
 /**
@@ -100,6 +100,7 @@ export function TruckPage({
   const [eventTarget, setEventTarget] = useState<{ row: WeekTruck; day: string } | null>(null)
   const [eventEdit, setEventEdit] = useState<WeekEvent | null>(null)
   const [trailerChange, setTrailerChange] = useState<WeekEvent | null>(null)
+  const [freeAt, setFreeAt] = useState<EndSpot | null>(null)
   const [copied, setCopied] = useState(false)
   const [driverForm, setDriverForm] = useState<{ day: string; change?: { id: number; driverId: number | null; time: string | null } } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -399,6 +400,7 @@ export function TruckPage({
                     }
                     onOpenEvent={setEventEdit}
                     onOpenTrailerChange={setTrailerChange}
+                    onOpenEndSpot={setFreeAt}
                   />
                   <div className="grid grid-cols-2 content-start gap-x-3 gap-y-1.5 border-l border-[#E3E6E1] px-3.5 py-3 text-[13px]">
                     {showMoney && (
@@ -624,6 +626,18 @@ export function TruckPage({
           onClose={() => setEventEdit(null)}
           onSaved={message => {
             setEventEdit(null)
+            setNotice(message ?? null)
+            void load()
+          }}
+        />
+      )}
+      {freeAt && (
+        <FreeAtDialog
+          plate={t.plate}
+          spot={freeAt}
+          onClose={() => setFreeAt(null)}
+          onSaved={message => {
+            setFreeAt(null)
             setNotice(message ?? null)
             void load()
           }}

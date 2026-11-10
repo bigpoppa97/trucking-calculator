@@ -148,6 +148,32 @@ export interface WeekTruck {
   totals: { revenue: number; carrier: number; cost: number; margin: number; km: number; kmEmpty: number; legs: number; kmEstimated: boolean }
   /** "Pusty · Wilno" (09.11.2026): no order this week — where the truck stands since when; null otherwise. */
   idle: IdleSpot | null
+  /**
+   * "Koniec" (10.11.2026): where and from when the truck is free after its last entered order — the
+   * label with the pin on that day. Only in that day's week (and not next to the "Pusty" tile).
+   */
+  lastSpot?: EndSpot | null
+}
+
+export interface EndSpot {
+  placeName: string
+  /** The free moment: "wolny od" typed on the board, else the unloading / relay / position. */
+  date: string
+  time: string | null
+  via: 'order' | 'position'
+  orderNo: string | null
+  /** Correction field of the leg ('free_at', 'free_at:1'); null for a position. */
+  field: string | null
+  /** The truck hands the trailer over there (first leg of a relay). */
+  relay: boolean
+  title: string | null
+  /** The leg's own end — the default of "wolny od". */
+  endDate: string | null
+  endTime: string | null
+  correctedBy: string | null
+  correctedAt: string | null
+  /** The "Pozycja auta" event (opens its dialog). */
+  eventId: number | null
 }
 
 export interface TruckOrderRow {

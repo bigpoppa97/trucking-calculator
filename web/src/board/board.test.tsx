@@ -1602,3 +1602,82 @@ describe('10.11.2026 — panel without repeated route and dates', () => {
     expect(within(panel).getByText('Kierowca C')).toBeInTheDocument()
   })
 })
+
+describe('10.11.2026 — "Koniec": the pin at the last entered order, "wolny od" editable', () => {
+  const spot = {
+    placeName: 'Budapeszt',
+    date: '2026-09-23',
+    time: '16:00',
+    via: 'order' as const,
+    orderNo: '79-1000-26',
+    field: 'free_at',
+    relay: false,
+    title: 'Warszawa → Budapeszt (Vecsés)',
+    endDate: '2026-09-23',
+    endTime: '16:00',
+    correctedBy: null,
+    correctedAt: null,
+    eventId: null,
+  }
+
+  it('one label, on its day next to "+"; click → "wolny od" with day and hour, saved as a correction', async () => {
+    const week = structuredClone(WEEK)
+    week.trucks[0]!.lastSpot = spot
+    api.week.mockResolvedValue(week)
+    api.setOverride.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const labels = await screen.findAllByTestId('end-spot')
+    expect(labels).toHaveLength(1)
+    expect(labels[0]).toHaveTextContent('Budapeszt')
+    expect(labels[0]).toHaveTextContent('wolny od 16:00')
+    // in the cell of Wednesday, with its "+"
+    expect(within(labels[0]!.parentElement!).getByRole('button', { name: 'Dodaj zdarzenie: AA1050H, 23.09' })).toBeInTheDocument()
+    expect(screen.getByText('Koniec (gdzie i od kiedy wolny)')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Koniec: AA1050H, Budapeszt, wolny od 16:00' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Wolny od · AA1050H' })
+    expect(within(dialog).getByText('23.09 16:00')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Przywróć rozładunek' })).not.toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Dzień')).toHaveValue('2026-09-23')
+    const hour = within(dialog).getByLabelText('Godzina')
+    expect(hour).toHaveValue('16:00')
+    fireEvent.change(hour, { target: { value: '19:30' } })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Zapisz' }))
+    expect(api.setOverride).toHaveBeenCalledWith('79-1000-26', 'free_at', '2026-09-23 19:30')
+    expect(await screen.findByText('Wolny od 23.09 19:30.')).toBeInTheDocument()
+  })
+
+  it('a corrected hour has a pencil and "Przywróć rozładunek"; a relay says "przepinka"', async () => {
+    const week = structuredClone(WEEK)
+    week.trucks[0]!.lastSpot = { ...spot, date: '2026-09-24', time: '06:00', relay: true, field: 'free_at', correctedBy: 'Anna', correctedAt: '2026-09-23T10:00:00Z' }
+    api.week.mockResolvedValue(week)
+    api.clearOverride.mockResolvedValue({ ok: true })
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    const label = await screen.findByRole('button', { name: 'Koniec: AA1050H, Budapeszt, wolny od 06:00 (poprawione)' })
+    expect(label).toHaveAttribute('title', expect.stringContaining('Przepinka: 23.09 16:00'))
+    expect(label).toHaveAttribute('title', expect.stringContaining('wpisał Anna'))
+    expect(within(label.parentElement!).getByRole('button', { name: 'Dodaj zdarzenie: AA1050H, 24.09' })).toBeInTheDocument()
+    await userEvent.click(label)
+    const dialog = await screen.findByRole('dialog', { name: 'Wolny od · AA1050H' })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Przywróć przepinkę' }))
+    expect(api.clearOverride).toHaveBeenCalledWith('79-1000-26', 'free_at')
+  })
+
+  it('a "Pozycja auta" after the last order: the label opens the event', async () => {
+    const week = structuredClone(WEEK)
+    const event: WeekEvent = { id: 7, day: '2026-09-25', kind: 'position', text: 'baza', auto: false, place: 'WAW', placeName: 'Warszawa', time: '10:00', createdBy: 'Anna', createdAt: '2026-09-23T10:00:00Z' }
+    week.trucks[0]!.events = [event]
+    week.trucks[0]!.lastSpot = { ...spot, placeName: 'Warszawa', date: '2026-09-25', time: '10:00', via: 'position', orderNo: null, field: null, title: null, endDate: null, endTime: null, eventId: 7 }
+    api.week.mockResolvedValue(week)
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Koniec: AA1050H, Warszawa, pozycja auta 10:00' }))
+    expect(await screen.findByRole('dialog', { name: /Pozycja auta · AA1050H/ })).toBeInTheDocument()
+  })
+
+  it('no label without a last spot in the week', async () => {
+    api.week.mockResolvedValue(WEEK)
+    render(<WeekPage focus={null} initialDate="2026-09-23" onReview={() => {}} />)
+    await screen.findByText('Tydzień 39')
+    expect(screen.queryByTestId('end-spot')).not.toBeInTheDocument()
+  })
+})

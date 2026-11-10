@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { boardApi, errorMessage, type NoteKind, type Service, type WeekEvent, type WeekTruck, type WeekView } from './boardApi.js'
-import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, eur, km, ordersLabel, pair, pct, perKm, plural, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
+import { boardApi, errorMessage, type EndSpot, type NoteKind, type Service, type WeekEvent, type WeekTruck, type WeekView } from './boardApi.js'
+import { DAY_NAMES, EVENT_LABELS, addDaysIso, dm, dmTime, eur, km, ordersLabel, pair, pct, perKm, plural, signedEur, stamp, todayIso, weekRangeLabel } from './format.js'
 import { Icon } from './Icon.js'
 import { OrderPanel } from './OrderPanel.js'
 import { RequiredBadges, SERVICE_COLORS, ServiceDialog } from './serviceUi.js'
 import { DriverChangeDialog, DriverWarnings } from './driversUi.js'
-import { COLOAD_COLORS, DayGrid, IDLE_COLORS, PAID_CANCEL_COLORS, TruckTimeline, nowFractionFor } from './TruckTimeline.js'
+import { COLOAD_COLORS, DayGrid, END_SPOT_COLOR, IDLE_COLORS, PAID_CANCEL_COLORS, TruckTimeline, nowFractionFor } from './TruckTimeline.js'
 import { DraftDialog } from './DraftDialog.js'
 
 /**
@@ -84,6 +84,7 @@ export function WeekPage({
   const [driverChange, setDriverChange] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
   const [eventEdit, setEventEdit] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
   const [trailerChange, setTrailerChange] = useState<{ truck: WeekTruck; event: WeekEvent } | null>(null)
+  const [freeAt, setFreeAt] = useState<{ truck: WeekTruck; spot: EndSpot } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   /** The row of days sticks under the app header; it follows the board's horizontal scroll. */
   const dayHeadRef = useRef<HTMLDivElement>(null)
@@ -184,6 +185,12 @@ export function WeekPage({
           <Legend color={COLOAD_COLORS.bg} label="Doładunek" />
           <Legend color={PAID_CANCEL_COLORS.bg} label="Anulacja płatna" chip={PAID_CANCEL_COLORS.border} />
           <Legend color={IDLE_COLORS.bg} label="Pusty (gdzie stoi auto)" dashedBorder={IDLE_COLORS.border} />
+          <span className="inline-flex items-center gap-1.5" title="Pod dniem, w którym auto kończy ostatnie wpisane zlecenie — kliknij, żeby zmienić godzinę">
+            <span style={{ color: END_SPOT_COLOR }}>
+              <Icon name="pin" size={13} />
+            </span>
+            Koniec (gdzie i od kiedy wolny)
+          </span>
           <Legend color="#F4C77A" label="Do sprawdzenia" />
           <Legend color="#ECEEF0" label="Załadunek w poprzednim tygodniu" border />
           <Legend color={SERVICE_COLORS.light} label="Serwis" />
@@ -308,6 +315,7 @@ export function WeekPage({
                   onOpenDriverChange={event => setDriverChange({ truck, event })}
                   onOpenEvent={event => setEventEdit({ truck, event })}
                   onOpenTrailerChange={event => setTrailerChange({ truck, event })}
+                  onOpenEndSpot={spot => setFreeAt({ truck, spot })}
                 />
               ))}
             </div>
@@ -347,6 +355,18 @@ export function WeekPage({
           onClose={() => setEventEdit(null)}
           onSaved={message => {
             setEventEdit(null)
+            setNotice(message ?? null)
+            void load()
+          }}
+        />
+      )}
+      {freeAt && (
+        <FreeAtDialog
+          plate={freeAt.truck.plate}
+          spot={freeAt.spot}
+          onClose={() => setFreeAt(null)}
+          onSaved={message => {
+            setFreeAt(null)
             setNotice(message ?? null)
             void load()
           }}
@@ -473,6 +493,7 @@ interface TruckRowProps {
   onOpenDriverChange: (e: WeekEvent) => void
   onOpenEvent: (e: WeekEvent) => void
   onOpenTrailerChange: (e: WeekEvent) => void
+  onOpenEndSpot: (spot: EndSpot) => void
 }
 
 function TruckRow({
@@ -494,6 +515,7 @@ function TruckRow({
   onOpenDriverChange,
   onOpenEvent,
   onOpenTrailerChange,
+  onOpenEndSpot,
 }: TruckRowProps) {
   const openDriver = onOpenDriver && truck.driverId !== null ? () => onOpenDriver(truck.driverId!) : undefined
   const t = truck.totals
@@ -571,6 +593,7 @@ function TruckRow({
         onOpenDriverChange={onOpenDriverChange}
         onOpenEvent={onOpenEvent}
         onOpenTrailerChange={onOpenTrailerChange}
+        onOpenEndSpot={onOpenEndSpot}
       />
 
       <div className="flex flex-col gap-1.5 border-l border-[#E3E6E1] px-3.5 py-3 text-[13px]">
@@ -850,6 +873,115 @@ export function EventEditDialog({ plate, event, onClose, onSaved }: { plate: str
               </div>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * "Wolny od" (10.11.2026): from when the truck is free after its last entered order, typed at the
+ * pin. The default is the unloading (or the relay); the hour typed here holds while that stays the
+ * same — once the unloading moves (in the application or by a correction), the label follows it again.
+ */
+export function FreeAtDialog({ plate, spot, onClose, onSaved }: { plate: string; spot: EndSpot; onClose: () => void; onSaved: (message?: string) => void }) {
+  const [day, setDay] = useState(spot.date)
+  const [time, setTime] = useState(spot.time ?? '')
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const corrected = spot.correctedBy !== null
+  const endLabel = spot.endDate ? dmTime(spot.endDate, spot.endTime) : '—'
+
+  const run = async (fn: () => Promise<unknown>, message: string) => {
+    if (!spot.orderNo || !spot.field) return
+    setSaving(true)
+    try {
+      await fn()
+      onSaved(message)
+    } catch (e) {
+      setError(errorMessage(e, 'Nie udało się zapisać.'))
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby="free-at-title" className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+      <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h2 id="free-at-title" className="text-lg font-bold">
+              Wolny od · {plate}
+            </h2>
+            <p className="flex items-start gap-1 text-sm text-[#545B63]">
+              <span className="mt-[3px] shrink-0" style={{ color: END_SPOT_COLOR }}>
+                <Icon name="pin" size={12} />
+              </span>
+              <span>
+                {spot.placeName} · {spot.orderNo} {spot.title}
+              </span>
+            </p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Zamknij" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-[#D5D9D3]">
+            <Icon name="close" size={18} />
+          </button>
+        </div>
+        <div className="flex flex-col gap-3 text-sm">
+          <p>
+            {spot.relay ? 'Przepinka' : 'Rozładunek'}: <span className="font-mono font-semibold">{endLabel}</span>
+            {corrected && (
+              <span className="text-[#545B63]">
+                {' '}
+                · wolny od <span className="font-mono">{dmTime(spot.date, spot.time)}</span> wpisał {spot.correctedBy}
+                {spot.correctedAt ? `, ${stamp(spot.correctedAt)}` : ''}
+              </span>
+            )}
+          </p>
+          <div className="grid grid-cols-[minmax(0,1fr)_150px] gap-2">
+            <label className="flex flex-col gap-1 font-semibold">
+              Dzień
+              <input type="date" value={day} onChange={e => setDay(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-3 font-normal" />
+            </label>
+            <label className="flex flex-col gap-1 font-semibold">
+              Godzina
+              <input type="time" value={time} onChange={e => setTime(e.target.value)} className="h-11 rounded-lg border border-[#C9CEC6] px-2 font-normal" />
+            </label>
+          </div>
+          <p className="text-xs text-[#545B63]">
+            Od tej chwili auto jest wolne na nowe zlecenie. Godzina zostaje, dopóki nie zmieni się {spot.relay ? 'przepinka' : 'rozładunek'} tego zlecenia —
+            wtedy wraca godzina {spot.relay ? 'przepinki' : 'rozładunku'}.
+          </p>
+          {error && (
+            <p role="alert" className="rounded bg-red-50 px-3 py-2 text-red-800">
+              {error}
+            </p>
+          )}
+          <div className="flex flex-wrap justify-between gap-2">
+            {corrected ? (
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void run(() => boardApi.clearOverride(spot.orderNo!, spot.field!), `Wolny od: ${spot.relay ? 'przepinka' : 'rozładunek'} ${endLabel}.`)}
+                className="h-11 rounded-lg border border-[#C9CEC6] px-4 font-semibold disabled:opacity-60"
+              >
+                Przywróć {spot.relay ? 'przepinkę' : 'rozładunek'}
+              </button>
+            ) : (
+              <span />
+            )}
+            <div className="flex gap-2">
+              <button type="button" onClick={onClose} className="h-11 rounded-lg border border-[#C9CEC6] px-4 font-semibold">
+                Anuluj
+              </button>
+              <button
+                type="button"
+                disabled={saving || !day || !time}
+                onClick={() => void run(() => boardApi.setOverride(spot.orderNo!, spot.field!, `${day} ${time}`), `Wolny od ${dmTime(day, time)}.`)}
+                className="h-11 rounded-lg bg-[#1E4E9C] px-4 font-semibold text-white disabled:opacity-60"
+              >
+                Zapisz
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

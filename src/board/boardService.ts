@@ -19,7 +19,7 @@ import { loadBoardContext, retiredOn, servesBetween, type BoardContext, type Tru
 import type { DistanceService } from './distances.js'
 import { importExportFile, draftLabel, FIELD_LABELS, OVERRIDE_FIELD_LABELS, overrideAppValue, type ImportSummary } from './importService.js'
 import { DRAFT_PREFIX, replaceDraft } from './drafts.js'
-import { atKey, displayAt, formatAt, normTime, parseAtInput, parseAtValue } from './times.js'
+import { atKey, displayAt, formatAt, normTime, parseAtInput, parseAtValue, type At } from './times.js'
 import { DEFAULT_THRESHOLDS, deriveIssues, fmtDate, syncDerivedIssues, type IssueThresholds } from './issues.js'
 import { planFleetSync, type FleetPlan } from './fleetList.js'
 import { parsePrz, resolveSwapDate, similarPlates } from './prz.js'
@@ -93,6 +93,10 @@ export const OVERRIDE_FIELDS = [
   // results and the review queue until taken back. Replaces "Wyłącz z wyników" ('exclude') in
   // the panel; older 'exclude' entries still count and can be removed.
   'cancel',
+  // "Wolny od" (10.11.2026): from when the truck is free after the leg — the label with the pin at
+  // the truck's last entered order. app_value = the leg's end it was typed against.
+  'free_at',
+  'free_at:1',
 ] as const
 /** Loading / unloading date and hour typed on the board (12.10.2026). */
 const AT_OVERRIDES = new Set(['load_at', 'unload_at'])
@@ -213,6 +217,36 @@ export interface WeekTruck {
    * the week has an order, or nothing is known (no earlier order on the board).
    */
   idle: IdleSpot | null
+  /**
+   * "Koniec" (10.11.2026): where and from when the truck is free after its last entered order —
+   * the label with the pin on that day. Only in the week of that day; null in the other weeks,
+   * when a later order exists, or when the "Pusty" tile already says it.
+   */
+  lastSpot: EndSpot | null
+}
+
+export interface EndSpot {
+  placeName: string
+  /** The free moment: the hour typed on the board ("wolny od"), else the unloading / relay / position. */
+  date: string
+  time: string | null
+  /** order = the end of the truck's last leg (an unloading, or a relay); position = a later "Pozycja auta". */
+  via: 'order' | 'position'
+  orderNo: string | null
+  /** The correction's field for this leg ('free_at', 'free_at:1'); null for a position. */
+  field: string | null
+  /** The truck hands the trailer over there (first leg of a relay). */
+  relay: boolean
+  /** The leg's route ("Warszawa → Frankfurt"). */
+  title: string | null
+  /** The leg's own end — the default of "wolny od". */
+  endDate: string | null
+  endTime: string | null
+  /** Who typed the "wolny od" hour, and when; null = it is the leg's end. */
+  correctedBy: string | null
+  correctedAt: string | null
+  /** The "Pozycja auta" event (opens its dialog). */
+  eventId: number | null
 }
 
 export interface IdleSpot {
@@ -870,6 +904,8 @@ export class BoardService {
     const older = shownTrucks.some(t => !(legsByTruck.get(t.id) ?? []).some(x => driven(x) && x.l.endDate < first))
       ? await this.fleetLegsLoadedBetween(ctx, addDays(first, -IDLE_LOOKBACK_DAYS), addDays(first, -1))
       : new Map<number, Array<{ o: ComputedOrder; l: ComputedLeg }>>()
+    // Every "Pozycja auta" with a place from the look-back on — also after the range: a later one
+    // means the truck's last entered position is not in these weeks ("Koniec", 10.11.2026).
     const positionNotes = await this.db
       .selectFrom('board_notes')
       .select(['id', 'truck_id', 'day', 'time', 'place_code'])
@@ -878,33 +914,82 @@ export class BoardService {
       .where('kind', '=', 'position')
       .where('place_code', 'is not', null)
       .where('day', '>=', addDays(first, -IDLE_LOOKBACK_DAYS))
-      .where('day', '<=', last)
       .execute()
-    const idleAt = (truckId: number, start: string): IdleSpot | null => {
-      const legs = [...(legsByTruck.get(truckId) ?? []), ...(older.get(truckId) ?? [])].filter(x => driven(x) && x.l.endDate < start)
-      const lastLeg = legs.reduce<(typeof legs)[number] | null>((best, x) => {
-        if (!best) return x
-        const a = `${x.l.endDate} ${x.l.endTime ?? '24:00'} ${x.l.orderNo}`
-        const b = `${best.l.endDate} ${best.l.endTime ?? '24:00'} ${best.l.orderNo}`
-        return a > b ? x : best
-      }, null)
-      const position = positionNotes
-        .filter(n => n.truck_id === truckId && n.day !== null && n.day < start && (!lastLeg || n.day >= lastLeg.l.endDate))
+    type TruckLeg = { o: ComputedOrder; l: ComputedLeg }
+    const latestLeg = (legs: TruckLeg[]) => legs.reduce<TruckLeg | null>((best, x) => (!best || legEndKey(x.l) > legEndKey(best.l) ? x : best), null)
+    /** The latest "Pozycja auta" of a truck after its last leg (and before `before`, when given). */
+    const latestPosition = (truckId: number, lastLeg: TruckLeg | null, before?: string) =>
+      positionNotes
+        .filter(n => n.truck_id === truckId && n.day !== null && (before === undefined || n.day < before) && (!lastLeg || positionAfterLeg(n, lastLeg.l)))
         .sort((a, b) => `${a.day} ${a.time ?? ''}`.localeCompare(`${b.day} ${b.time ?? ''}`) || a.id - b.id)
         .pop()
+    const idleAt = (truckId: number, start: string): IdleSpot | null => {
+      const lastLeg = latestLeg([...(legsByTruck.get(truckId) ?? []), ...(older.get(truckId) ?? [])].filter(x => driven(x) && x.l.endDate < start))
+      const position = latestPosition(truckId, lastLeg, start)
       if (position?.place_code) {
         return { placeName: ctx.places.name(position.place_code), since: position.day!, sinceTime: position.time, via: 'position', orderNo: null, title: null }
       }
       if (!lastLeg) return null
-      const stop = lastLeg.l.stops[lastLeg.l.stops.length - 1]
+      // since the "wolny od" hour typed on the board (10.11.2026), else the unloading
+      const free = freeAtOf(lastLeg.o, lastLeg.l)
       return {
-        placeName: stop ? (stop.code ? ctx.places.name(stop.code) : stop.raw) : '?',
-        since: lastLeg.l.endDate,
-        sinceTime: lastLeg.l.endTime,
+        placeName: legEndPlace(lastLeg.l, ctx),
+        since: free.date,
+        sinceTime: free.time,
         via: 'order',
         orderNo: lastLeg.o.orderNo,
         title: legTitle(lastLeg.l, ctx),
       }
+    }
+
+    // "Koniec" (10.11.2026): the end of the truck's last entered order — or a "Pozycja auta" after
+    // it — with the pin, on the day the truck is free. Orders loaded after the computed window
+    // (read without km) only tell that the last one is later than these weeks.
+    const later = await this.fleetLegsLoadedBetween(ctx, addDays(last, 15), '9999-12-31')
+    const endSpots = new Map<number, EndSpot | null>()
+    const endSpotOf = (truckId: number): EndSpot | null => {
+      if (endSpots.has(truckId)) return endSpots.get(truckId)!
+      let spot: EndSpot | null = null
+      if (!(later.get(truckId) ?? []).some(driven)) {
+        const lastLeg = latestLeg((legsByTruck.get(truckId) ?? []).filter(driven))
+        const position = latestPosition(truckId, lastLeg)
+        if (position?.place_code) {
+          spot = {
+            placeName: ctx.places.name(position.place_code),
+            date: position.day!,
+            time: position.time,
+            via: 'position',
+            orderNo: null,
+            field: null,
+            relay: false,
+            title: null,
+            endDate: null,
+            endTime: null,
+            correctedBy: null,
+            correctedAt: null,
+            eventId: position.id,
+          }
+        } else if (lastLeg) {
+          const free = freeAtOf(lastLeg.o, lastLeg.l)
+          spot = {
+            placeName: legEndPlace(lastLeg.l, ctx),
+            date: free.date,
+            time: free.time,
+            via: 'order',
+            orderNo: lastLeg.o.orderNo,
+            field: freeAtField(lastLeg.l.index),
+            relay: lastLeg.l.przRole === 'from',
+            title: legTitle(lastLeg.l, ctx),
+            endDate: lastLeg.l.endDate,
+            endTime: lastLeg.l.endTime,
+            correctedBy: free.corrected?.createdBy ?? null,
+            correctedAt: free.corrected?.createdAt ?? null,
+            eventId: null,
+          }
+        }
+      }
+      endSpots.set(truckId, spot)
+      return spot
     }
 
     const weeks = weekStarts.map(start => {
@@ -1018,6 +1103,9 @@ export class BoardService {
 
         const driverDay = today >= start && today <= end ? today : end
         const driver = ctx.drivers.driverOn(truck.id, driverDay, timeFor(driverDay))
+        // Only when nothing is on the truck's row this week (a paid cancellation is not a trip).
+        const idle = visible.some(x => !x.o.paidCancel) ? null : idleAt(truck.id, start)
+        const lastSpot = endSpotOf(truck.id)
         trucks.push({
           id: truck.id,
           plate,
@@ -1044,8 +1132,9 @@ export class BoardService {
             legs: counted.length,
             kmEstimated: counted.some(x => x.l.kmEstimated),
           },
-          // Only when nothing is on the truck's row this week (a paid cancellation is not a trip).
-          idle: visible.some(x => !x.o.paidCancel) ? null : idleAt(truck.id, start),
+          idle,
+          // On its day; in a week with the "Pusty" tile only a later "Pozycja auta" (the tile says the rest).
+          lastSpot: lastSpot && lastSpot.date >= start && lastSpot.date <= end && !(idle && lastSpot.via === 'order') ? lastSpot : null,
         })
       }
       return { start, end, days, weekNumber: isoWeekNumber(start), trucks }
@@ -1533,7 +1622,7 @@ export class BoardService {
     const overrideDisplay = (field: string, value: string) =>
       field.startsWith('driver')
         ? ctx.drivers.name(Number(value) || null)
-        : AT_OVERRIDES.has(field)
+        : AT_OVERRIDES.has(field) || field.startsWith('free_at')
           ? displayAt(value, this.today().slice(0, 4))
           : field === 'coload'
             ? value === '-'
@@ -1686,7 +1775,8 @@ export class BoardService {
       })),
       notes: notes.map(n => ({ id: n.id, text: n.text, createdBy: n.created_by, createdAt: n.created_at })),
       overrides: overrides
-        .filter(ov => ov.active === 1)
+        // "Wolny od" only while it counts (the leg still ends when it did when it was typed).
+        .filter(ov => ov.active === 1 && (!ov.field.startsWith('free_at') || o.legs.some(l => freeAtField(l.index) === ov.field && freeAtOf(o, l).corrected)))
         .map(ov => ({
           field: ov.field,
           value: ov.value,
@@ -2026,7 +2116,14 @@ export class BoardService {
     if (AT_OVERRIDES.has(field)) value = await this.resolveAtOverride(row, field as 'load_at' | 'unload_at', value)
     if (field === 'prz') value = await this.checkPrzOverride(row, value)
     if (field === 'coload') value = await this.checkCoLoadOverride(orderNo, value)
-    const appValue = overrideAppValue(field, row)
+    let appValue = overrideAppValue(field, row)
+    if (field === 'free_at' || field === 'free_at:1') {
+      const free = await this.resolveFreeAt(row, field, value)
+      // The leg's own end again: no correction (the label follows the unloading from now on).
+      if (free.value === free.base) return this.clearOverride(orderNo, field)
+      value = free.value
+      appValue = free.base
+    }
     const now = this.now()
     await this.db.transaction().execute(async trx => {
       await trx
@@ -2059,7 +2156,33 @@ export class BoardService {
           .execute()
       }
     })
-    if (options.refresh !== false) await this.refreshIssues()
+    // "Wolny od" changes nothing the review queue looks at.
+    if (options.refresh !== false && !field.startsWith('free_at')) await this.refreshIssues()
+  }
+
+  /**
+   * "Wolny od" typed at the pin (10.11.2026): "13.11 14:00", "14:00" (the day of the leg's end),
+   * "2026-11-13 14:00" → "YYYY-MM-DD HH:MM", with the leg's end it is typed against (app_value).
+   * The hour is required; not before the loading, at most 14 days after the leg's end.
+   */
+  private async resolveFreeAt(row: Selectable<BoardOrdersTable>, field: 'free_at' | 'free_at:1', input: string): Promise<{ value: string; base: string }> {
+    const overrideRows = await this.db.selectFrom('board_overrides').selectAll().where('order_no', '=', row.order_no).where('active', '=', 1).orderBy('id').execute()
+    const overrides: Record<string, OverrideInfo> = {}
+    for (const ov of overrideRows) overrides[ov.field] = { value: ov.value, appValue: ov.app_value, createdAt: ov.created_at, createdBy: ov.created_by }
+    const order = buildOrder(row, overrides, await loadBoardContext(this.db))
+    const index = field === 'free_at' ? 0 : 1
+    const leg = order.legs.find(l => l.index === index && l.kind === 'fleet' && l.truckId !== null)
+    if (!leg) throw new BoardError('NO_LEG', 'Ten odcinek zlecenia nie jest jazdą auta działu.')
+    const end: At = { date: leg.endDate, time: leg.endTime }
+    const parsed = parseAtInput(input, end, end.date)
+    if (!parsed || !parsed.time) throw new BoardError('BAD_AT', 'Wpisz dzień i godzinę, np. 13.11 14:00, albo samą godzinę, np. 14:00.')
+    if (atKey(parsed, '00:00') < atKey({ date: leg.startDate, time: leg.startTime }, '00:00')) {
+      throw new BoardError('FREE_BEFORE_LOAD', 'Auto nie może być wolne przed załadunkiem tego zlecenia.')
+    }
+    if (parsed.date > addDays(end.date, 14)) {
+      throw new BoardError('FREE_TOO_LATE', 'Najpóźniej 14 dni po rozładunku — dłuższy postój wpisz jako zdarzenie (np. „Pauza”).')
+    }
+    return { value: formatAt(parsed), base: formatAt(end) }
   }
 
   /**
@@ -2156,7 +2279,7 @@ export class BoardService {
       .where('field', '=', field)
       .where('active', '=', 1)
       .execute()
-    await this.refreshIssues()
+    if (!field.startsWith('free_at')) await this.refreshIssues()
   }
 
   /**
@@ -3005,6 +3128,48 @@ function legDriversOf(o: ComputedOrder, l: ComputedLeg, ctx: BoardContext): LegD
     l.startTime,
     l.endTime,
   )
+}
+
+/** Where a leg ends: its last stop ("Frankfurt"; the text from the export when the place is not known). */
+function legEndPlace(l: ComputedLeg, ctx: BoardContext): string {
+  const stop = l.stops[l.stops.length - 1]
+  return stop ? (stop.code ? ctx.places.name(stop.code) : stop.raw) : '?'
+}
+
+/** Field of the "wolny od" correction of a leg (10.11.2026): leg 0 'free_at', leg 1 'free_at:1'. */
+export function freeAtField(legIndex: number): 'free_at' | 'free_at:1' {
+  return legIndex === 0 ? 'free_at' : 'free_at:1'
+}
+
+/** The leg still ends when it did when "wolny od" was typed (the end kept in app_value; a day without an hour compares the day). */
+function freeAtBaseHolds(base: string | null, end: At): boolean {
+  const b = parseAtValue(base)
+  if (!b) return false
+  return b.time === null ? b.date === end.date : formatAt(b) === formatAt(end)
+}
+
+/**
+ * "Wolny od" of a leg (10.11.2026): the moment typed on the board while the leg still ends when it
+ * did then; once the unloading (or the relay) moves — in the application or by a correction — the
+ * default comes back: the leg's own end.
+ */
+export function freeAtOf(o: ComputedOrder, l: ComputedLeg): { date: string; time: string | null; corrected: OverrideInfo | null } {
+  const ov = o.overrides[freeAtField(l.index)]
+  const at = parseAtValue(ov?.value)
+  if (ov && at && freeAtBaseHolds(ov.appValue, { date: l.endDate, time: l.endTime })) return { date: at.date, time: at.time, corrected: ov }
+  return { date: l.endDate, time: l.endTime, corrected: null }
+}
+
+/** Sort key of a leg's end (a missing hour = the end of the day). */
+function legEndKey(l: ComputedLeg): string {
+  return `${l.endDate} ${l.endTime ?? '24:00'} ${l.orderNo}`
+}
+
+/** A "Pozycja auta" at or after the end of a leg (the same day: from the unloading hour on; no hour = counts). */
+function positionAfterLeg(n: { day: string | null; time: string | null }, l: ComputedLeg): boolean {
+  if (n.day === null) return false
+  if (n.day !== l.endDate) return n.day > l.endDate
+  return !n.time || !l.endTime || n.time >= l.endTime
 }
 
 /** "Warszawa → Budapeszt (przez Kraków)" */

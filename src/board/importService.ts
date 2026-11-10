@@ -559,6 +559,8 @@ export const OVERRIDE_FIELD_LABELS: Record<string, string> = {
   unload_at: 'rozładunek',
   coload: 'doładunek',
   cancel: 'anulowanie zlecenia',
+  free_at: 'wolny od',
+  'free_at:1': 'wolny od, 2. odcinek',
 }
 
 /** Short label of an order for history lines: "W-3 (Wiedeń → Wilno, 13.10)". */

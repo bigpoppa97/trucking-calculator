@@ -129,6 +129,9 @@ export const OVERRIDE_LABELS: Record<string, string> = {
   coload: 'Doładunek do zlecenia',
   // 30.10.2026: replaces "Wyłącz z wyników" in the list (older entries still shown and removable).
   cancel: 'Anuluj zlecenie',
+  // 10.11.2026: typed at the pin on the board ("Koniec"), not offered in "Popraw ręcznie".
+  free_at: 'Wolny od',
+  'free_at:1': 'Wolny od — 2. odcinek',
 }
 
 /** "Km razem" of a leg: km_total (leg 0) or km_total:1 (leg 1). */

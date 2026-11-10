@@ -2357,6 +2357,110 @@ describe('09.11.2026 — "Pusty · <miejsce>": a truck without an order in a wee
   })
 })
 
+describe('10.11.2026 — "Koniec": the pin at the truck\'s last entered order, "wolny od" editable', () => {
+  const r = (over: Partial<Row>): Row => ({
+    no: '79-1-26', from: 'Warszawa', ld: '2026-09-21', to: 'Budapest', ud: '2026-09-22', rev: 1500, cost: 1300, sub: 'AA1001A', trailer: 'TR100',
+    lh: '08:00 — —', uh: '— — 20:00', ...over,
+  })
+  const second = r({ no: '79-2-26', from: 'Budapest', ld: '2026-09-23', to: 'Wien', ud: '2026-09-24', lh: '08:00 — —', uh: '— — 14:00' })
+  const rowOf = async (week: string, plate = 'AA1001A') => (await board.weekView(week)).trucks.find(t => t.plate === plate)!
+  const load = async (rows: Row[]) => board.importFile(await xlsx(rows, HOURS_HEADERS), 'a.xlsx', 'daily')
+
+  it('one label: the unloading of the last order, on its day; none in other weeks, the "Pusty" tile after it', async () => {
+    await load([r({}), second])
+    expect((await rowOf('2026-09-21')).lastSpot).toEqual({
+      placeName: 'Wiedeń',
+      date: '2026-09-24',
+      time: '14:00',
+      via: 'order',
+      orderNo: '79-2-26',
+      field: 'free_at',
+      relay: false,
+      title: 'Budapeszt → Wiedeń',
+      endDate: '2026-09-24',
+      endTime: '14:00',
+      correctedBy: null,
+      correctedAt: null,
+      eventId: null,
+    })
+    const after = await rowOf('2026-09-28')
+    expect(after.lastSpot).toBeNull()
+    expect(after.idle).toMatchObject({ placeName: 'Wiedeń', since: '2026-09-24', sinceTime: '14:00' })
+    // A truck with nothing entered has no label.
+    expect((await rowOf('2026-09-21', 'AA1002A')).lastSpot).toBeNull()
+  })
+
+  it('"wolny od" typed at the pin moves the label and the "Pusty" tile; the unloading again = no correction', async () => {
+    await load([r({}), second])
+    await board.setOverride('79-2-26', 'free_at', '25.09 6:00')
+    expect((await rowOf('2026-09-21')).lastSpot).toMatchObject({ date: '2026-09-25', time: '06:00', endDate: '2026-09-24', endTime: '14:00', correctedBy: 'test' })
+    expect((await rowOf('2026-09-28')).idle).toMatchObject({ since: '2026-09-25', sinceTime: '06:00' })
+    const details = await board.orderDetails('79-2-26')
+    expect(details.overrides).toEqual([expect.objectContaining({ field: 'free_at', value: '2026-09-25 06:00', display: '25.09 06:00' })])
+
+    // Only an hour: the day of the unloading.
+    await board.setOverride('79-2-26', 'free_at', '17:30')
+    expect((await rowOf('2026-09-21')).lastSpot).toMatchObject({ date: '2026-09-24', time: '17:30' })
+
+    await board.setOverride('79-2-26', 'free_at', '24.09 14:00')
+    expect((await rowOf('2026-09-21')).lastSpot).toMatchObject({ date: '2026-09-24', time: '14:00', correctedBy: null })
+    expect((await board.orderDetails('79-2-26')).overrides).toEqual([])
+  })
+
+  it('an hour is required; not before the loading, at most 14 days after the unloading; only a leg of the department', async () => {
+    await load([r({ uh: '— — —' }), second])
+    // A day alone keeps the hour of the unloading — and there is none to keep.
+    await expect(board.setOverride('79-1-26', 'free_at', '23.09')).rejects.toThrow(/godzinę/)
+    await board.setOverride('79-2-26', 'free_at', '25.09')
+    expect((await rowOf('2026-09-21')).lastSpot).toMatchObject({ date: '2026-09-25', time: '14:00' })
+    await expect(board.setOverride('79-2-26', 'free_at', 'jutro')).rejects.toThrow(/godzinę/)
+    await expect(board.setOverride('79-2-26', 'free_at', '22.09 10:00')).rejects.toThrow(/przed załadunkiem/)
+    await expect(board.setOverride('79-2-26', 'free_at', '09.10 10:00')).rejects.toThrow(/14 dni/)
+    await expect(board.setOverride('79-2-26', 'free_at:1', '25.09 10:00')).rejects.toThrow(/odcinek/)
+  })
+
+  it('once the unloading moves (application or a correction), the label follows it again', async () => {
+    await load([r({}), second])
+    await board.setOverride('79-2-26', 'free_at', '24.09 18:00')
+    await board.setOverride('79-2-26', 'unload_at', '24.09 16:00')
+    expect((await rowOf('2026-09-21')).lastSpot).toMatchObject({ date: '2026-09-24', time: '16:00', correctedBy: null })
+    expect((await board.orderDetails('79-2-26')).overrides.map(o => o.field)).toEqual(['unload_at'])
+
+    await board.clearOverride('79-2-26', 'unload_at')
+    await board.setOverride('79-2-26', 'free_at', '24.09 18:00')
+    await load([r({}), { ...second, uh: '— — 12:00' }])
+    expect((await rowOf('2026-09-21')).lastSpot).toMatchObject({ time: '12:00', correctedBy: null })
+  })
+
+  it('a later order — also one loaded weeks ahead — takes the label; cancelled ones and co-loads do not', async () => {
+    await load([r({}), second, r({ no: '79-3-26', from: 'Wien', ld: '2026-10-20', to: 'Vilnius', ud: '2026-10-22', lh: '08:00 — —', uh: '— — 09:00' })])
+    expect((await rowOf('2026-09-21')).lastSpot).toBeNull()
+    expect((await rowOf('2026-10-19')).lastSpot).toMatchObject({ orderNo: '79-3-26', placeName: 'Wilno', date: '2026-10-22', time: '09:00' })
+    await board.setOverride('79-3-26', 'cancel', '1')
+    expect((await rowOf('2026-09-21')).lastSpot).toMatchObject({ orderNo: '79-2-26' })
+  })
+
+  it('a "Pozycja auta" after the last unloading takes the label (opens the event); one before its hour does not', async () => {
+    await load([r({}), second])
+    const truckId = (await rowOf('2026-09-21')).id
+    await board.addTruckEvent({ truckId, day: '2026-09-24', kind: 'position', text: 'rano', place: 'KRK', time: '09:00' })
+    expect((await rowOf('2026-09-21')).lastSpot).toMatchObject({ via: 'order', placeName: 'Wiedeń' })
+    await board.addTruckEvent({ truckId, day: '2026-09-26', kind: 'position', text: 'baza', place: 'WAW', time: '10:00' })
+    const spot = (await rowOf('2026-09-21')).lastSpot
+    expect(spot).toMatchObject({ via: 'position', placeName: 'Warszawa', date: '2026-09-26', time: '10:00', orderNo: null, field: null })
+    expect((await rowOf('2026-09-21')).events.find(e => e.id === spot!.eventId)).toMatchObject({ kind: 'position' })
+  })
+
+  it('a relay: the first truck ends at the swap place (its own correction field), the second at the unloading', async () => {
+    await load([r({ notes: 'PRZ GORZYCZKI 22.09 6:30 AA1001A>AA1002A 1700/1000', ud: '2026-09-22' })])
+    expect((await rowOf('2026-09-21')).lastSpot).toMatchObject({ placeName: 'Gorzyczki', date: '2026-09-22', time: '06:30', relay: true, field: 'free_at' })
+    expect((await rowOf('2026-09-21', 'AA1002A')).lastSpot).toMatchObject({ placeName: 'Budapeszt', date: '2026-09-22', time: '20:00', relay: false, field: 'free_at:1' })
+    await board.setOverride('79-1-26', 'free_at:1', '21:00')
+    expect((await rowOf('2026-09-21', 'AA1002A')).lastSpot).toMatchObject({ time: '21:00', correctedBy: 'test' })
+    expect((await rowOf('2026-09-21')).lastSpot).toMatchObject({ time: '06:30', correctedBy: null })
+  })
+})
+
 describe('10.11.2026 — Frankfurt spellings; unknown place shown in the order panel', () => {
   const row = (no: string, from: string, ld: string, to: string, ud: string): Row => ({ no, from, ld, to, ud, rev: 2000, cost: 1600, sub: 'AA1001A', trailer: 'TR100' })
 

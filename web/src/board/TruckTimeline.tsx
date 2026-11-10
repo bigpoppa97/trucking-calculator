@@ -1,4 +1,4 @@
-import type { IdleSpot, Service, WeekBar, WeekEvent, WeekTruck } from './boardApi.js'
+import type { EndSpot, IdleSpot, Service, WeekBar, WeekEvent, WeekTruck } from './boardApi.js'
 import { EVENT_LABELS, dm, dmTime, km, signedEur, stamp } from './format.js'
 import { EVENT_ICON, Icon } from './Icon.js'
 import { SERVICE_COLORS, ServiceStrip } from './serviceUi.js'
@@ -186,6 +186,8 @@ export interface TruckTimelineProps {
   onOpenEvent?: ((e: WeekEvent) => void) | undefined
   /** Trailer change chip (automatic, or a board entry typed over one) clicked — day, hour, place. */
   onOpenTrailerChange?: ((e: WeekEvent) => void) | undefined
+  /** "Koniec" label of an order clicked — "wolny od" (10.11.2026). A position opens onOpenEvent. */
+  onOpenEndSpot?: ((spot: EndSpot) => void) | undefined
 }
 
 /** Left edge of day `d` (0–7) in a week area with 8 px padding and 4 px gaps between the columns (bars, events, header). */
@@ -258,6 +260,7 @@ export function TruckTimeline({
   onOpenDriverChange,
   onOpenEvent,
   onOpenTrailerChange,
+  onOpenEndSpot,
 }: TruckTimelineProps) {
   // A paid cancellation (09.11.2026) is not a bar: the truck did not drive — a chip on the loading day.
   const bars = placeBars(row.bars.filter(b => !b.paidCancel))
@@ -269,6 +272,18 @@ export function TruckTimeline({
     days,
   )
   const chipRows = chips.reduce((m, c) => Math.max(m, c.lane + 1), 0)
+  const spot = row.lastSpot ?? null
+  // A position opens its event; an order — "wolny od".
+  const spotEvent = spot?.via === 'position' ? row.events.find(e => e.id !== null && e.id === spot.eventId && !e.auto) : undefined
+  const openSpot = spot
+    ? spot.via === 'position'
+      ? spotEvent && onOpenEvent
+        ? () => onOpenEvent(spotEvent)
+        : undefined
+      : onOpenEndSpot && spot.orderNo && spot.field
+        ? () => onOpenEndSpot(spot)
+        : undefined
+    : undefined
   const todayIndex = nowFraction !== null ? Math.min(6, Math.floor(nowFraction * 7)) : null
   return (
     <div className="relative min-w-0 p-2">
@@ -394,15 +409,16 @@ export function TruckTimeline({
       {onAddEvent && (
         <div className="relative mt-1 grid grid-cols-7 gap-1">
           {days.map(day => (
-            <div key={day}>
+            <div key={day} className="flex min-w-0 items-start gap-1 pr-1">
               <button
                 type="button"
                 onClick={() => onAddEvent(day)}
                 aria-label={`Dodaj zdarzenie: ${row.plate}, ${dm(day)}`}
-                className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[#9AA3AC] hover:bg-[#EEF0EC] hover:text-[#15181C] focus:text-[#15181C]"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[#9AA3AC] hover:bg-[#EEF0EC] hover:text-[#15181C] focus:text-[#15181C]"
               >
                 <Icon name="plus" size={13} />
               </button>
+              {spot && spot.date === day && <EndSpotLabel spot={spot} plate={row.plate} onOpen={openSpot} />}
             </div>
           ))}
         </div>
@@ -415,6 +431,68 @@ export function TruckTimeline({
         />
       )}
     </div>
+  )
+}
+
+/** "Koniec" pin (10.11.2026): the board's blue. */
+export const END_SPOT_COLOR = '#1E4E9C'
+
+/** Second line of the "Koniec" label: "wolny od 10:00", "pozycja auta 10:00". */
+export function endSpotLine(spot: EndSpot): string {
+  if (spot.via === 'position') return `pozycja auta${spot.time ? ` ${spot.time}` : ''}`
+  return `wolny od ${spot.time ?? '?'}`
+}
+
+/**
+ * "Koniec" (10.11.2026): where the truck is free after its last entered order, at the bottom of that
+ * day next to "+" — the place with the pin, under it "wolny od 10:00" (the unloading, or the hour typed
+ * here — then with a pencil). Click: "wolny od" (an order) or the "Pozycja auta" event (a position).
+ */
+function EndSpotLabel({ spot, plate, onOpen }: { spot: EndSpot; plate: string; onOpen?: (() => void) | undefined }) {
+  const line = endSpotLine(spot)
+  const corrected = spot.correctedBy !== null
+  const tip =
+    spot.via === 'position'
+      ? `Ostatnia wpisana pozycja auta: ${spot.placeName}, ${dmTime(spot.date, spot.time)}.${onOpen ? '\nKliknij, żeby poprawić albo usunąć.' : ''}`
+      : [
+          `Koniec ostatniego zlecenia: ${spot.orderNo ?? ''} · ${spot.title ?? ''}`,
+          `${spot.relay ? 'Przepinka' : 'Rozładunek'}: ${spot.endDate ? dmTime(spot.endDate, spot.endTime) : '—'}`,
+          corrected ? `Wolny od ${dmTime(spot.date, spot.time)} — wpisał ${spot.correctedBy}${spot.correctedAt ? `, ${stamp(spot.correctedAt)}` : ''}` : null,
+          spot.time ? null : 'Godzina rozładunku nieznana.',
+          onOpen ? 'Kliknij, żeby zmienić, od kiedy auto jest wolne.' : null,
+        ]
+          .filter(Boolean)
+          .join('\n')
+  const content = (
+    <>
+      <span className="inline-flex max-w-full items-center gap-1 text-[12.5px] font-semibold text-[#15181C]">
+        <span className="shrink-0" style={{ color: END_SPOT_COLOR }}>
+          <Icon name="pin" size={12} />
+        </span>
+        <span className="min-w-0 [overflow-wrap:anywhere]">{spot.placeName}</span>
+      </span>
+      <span className="inline-flex items-center gap-1 text-[11px] text-[#545B63]">
+        {line}
+        {corrected && <Icon name="pencil" size={10} />}
+      </span>
+    </>
+  )
+  const cls = 'ml-auto flex min-w-0 flex-col items-end rounded px-1 text-right leading-tight'
+  return onOpen ? (
+    <button
+      type="button"
+      data-testid="end-spot"
+      onClick={onOpen}
+      title={tip}
+      aria-label={`Koniec: ${plate}, ${spot.placeName}, ${line}${corrected ? ' (poprawione)' : ''}`}
+      className={`${cls} cursor-pointer hover:bg-[#EEF0EC]`}
+    >
+      {content}
+    </button>
+  ) : (
+    <span data-testid="end-spot" title={tip} className={cls}>
+      {content}
+    </span>
   )
 }
 
